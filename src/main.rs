@@ -571,6 +571,11 @@ const kind = document.getElementById('kind');
 const results = document.getElementById('results');
 const details = document.getElementById('details');
 const svg = document.getElementById('graph');
+const params = new URLSearchParams(window.location.search);
+const requestedSelect = params.get('select');
+
+if (params.get('q')) search.value = params.get('q');
+if (['all', 'file', 'function', 'type'].includes(params.get('kind'))) kind.value = params.get('kind');
 
 document.getElementById('stats').innerHTML = [
   ['Files', graph.stats.files || 0],
@@ -605,6 +610,18 @@ function layout(nodes) {{
 
 function render() {{
   state.visible = graph.nodes.filter(matches);
+  if (state.selected && !state.visible.some(node => node.id === state.selected)) {{
+    state.selected = null;
+  }}
+  if (!state.selected && requestedSelect) {{
+    const requested = requestedSelect.toLowerCase();
+    const match = state.visible.find(node => node.label.toLowerCase() === requested)
+      || state.visible.find(node => node.id.toLowerCase().includes(requested));
+    if (match) state.selected = match.id;
+  }}
+  if (!state.selected && state.visible.length === 1) {{
+    state.selected = state.visible[0].id;
+  }}
   const visibleIds = new Set(state.visible.map(node => node.id));
   layout(state.visible);
   const positions = new Map(state.visible.map(node => [node.id, node]));
@@ -623,6 +640,7 @@ function render() {{
 
   svg.querySelectorAll('g').forEach(group => group.addEventListener('click', () => selectNode(group.dataset.id)));
   renderResults();
+  renderDetails();
 }}
 
 function renderResults() {{
@@ -639,8 +657,22 @@ function renderResults() {{
 
 function selectNode(id) {{
   state.selected = id;
+  renderDetails();
+  renderResults();
+}}
+
+function renderDetails() {{
+  const id = state.selected;
   const node = graph.nodes.find(candidate => candidate.id === id);
-  const related = graph.edges.filter(edge => edge.source === id || edge.target === id).slice(0, 20);
+  if (!node) {{
+    details.innerHTML = `
+      <h2>Select a node</h2>
+      <p class="muted">Click a graph node or search result to inspect its summary, documentation, path, and relationships.</p>
+    `;
+    details.scrollTop = 0;
+    return;
+  }}
+  const related = graph.edges.filter(edge => edge.source === id || edge.target === id).slice(0, 12);
   details.innerHTML = `
     <h2>${{escapeHtml(node.label)}}</h2>
     <p><span class="pill">${{node.kind}}</span> <span class="muted">${{escapeHtml(node.language)}} - ${{escapeHtml(node.path)}}:${{node.line}}</span></p>
@@ -649,7 +681,7 @@ function selectNode(id) {{
     <h3>Relationships</h3>
     <ul>${{related.map(edge => `<li>${{escapeHtml(edge.label)}}: ${{escapeHtml(labelFor(edge.source))}} -> ${{escapeHtml(labelFor(edge.target))}}</li>`).join('') || '<li>No visible relationships.</li>'}}</ul>
   `;
-  renderResults();
+  details.scrollTop = 0;
 }}
 
 function labelFor(id) {{
@@ -957,6 +989,7 @@ mod tests {
         assert!(html.contains("Codebase Visualizer"));
         assert!(html.contains("\"label\":\"run\""));
         assert!(html.contains("Search functions"));
+        assert!(!html.contains("applyInitialUrlState"));
     }
 
     #[test]
