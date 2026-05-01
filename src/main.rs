@@ -257,7 +257,10 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
             end_line: def.end_line,
             language: "rust".to_string(),
             doc: def.doc.clone(),
-            summary: format!("fn {} (lines {}-{})", def.name, def.start_line, def.end_line),
+            summary: format!(
+                "fn {} (lines {}-{})",
+                def.name, def.start_line, def.end_line
+            ),
             code: def.code.clone(),
         };
         let file_id = node_id("file", &def.path, 0, &def.path);
@@ -281,7 +284,10 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
             end_line: def.end_line,
             language: "rust".to_string(),
             doc: def.doc.clone(),
-            summary: format!("type {} (lines {}-{})", def.name, def.start_line, def.end_line),
+            summary: format!(
+                "type {} (lines {}-{})",
+                def.name, def.start_line, def.end_line
+            ),
             code: String::new(),
         };
         let file_id = node_id("file", &def.path, 0, &def.path);
@@ -321,7 +327,10 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
     );
     stats.insert(
         "calls".to_string(),
-        edges.iter().filter(|edge| edge.kind == EdgeKind::Calls).count(),
+        edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Calls)
+            .count(),
     );
 
     Ok(Graph {
@@ -472,9 +481,7 @@ fn collect_rust_calls(
                 if child.kind() == "identifier" {
                     if let Ok(name) = child.utf8_text(source.as_bytes()) {
                         if funcs.iter().any(|f| f.name == name) {
-                            if let Some(caller_id) =
-                                find_enclosing_function_id(child, funcs)
-                            {
+                            if let Some(caller_id) = find_enclosing_function_id(child, funcs) {
                                 let byte = child.start_byte();
                                 let snippet =
                                     line_snippet_at_byte(source, byte).unwrap_or_default();
@@ -551,7 +558,8 @@ fn collect_rust_calls(
 fn find_enclosing_function_id(node: TsNode, funcs: &[RustFunctionDef]) -> Option<String> {
     // Map by byte ranges; linear scan is OK for small repos.
     let start = node.start_byte();
-    funcs.iter()
+    funcs
+        .iter()
         .find(|f| f.start_byte <= start && start <= f.end_byte)
         .map(|f| f.id.clone())
 }
@@ -585,7 +593,10 @@ fn rust_callee_name_and_byte(func_node: TsNode, source: &str) -> Option<(String,
 fn build_rust_call_edges(nodes: &[Node], files: &[ScannedFile], calls: &[RustCall]) -> Vec<Edge> {
     let mut name_to_ids: HashMap<&str, Vec<&str>> = HashMap::new();
     for node in nodes.iter().filter(|n| n.kind == NodeKind::Function) {
-        name_to_ids.entry(node.label.as_str()).or_default().push(node.id.as_str());
+        name_to_ids
+            .entry(node.label.as_str())
+            .or_default()
+            .push(node.id.as_str());
     }
 
     let mut by_file_source: HashMap<&str, &str> = HashMap::new();
@@ -807,7 +818,7 @@ fn render_html(graph: &Graph, embed_libs: bool) -> String {
   --text:#e2e8f4;--text-muted:#7a8799;
   --accent-file:#3ddc84;--accent-fn:#4da6ff;--accent-type:#bf7bff;
   --accent-file-dim:rgba(61,220,132,.18);--accent-fn-dim:rgba(77,166,255,.18);--accent-type-dim:rgba(191,123,255,.18);
-  --handle:5px;
+  --handle:5px;--sidebar-left-w:300px;--sidebar-right-w:340px;
   font-family:'Inter',ui-sans-serif,system-ui,sans-serif;color-scheme:dark;
 }}
 html,body{{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-size:13px;line-height:1.55}}
@@ -815,32 +826,60 @@ html,body{{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fo
 ::-webkit-scrollbar-track{{background:transparent}}
 ::-webkit-scrollbar-thumb{{background:rgba(255,255,255,.12);border-radius:3px}}
 ::-webkit-scrollbar-thumb:hover{{background:rgba(255,255,255,.22)}}
+
+/* ── layout ─────────────────────────────────────────────────────────── */
 #app{{display:flex;flex-direction:row;height:100vh;overflow:hidden}}
-#sidebar-left{{width:300px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);flex-shrink:0;overflow:hidden}}
-#sidebar-right{{width:340px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);flex-shrink:0;overflow:hidden}}
+
+/* sidebar base */
+.sidebar{{display:flex;flex-direction:column;background:var(--surface);flex-shrink:0;overflow:hidden;transition:width .2s ease}}
+#sidebar-left{{width:var(--sidebar-left-w);min-width:0;border-right:1px solid var(--border)}}
+#sidebar-right{{width:var(--sidebar-right-w);min-width:0;border-left:1px solid var(--border)}}
+
+/* collapsed state – icon-strip only */
+.sidebar.collapsed{{width:36px!important}}
+.sidebar.collapsed .sidebar-body,
+.sidebar.collapsed .sidebar-header .sidebar-full-content{{display:none}}
+.sidebar.collapsed .sidebar-header{{padding:10px 0;display:flex;flex-direction:column;align-items:center;gap:8px;border-bottom:none}}
+.sidebar-collapse-btn{{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:color .15s,background .15s;flex-shrink:0}}
+.sidebar-collapse-btn:hover{{color:var(--text);background:rgba(255,255,255,.07)}}
+.sidebar-collapse-icon{{font-size:16px;line-height:1;width:20px;text-align:center}}
+
+/* graph area */
 #graph-area{{flex:1 1 0;min-width:0;position:relative;overflow:hidden;background:radial-gradient(ellipse 80% 60% at 50% 40%,#0c1628 0%,var(--bg) 100%)}}
+
+/* resize handles */
 .handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center}}
 .handle:hover,.handle.dragging{{background:var(--border-hi)}}
 .handle::after{{content:'';display:block;width:2px;height:32px;border-radius:2px;background:rgba(255,255,255,.18)}}
-.sidebar-header{{padding:18px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0}}
+.sidebar.collapsed + .handle, .handle + .sidebar.collapsed{{opacity:.4;pointer-events:none}}
+
+/* sidebar inner */
+.sidebar-header{{padding:14px 16px 10px;border-bottom:1px solid var(--border);flex-shrink:0}}
+.sidebar-header-row{{display:flex;align-items:center;gap:6px}}
 .sidebar-body{{flex:1 1 0;overflow-y:auto;overflow-x:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:10px}}
-.logo{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
-.logo-icon{{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4da6ff 0%,#bf7bff 100%);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}}
-.logo-text{{font-size:15px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(90deg,#4da6ff,#bf7bff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-.tagline{{color:var(--text-muted);font-size:11.5px;margin-top:2px}}
-.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}}
-.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 4px;text-align:center}}
-.stat-value{{font-size:17px;font-weight:700;line-height:1}}
-.stat-label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}}
+.logo{{display:flex;align-items:center;gap:8px;margin-bottom:5px}}
+.logo-icon{{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#4da6ff 0%,#bf7bff 100%);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}}
+.logo-text{{font-size:14px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(90deg,#4da6ff,#bf7bff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.tagline{{color:var(--text-muted);font-size:11px;margin-top:1px}}
+
+/* stats */
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}}
+.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:7px 4px;text-align:center}}
+.stat-value{{font-size:16px;font-weight:700;line-height:1}}
+.stat-label{{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}}
 .stat.file .stat-value{{color:var(--accent-file)}}
 .stat.fn .stat-value{{color:var(--accent-fn)}}
 .stat.type .stat-value{{color:var(--accent-type)}}
 .stat.calls .stat-value{{color:#fb923c}}
+
+/* search / filter */
 .search-wrap{{position:relative}}
 .search-icon{{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.4;pointer-events:none;font-size:13px}}
 input#search{{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;transition:border-color .15s}}
 input#search:focus{{border-color:var(--border-hi)}}
 select{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%237a8799' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
+
+/* result list */
 .results-count{{font-size:11px;color:var(--text-muted);padding:2px 0 4px}}
 .item-list{{display:flex;flex-direction:column;gap:5px}}
 button.item{{text-align:left;border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer;transition:border-color .12s,background .12s,transform .1s;width:100%}}
@@ -852,17 +891,38 @@ button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,1
 .item-name{{font-weight:600;font-size:13px}}
 .item-path{{font-size:11px;color:var(--text-muted)}}
 .item-summary{{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}}
+
+/* pill badges */
 .pill{{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:999px}}
 .pill-file{{background:var(--accent-file-dim);color:var(--accent-file)}}
 .pill-function{{background:var(--accent-fn-dim);color:var(--accent-fn)}}
 .pill-type{{background:var(--accent-type-dim);color:var(--accent-type)}}
+
+/* graph canvas */
 #graph-canvas{{position:absolute;inset:0;cursor:grab}}
 #graph-canvas:active{{cursor:grabbing}}
+
+/* graph toolbar (top-right of graph area) */
+#graph-toolbar{{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:5px;z-index:10}}
+.tb-group{{display:flex;flex-direction:column;background:rgba(13,17,23,.82);border:1px solid var(--border);border-radius:10px;overflow:hidden;backdrop-filter:blur(8px)}}
+.tb-btn{{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:7px 10px;font-size:14px;line-height:1;transition:color .12s,background .12s;display:flex;align-items:center;justify-content:center;min-width:34px}}
+.tb-btn:hover{{color:var(--text);background:rgba(255,255,255,.07)}}
+.tb-btn + .tb-btn{{border-top:1px solid var(--border)}}
+.tb-sep{{height:1px;background:var(--border)}}
+
+/* link-length slider row */
+#link-len-wrap{{background:rgba(13,17,23,.82);border:1px solid var(--border);border-radius:10px;padding:7px 10px;backdrop-filter:blur(8px);display:flex;align-items:center;gap:7px}}
+#link-len-wrap label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}}
+input[type=range]#link-len{{-webkit-appearance:none;appearance:none;width:80px;height:4px;border-radius:2px;background:var(--surface2);outline:none;cursor:pointer}}
+input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent-fn);cursor:pointer;box-shadow:0 0 6px rgba(77,166,255,.5)}}
+
 #tooltip{{position:fixed;pointer-events:none;background:rgba(13,17,23,.92);border:1px solid var(--border-hi);border-radius:9px;padding:8px 12px;font-size:12px;color:var(--text);white-space:nowrap;backdrop-filter:blur(8px);display:none;z-index:99;box-shadow:0 4px 24px rgba(0,0,0,.5)}}
-.graph-legend{{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(13,17,23,.75);border:1px solid var(--border);border-radius:99px;padding:6px 18px;backdrop-filter:blur(8px);pointer-events:none}}
+.graph-legend{{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(13,17,23,.75);border:1px solid var(--border);border-radius:99px;padding:5px 16px;backdrop-filter:blur(8px);pointer-events:none}}
 .legend-item{{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted)}}
 .legend-dot{{width:9px;height:9px;border-radius:50%}}
-.detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.55}}
+
+/* detail panel */
+.detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.5}}
 .detail-section{{margin-bottom:16px}}
 .detail-section h3{{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;font-weight:600}}
 .detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}}
@@ -877,14 +937,28 @@ button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,1
 .callsite:hover{{border-color:var(--border-hi)}}
 .callsite-loc{{color:var(--text-muted);font-family:ui-monospace,monospace}}
 .callsite-snippet{{font-family:ui-monospace,monospace;color:#c9d1d9;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+
+/* back button in inspector header */
+#back-btn{{background:none;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;padding:4px 9px;border-radius:7px;font-size:11px;display:none;align-items:center;gap:4px;transition:border-color .12s,color .12s;white-space:nowrap}}
+#back-btn:hover{{border-color:var(--border-hi);color:var(--text)}}
+#back-btn.visible{{display:flex}}
 </style>
 </head>
 <body>
 <div id="app">
-<aside id="sidebar-left">
+
+<!-- ─── LEFT SIDEBAR ──────────────────────────────────────────────────── -->
+<aside id="sidebar-left" class="sidebar">
   <div class="sidebar-header">
-    <div class="logo"><div class="logo-icon">⬡</div><span class="logo-text">Codebase Visualizer</span></div>
-    <div class="tagline">Call graph · types · relationships</div>
+    <div class="sidebar-header-row">
+      <button class="sidebar-collapse-btn" id="collapse-left" title="Collapse sidebar">
+        <span class="sidebar-collapse-icon">◀</span>
+      </button>
+      <div class="sidebar-full-content" style="flex:1;min-width:0">
+        <div class="logo"><div class="logo-icon">⬡</div><span class="logo-text">Codebase Visualizer</span></div>
+        <div class="tagline">Call graph · types · relationships</div>
+      </div>
+    </div>
   </div>
   <div class="sidebar-body">
     <div class="stats" id="stats"></div>
@@ -900,51 +974,107 @@ button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,1
     <div class="item-list" id="results"></div>
   </div>
 </aside>
+
 <div class="handle" id="handle-left" title="Drag to resize"></div>
+
+<!-- ─── GRAPH AREA ────────────────────────────────────────────────────── -->
 <div id="graph-area">
   <canvas id="graph-canvas" aria-label="Codebase relationship graph"></canvas>
   <div id="tooltip"></div>
+
+  <!-- floating toolbar -->
+  <div id="graph-toolbar">
+    <div class="tb-group">
+      <button class="tb-btn" id="btn-fit"    title="Fit all nodes in view">⊙</button>
+      <button class="tb-btn" id="btn-zoomin" title="Zoom in (+)">＋</button>
+      <button class="tb-btn" id="btn-zoomout"title="Zoom out (−)">－</button>
+    </div>
+    <div id="link-len-wrap">
+      <label for="link-len">Link</label>
+      <input type="range" id="link-len" min="40" max="400" value="120" step="10"/>
+    </div>
+  </div>
+
   <div class="graph-legend">
     <div class="legend-item"><div class="legend-dot" style="background:#3ddc84"></div>File</div>
     <div class="legend-item"><div class="legend-dot" style="background:#4da6ff"></div>Function</div>
     <div class="legend-item"><div class="legend-dot" style="background:#bf7bff"></div>Type</div>
   </div>
 </div>
+
 <div class="handle" id="handle-right" title="Drag to resize"></div>
-<aside id="sidebar-right">
-  <div class="sidebar-header" style="padding-bottom:14px">
-    <div style="font-size:13px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em">Inspector</div>
+
+<!-- ─── RIGHT SIDEBAR ────────────────────────────────────────────────── -->
+<aside id="sidebar-right" class="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-header-row" style="justify-content:space-between">
+      <button class="sidebar-collapse-btn" id="collapse-right" title="Collapse inspector">
+        <span class="sidebar-collapse-icon">▶</span>
+      </button>
+      <div class="sidebar-full-content" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;justify-content:space-between">
+        <span style="font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em">Inspector</span>
+        <button id="back-btn" title="Go back">← <span id="back-label"></span></button>
+      </div>
+    </div>
   </div>
   <div class="sidebar-body" id="details-body">
     <div class="detail-placeholder">
-      <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
+      <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
       <div style="font-weight:600;color:var(--text)">Select a node</div>
       <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div>
     </div>
   </div>
 </aside>
-</div>
+
+</div><!-- #app -->
+<div id="tooltip"></div>
+
 <script>
-const GRAPH = {graph_json};
+/* ─── data ──────────────────────────────────────────────────────────── */
+const GRAPH  = {graph_json};
 const COLORS = {{ file:'#3ddc84', function:'#4da6ff', type:'#bf7bff' }};
 const RADII  = {{ file:11, function:8, type:9 }};
+
+/* ─── mutable state ─────────────────────────────────────────────────── */
+let K_REST = 120;           // link rest length – driven by slider
+const K_SPRING = 0.022;
+const K_REPEL  = 8000;
+const K_DAMP   = 0.80;
+const CENTER_K = 0.015;
+
 const S = {{
-  selected:null, visible:[], sim:[], edgesVis:[],
-  draggingNode:null, panning:false, lastMx:0, lastMy:0, hot:null, dirty:true,
+  selected: null,
+  history:  [],           // navigation stack: array of node ids
+  visible: [], sim: [], edgesVis: [],
+  draggingNode: null, panning: false,
+  lastMx: 0, lastMy: 0, hot: null, dirty: true,
+  // sidebar state
+  leftCollapsed: false, rightCollapsed: false,
+  leftW: 300, rightW: 340,          // saved widths for restore
 }};
-const searchEl   = document.getElementById('search');
-const viewModeEl = document.getElementById('viewMode');
-const resultsCt  = document.getElementById('results');
-const countEl    = document.getElementById('results-count');
-const detailsCt  = document.getElementById('details-body');
-const canvas     = document.getElementById('graph-canvas');
-const tip        = document.getElementById('tooltip');
-const ctx        = canvas.getContext('2d');
-const params     = new URLSearchParams(window.location.search);
-const reqSelect  = params.get('select');
+
+/* ─── dom refs ──────────────────────────────────────────────────────── */
+const searchEl    = document.getElementById('search');
+const viewModeEl  = document.getElementById('viewMode');
+const resultsCt   = document.getElementById('results');
+const countEl     = document.getElementById('results-count');
+const detailsCt   = document.getElementById('details-body');
+const canvas      = document.getElementById('graph-canvas');
+const tip         = document.getElementById('tooltip');
+const ctx         = canvas.getContext('2d');
+const sidebarLeft = document.getElementById('sidebar-left');
+const sidebarRight= document.getElementById('sidebar-right');
+const backBtn     = document.getElementById('back-btn');
+const backLabel   = document.getElementById('back-label');
+const linkLenInput= document.getElementById('link-len');
+
+/* ─── url params ────────────────────────────────────────────────────── */
+const params    = new URLSearchParams(window.location.search);
+const reqSelect = params.get('select');
 if (params.get('q')) searchEl.value = params.get('q');
 if (['callgraph','types'].includes(params.get('view'))) viewModeEl.value = params.get('view');
 
+/* ─── stats bar ─────────────────────────────────────────────────────── */
 document.getElementById('stats').innerHTML = [
   ['file','file',GRAPH.stats.files||0,'Files'],
   ['fn','function',GRAPH.stats.functions||0,'Funcs'],
@@ -952,160 +1082,303 @@ document.getElementById('stats').innerHTML = [
   ['calls','calls',GRAPH.stats.calls||0,'Calls'],
 ].map(([cls,_k,v,l])=>`<div class="stat ${{cls}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
 
-function buildAdjacency(links) {{
-  const out=new Map(), inc=new Map();
-  for (const l of links) {{
-    if (!out.has(l.source)) out.set(l.source,new Set());
-    if (!inc.has(l.target)) inc.set(l.target,new Set());
-    out.get(l.source).add(l.target); inc.get(l.target).add(l.source);
+/* ─── dataset helpers ───────────────────────────────────────────────── */
+function buildAdj(links){{
+  const out=new Map(),inc=new Map();
+  for(const l of links){{
+    if(!out.has(l.source))out.set(l.source,new Set());
+    if(!inc.has(l.target))inc.set(l.target,new Set());
+    out.get(l.source).add(l.target);inc.get(l.target).add(l.source);
   }}
   return {{out,inc}};
 }}
-function dataset() {{
-  const mode=viewModeEl.value;
-  if (mode==='callgraph') {{
-    return {{nodes:GRAPH.nodes.filter(n=>n.kind==='function'),links:GRAPH.edges.filter(e=>e.kind==='calls')}};
-  }}
-  const typeIds=new Set(GRAPH.nodes.filter(n=>n.kind==='type').map(n=>n.id));
-  return {{
-    nodes:GRAPH.nodes.filter(n=>n.kind==='file'||n.kind==='type'),
-    links:GRAPH.edges.filter(e=>e.kind==='contains'&&typeIds.has(e.target)),
-  }};
+function dataset(){{
+  const m=viewModeEl.value;
+  if(m==='callgraph')return{{nodes:GRAPH.nodes.filter(n=>n.kind==='function'),links:GRAPH.edges.filter(e=>e.kind==='calls')}};
+  const tids=new Set(GRAPH.nodes.filter(n=>n.kind==='type').map(n=>n.id));
+  return{{nodes:GRAPH.nodes.filter(n=>n.kind==='file'||n.kind==='type'),links:GRAPH.edges.filter(e=>e.kind==='contains'&&tids.has(e.target))}};
 }}
-function filteredDataset() {{
-  const q=searchEl.value.trim().toLowerCase();
-  const base=dataset();
-  if (!q) return base;
-  const {{out,inc}}=buildAdjacency(base.links);
+function filteredDataset(){{
+  const q=searchEl.value.trim().toLowerCase(),base=dataset();
+  if(!q)return base;
+  const {{out,inc}}=buildAdj(base.links);
   const keep=new Set();
-  for (const n of base.nodes) {{
-    if ((n.label+' '+n.path+' '+n.doc+' '+n.summary).toLowerCase().includes(q)) {{
+  for(const n of base.nodes){{
+    if((n.label+' '+n.path+' '+n.doc+' '+n.summary).toLowerCase().includes(q)){{
       keep.add(n.id);
-      for (const nb of (out.get(n.id)||[])) keep.add(nb);
-      for (const nb of (inc.get(n.id)||[])) keep.add(nb);
+      for(const nb of(out.get(n.id)||[]))keep.add(nb);
+      for(const nb of(inc.get(n.id)||[]))keep.add(nb);
     }}
   }}
   const nodes=base.nodes.filter(n=>keep.has(n.id));
-  const keepIds=new Set(nodes.map(n=>n.id));
-  return {{nodes, links:base.links.filter(l=>keepIds.has(l.source)&&keepIds.has(l.target))}};
+  const kset=new Set(nodes.map(n=>n.id));
+  return{{nodes,links:base.links.filter(l=>kset.has(l.source)&&kset.has(l.target))}};
 }}
 
-const K_SPRING=0.018,K_REPEL=7000,K_DAMP=0.82,REST_LEN=140,CENTER_K=0.012;
-function initSim() {{
+/* ─── force simulation ──────────────────────────────────────────────── */
+function initSim(){{
   const W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
   const byId=new Map(S.sim.map(n=>[n.id,n]));
   const ds=filteredDataset();
   S.visible=ds.nodes; S.edgesVis=ds.links;
   S.sim=S.visible.map((node,i)=>{{
     const old=byId.get(node.id);
-    if (old) return {{...old,node}};
+    if(old)return{{...old,node}};
     const angle=Math.PI*2*i/Math.max(S.visible.length,1);
-    const r=180+Math.random()*120;
-    return {{id:node.id,node,x:cx+Math.cos(angle)*r,y:cy+Math.sin(angle)*r,vx:0,vy:0}};
+    const r=Math.min(W,H)*0.28+Math.random()*60;
+    return{{id:node.id,node,x:cx+Math.cos(angle)*r,y:cy+Math.sin(angle)*r,vx:0,vy:0}};
   }});
   S.dirty=true;
 }}
-function tick() {{
-  if (S.draggingNode) return;
-  const cx=canvas.width/2,cy=canvas.height/2; let moving=false;
-  for (let i=0;i<S.sim.length;i++) {{
+
+function tick(){{
+  if(S.draggingNode)return;
+  const cx=canvas.width/2,cy=canvas.height/2;let moving=false;
+  for(let i=0;i<S.sim.length;i++){{
     const a=S.sim[i];
-    for (let j=i+1;j<S.sim.length;j++) {{
+    for(let j=i+1;j<S.sim.length;j++){{
       const b=S.sim[j],dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+1,f=K_REPEL/d2;
       a.vx+=f*dx;a.vy+=f*dy;b.vx-=f*dx;b.vy-=f*dy;
     }}
   }}
   const pm=new Map(S.sim.map(n=>[n.id,n]));
-  for (const e of S.edgesVis) {{
+  for(const e of S.edgesVis){{
     const a=pm.get(e.source),b=pm.get(e.target);
-    if (!a||!b) continue;
-    const dx=b.x-a.x,dy=b.y-a.y,dist=Math.sqrt(dx*dx+dy*dy)+0.01,f=K_SPRING*(dist-REST_LEN);
+    if(!a||!b)continue;
+    const dx=b.x-a.x,dy=b.y-a.y,dist=Math.sqrt(dx*dx+dy*dy)+.01,f=K_SPRING*(dist-K_REST);
     const fx=f*dx/dist,fy=f*dy/dist;
     a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
   }}
-  for (const n of S.sim) {{
+  for(const n of S.sim){{
     n.vx+=(cx-n.x)*CENTER_K;n.vy+=(cy-n.y)*CENTER_K;
     n.vx*=K_DAMP;n.vy*=K_DAMP;n.x+=n.vx;n.y+=n.vy;
-    if (Math.abs(n.vx)>0.05||Math.abs(n.vy)>0.05) moving=true;
+    if(Math.abs(n.vx)>.05||Math.abs(n.vy)>.05)moving=true;
   }}
-  if (moving) S.dirty=true;
+  if(moving)S.dirty=true;
 }}
-function draw() {{
+
+/* ─── fit-all: pan+scale so every node is visible ───────────────────── */
+function fitAll(margin){{
+  if(!S.sim.length)return;
+  margin=margin||60;
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for(const n of S.sim){{
+    minX=Math.min(minX,n.x);maxX=Math.max(maxX,n.x);
+    minY=Math.min(minY,n.y);maxY=Math.max(maxY,n.y);
+  }}
+  const W=canvas.width,H=canvas.height;
+  const gW=maxX-minX||1,gH=maxY-minY||1;
+  const scale=Math.min((W-margin*2)/gW,(H-margin*2)/gH,2);
+  const cx=(minX+maxX)/2,cy=(minY+maxY)/2;
+  for(const n of S.sim){{n.x=(n.x-cx)*scale+W/2;n.y=(n.y-cy)*scale+H/2;n.vx=0;n.vy=0;}}
+  S.dirty=true;
+}}
+
+/* ─── zoom around canvas centre ─────────────────────────────────────── */
+function zoomBy(factor){{
+  const cx=canvas.width/2,cy=canvas.height/2;
+  for(const n of S.sim){{n.x=cx+(n.x-cx)*factor;n.y=cy+(n.y-cy)*factor;}}
+  S.dirty=true;
+}}
+
+/* ─── drawing ───────────────────────────────────────────────────────── */
+function draw(){{
   const W=canvas.width,H=canvas.height;
   ctx.clearRect(0,0,W,H);
-  ctx.save();ctx.strokeStyle='rgba(255,255,255,.028)';ctx.lineWidth=1;
-  for (let x=0;x<W;x+=50){{ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}}
-  for (let y=0;y<H;y+=50){{ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}}
+  // subtle grid
+  ctx.save();ctx.strokeStyle='rgba(255,255,255,.022)';ctx.lineWidth=1;
+  for(let x=0;x<W;x+=60){{ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}}
+  for(let y=0;y<H;y+=60){{ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}}
   ctx.restore();
   const pm=new Map(S.sim.map(n=>[n.id,n]));
-  for (const e of S.edgesVis) {{
-    const a=pm.get(e.source),b=pm.get(e.target);
-    if (!a||!b) continue;
+  // edges
+  for(const e of S.edgesVis){{
+    const a=pm.get(e.source),b=pm.get(e.target);if(!a||!b)continue;
     const rel=S.selected&&(e.source===S.selected||e.target===S.selected);
     ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
-    ctx.strokeStyle=rel?'rgba(99,179,255,.55)':'rgba(255,255,255,.07)';
-    ctx.lineWidth=rel?1.8:1;ctx.stroke();
+    ctx.strokeStyle=rel?'rgba(99,179,255,.60)':'rgba(255,255,255,.08)';
+    ctx.lineWidth=rel?2:1;ctx.stroke();
   }}
-  for (const n of S.sim) {{
+  // nodes
+  for(const n of S.sim){{
     const r=RADII[n.node.kind]||8,col=COLORS[n.node.kind]||'#aaa';
     const isSel=n.id===S.selected,isHot=n.id===S.hot;
     const isRel=S.selected&&S.edgesVis.some(e=>(e.source===S.selected&&e.target===n.id)||(e.target===S.selected&&e.source===n.id));
     ctx.save();
-    if (isSel||isHot){{ctx.shadowColor=col;ctx.shadowBlur=isSel?28:14;}}
-    else if (isRel){{ctx.shadowColor=col;ctx.shadowBlur=10;}}
-    if (isSel){{
-      ctx.beginPath();ctx.arc(n.x,n.y,r+5,0,Math.PI*2);
-      ctx.strokeStyle=col;ctx.globalAlpha=0.45;ctx.lineWidth=2;ctx.stroke();ctx.globalAlpha=1;
+    if(isSel||isHot){{ctx.shadowColor=col;ctx.shadowBlur=isSel?30:16;}}
+    else if(isRel){{ctx.shadowColor=col;ctx.shadowBlur=12;}}
+    if(isSel){{
+      ctx.beginPath();ctx.arc(n.x,n.y,r+6,0,Math.PI*2);
+      ctx.strokeStyle=col;ctx.globalAlpha=.4;ctx.lineWidth=2.5;ctx.stroke();ctx.globalAlpha=1;
     }}
     ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);
-    if (isSel||isHot){{ctx.fillStyle=col;}}
-    else if (isRel){{ctx.fillStyle=col;ctx.globalAlpha=0.75;}}
+    if(isSel||isHot){{ctx.fillStyle=col;}}
+    else if(isRel){{ctx.fillStyle=col;ctx.globalAlpha=.78;}}
     else{{
-      ctx.globalAlpha=S.selected?0.35:1;
-      const g=ctx.createRadialGradient(n.x-r*.25,n.y-r*.25,r*.1,n.x,n.y,r);
+      ctx.globalAlpha=S.selected?.32:1;
+      const g=ctx.createRadialGradient(n.x-r*.28,n.y-r*.28,r*.12,n.x,n.y,r);
       g.addColorStop(0,col);g.addColorStop(1,col+'88');ctx.fillStyle=g;
     }}
     ctx.fill();ctx.globalAlpha=1;ctx.shadowBlur=0;
     ctx.font=`${{(isSel||isHot)?'600 ':'400 '}}11px Inter,sans-serif`;
-    ctx.fillStyle=(S.selected&&!isSel&&!isRel)?'rgba(226,232,244,.3)':'#e2e8f4';
+    ctx.fillStyle=(S.selected&&!isSel&&!isRel)?'rgba(226,232,244,.28)':'#e2e8f4';
     ctx.textBaseline='middle';ctx.fillText(n.node.label,n.x+r+5,n.y);
     ctx.restore();
   }}
 }}
+
 function loop(){{tick();if(S.dirty){{draw();S.dirty=false;}}requestAnimationFrame(loop);}}
+
 function resizeCanvas(){{
   const a=document.getElementById('graph-area');
   canvas.width=a.clientWidth;canvas.height=a.clientHeight;S.dirty=true;
 }}
+
+/* ─── hit test ──────────────────────────────────────────────────────── */
 function hitTest(mx,my){{
-  for (const n of S.sim){{const r=RADII[n.node.kind]||8,dx=n.x-mx,dy=n.y-my;if(dx*dx+dy*dy<=(r+4)*(r+4))return n;}}return null;
+  for(const n of S.sim){{const r=RADII[n.node.kind]||8,dx=n.x-mx,dy=n.y-my;if(dx*dx+dy*dy<=(r+5)*(r+5))return n;}}
+  return null;
 }}
+
+/* ─── pointer events ────────────────────────────────────────────────── */
 canvas.addEventListener('mousedown',e=>{{
   const n=hitTest(e.offsetX,e.offsetY);
-  if(n){{S.draggingNode=n;selectNode(n.id);}}
+  if(n){{S.draggingNode=n;selectNode(n.id,true);}}
   else{{S.panning=true;S.lastMx=e.clientX;S.lastMy=e.clientY;}}
 }});
 canvas.addEventListener('mousemove',e=>{{
   const n=hitTest(e.offsetX,e.offsetY);
-  if(n!==null?n.id:null!==S.hot){{S.hot=n?n.id:null;S.dirty=true;}}
-  if(S.draggingNode){{S.draggingNode.x=e.offsetX;S.draggingNode.y=e.offsetY;S.draggingNode.vx=0;S.draggingNode.vy=0;S.dirty=true;}}
-  else if(S.panning){{for(const nd of S.sim){{nd.x+=e.clientX-S.lastMx;nd.y+=e.clientY-S.lastMy;}}S.lastMx=e.clientX;S.lastMy=e.clientY;S.dirty=true;}}
-  if(n){{tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-8)+'px';tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;}}
-  else{{tip.style.display='none';}}
+  const newHot=n?n.id:null;
+  if(newHot!==S.hot){{S.hot=newHot;S.dirty=true;}}
+  if(S.draggingNode){{
+    S.draggingNode.x=e.offsetX;S.draggingNode.y=e.offsetY;
+    S.draggingNode.vx=0;S.draggingNode.vy=0;S.dirty=true;
+  }}else if(S.panning){{
+    const dx=e.clientX-S.lastMx,dy=e.clientY-S.lastMy;
+    for(const nd of S.sim){{nd.x+=dx;nd.y+=dy;}}
+    S.lastMx=e.clientX;S.lastMy=e.clientY;S.dirty=true;
+  }}
+  if(n){{
+    tip.style.display='block';
+    tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-8)+'px';
+    tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;
+  }}else{{tip.style.display='none';}}
 }});
 window.addEventListener('mouseup',()=>{{S.draggingNode=null;S.panning=false;}});
 canvas.addEventListener('wheel',e=>{{
-  e.preventDefault();const f=e.deltaY<0?1.1:0.91,cx=e.offsetX,cy=e.offsetY;
-  for(const n of S.sim){{n.x=cx+(n.x-cx)*f;n.y=cy+(n.y-cy)*f;}}S.dirty=true;
+  e.preventDefault();
+  const f=e.deltaY<0?1.12:.90,cx=e.offsetX,cy=e.offsetY;
+  for(const n of S.sim){{n.x=cx+(n.x-cx)*f;n.y=cy+(n.y-cy)*f;}}
+  S.dirty=true;
 }},{{passive:false}});
 
-function selectNode(id){{S.selected=id;S.dirty=true;renderDetails();renderResults();}}
+/* toolbar buttons */
+document.getElementById('btn-fit').addEventListener('click',()=>fitAll(60));
+document.getElementById('btn-zoomin').addEventListener('click',()=>zoomBy(1.3));
+document.getElementById('btn-zoomout').addEventListener('click',()=>zoomBy(0.77));
+linkLenInput.addEventListener('input',()=>{{K_REST=+linkLenInput.value;S.dirty=true;}});
 
+/* ─── navigation history ────────────────────────────────────────────── */
+/* selectNode(id, fromGraph)
+   fromGraph=true means user clicked a canvas node → always reopen right sidebar
+   fromGraph=false/undefined means user clicked inside inspector (callsite/rel)
+   In both cases we push old selection onto history first.                     */
+function selectNode(id, fromGraph){{
+  if(S.selected && S.selected!==id){{
+    S.history.push(S.selected);
+    if(S.history.length>30)S.history.shift();
+  }}
+  S.selected=id;
+  S.dirty=true;
+  // clicking anything on the graph reopens the right sidebar to its saved width
+  if(fromGraph && S.rightCollapsed){{
+    S.rightCollapsed=false;
+    sidebarRight.classList.remove('collapsed');
+    sidebarRight.style.width=S.rightW+'px';
+    document.getElementById('collapse-right').querySelector('.sidebar-collapse-icon').textContent='▶';
+    resizeCanvas();
+  }}
+  renderDetails();
+  renderResults();
+  updateBackBtn();
+}}
+
+function goBack(){{
+  if(!S.history.length)return;
+  const prev=S.history.pop();
+  S.selected=prev;
+  S.dirty=true;
+  renderDetails();
+  renderResults();
+  updateBackBtn();
+}}
+
+function updateBackBtn(){{
+  if(S.history.length){{
+    const prevId=S.history[S.history.length-1];
+    const prevNode=GRAPH.nodes.find(n=>n.id===prevId);
+    backLabel.textContent=prevNode?prevNode.label:'…';
+    backBtn.classList.add('visible');
+  }}else{{
+    backBtn.classList.remove('visible');
+  }}
+}}
+backBtn.addEventListener('click',goBack);
+
+/* ─── sidebar collapse ──────────────────────────────────────────────── */
+function setupCollapse(btnId, sidebarEl, side){{
+  const btn=document.getElementById(btnId);
+  btn.addEventListener('click',()=>{{
+    const collapsed=sidebarEl.classList.toggle('collapsed');
+    if(side==='left'){{
+      S.leftCollapsed=collapsed;
+      if(!collapsed)sidebarEl.style.width=S.leftW+'px';
+      btn.querySelector('.sidebar-collapse-icon').textContent=collapsed?'▶':'◀';
+    }}else{{
+      S.rightCollapsed=collapsed;
+      if(!collapsed)sidebarEl.style.width=S.rightW+'px';
+      btn.querySelector('.sidebar-collapse-icon').textContent=collapsed?'◀':'▶';
+    }}
+    resizeCanvas();
+    S.dirty=true;
+  }});
+}}
+setupCollapse('collapse-left',  sidebarLeft,  'left');
+setupCollapse('collapse-right', sidebarRight, 'right');
+
+/* ─── resize handles ────────────────────────────────────────────────── */
+function makeHandle(h, sidebarEl, side){{
+  let dr=false,sx=0,sw=0;
+  h.addEventListener('mousedown',e=>{{
+    if(side==='left'&&S.leftCollapsed)return;
+    if(side==='right'&&S.rightCollapsed)return;
+    dr=true;sx=e.clientX;sw=sidebarEl.offsetWidth;
+    h.classList.add('dragging');document.body.style.userSelect='none';document.body.style.cursor='col-resize';
+  }});
+  window.addEventListener('mousemove',e=>{{
+    if(!dr)return;
+    const d=side==='left'?e.clientX-sx:sx-e.clientX;
+    const nw=Math.max(160,Math.min(560,sw+d));
+    sidebarEl.style.width=nw+'px';
+    if(side==='left')S.leftW=nw; else S.rightW=nw;
+    resizeCanvas();S.dirty=true;
+  }});
+  window.addEventListener('mouseup',()=>{{
+    if(!dr)return;dr=false;
+    h.classList.remove('dragging');document.body.style.userSelect='';document.body.style.cursor='';
+  }});
+}}
+makeHandle(document.getElementById('handle-left'),  sidebarLeft,  'left');
+makeHandle(document.getElementById('handle-right'), sidebarRight, 'right');
+
+/* ─── pill / active helpers ─────────────────────────────────────────── */
 function pillClass(k){{return k==='file'?'pill-file':k==='function'?'pill-function':'pill-type';}}
 function activeClass(n){{
   if(S.selected!==n.id)return'';
   return n.kind==='file'?'active-file':n.kind==='type'?'active-type':'active';
 }}
+
+/* ─── results list ──────────────────────────────────────────────────── */
 function renderResults(){{
   const ds=filteredDataset(),vis=ds.nodes.slice(0,100),tot=ds.nodes.length;
   countEl.textContent=tot===0?'No matches':`${{tot}} node${{tot===1?'':'s'}}${{tot>100?' (showing 100)':''}}`;
@@ -1115,30 +1388,32 @@ function renderResults(){{
       <div class="item-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
       <div class="item-summary">${{escapeHtml(node.summary)}}</div>
     </button>`).join('');
-  resultsCt.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>selectNode(b.dataset.id)));
+  resultsCt.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>selectNode(b.dataset.id,false)));
 }}
+
+/* ─── detail (inspector) panel ──────────────────────────────────────── */
 function renderDetails(){{
   const id=S.selected,node=GRAPH.nodes.find(n=>n.id===id);
   if(!node){{
     detailsCt.innerHTML=`<div class="detail-placeholder">
-      <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
+      <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
       <div style="font-weight:600;color:var(--text)">Select a node</div>
       <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div></div>`;
     return;
   }}
   const ac=COLORS[node.kind]||'#aaa';
   const outE=GRAPH.edges.filter(e=>e.source===id&&e.kind==='calls');
-  const inE=GRAPH.edges.filter(e=>e.target===id&&e.kind==='calls');
+  const inE =GRAPH.edges.filter(e=>e.target===id&&e.kind==='calls');
   const relE=GRAPH.edges.filter(e=>(e.source===id||e.target===id)&&e.kind!=='calls').slice(0,12);
   const callsites=inE.flatMap(e=>(e.callsites||[]).map(s=>Object.assign({{}},s,{{callerId:e.source}}))).slice(0,80);
   detailsCt.innerHTML=`
-    <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+    <div style="padding-bottom:13px;margin-bottom:13px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
         <span style="width:10px;height:10px;border-radius:50%;background:${{ac}};flex-shrink:0;box-shadow:0 0 8px ${{ac}}"></span>
         <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
         <span style="font-size:11px;color:var(--text-muted)">${{escapeHtml(node.language)}}</span>
       </div>
-      <h2 style="font-size:16px;font-weight:700;word-break:break-all">${{escapeHtml(node.label)}}</h2>
+      <h2 style="font-size:15px;font-weight:700;word-break:break-all">${{escapeHtml(node.label)}}</h2>
       <div class="detail-path">${{escapeHtml(node.path)}}:${{node.line}}${{node.endLine&&node.endLine!==node.line?'–'+node.endLine:''}}</div>
     </div>
     ${{node.doc?`<div class="detail-section"><h3>Documentation</h3><div class="doc-box">${{escapeHtml(node.doc)}}</div></div>`:''}}
@@ -1154,39 +1429,56 @@ function renderDetails(){{
         <span style="margin-left:auto"><span class="pill pill-function">fn</span></span></li>`).join('')}}
     </ul></div>`:''}}
     ${{relE.length?`<div class="detail-section"><h3>Relationships (${{relE.length}})</h3><ul class="rel-list">
-      ${{relE.map(e=>{{const o=e.source===id?e.target:e.source;const on=GRAPH.nodes.find(n=>n.id===o);const ar=e.source===id?'→':'←';
-        return`<li class="rel-item" data-id="${{escapeHtml(o)}}"><span class="rel-label">${{escapeHtml(e.label)}}</span><span class="rel-arrow">${{ar}}</span><span style="font-size:12px">${{escapeHtml(on?.label||o)}}</span>
-        ${{on?`<span style="margin-left:auto"><span class="pill ${{pillClass(on.kind)}}">${{on.kind}}</span></span>`:''}}
+      ${{relE.map(e=>{{
+        const o=e.source===id?e.target:e.source;
+        const on=GRAPH.nodes.find(n=>n.id===o);
+        const ar=e.source===id?'→':'←';
+        return`<li class="rel-item" data-id="${{escapeHtml(o)}}">
+          <span class="rel-label">${{escapeHtml(e.label)}}</span>
+          <span class="rel-arrow">${{ar}}</span>
+          <span style="font-size:12px">${{escapeHtml(on?.label||o)}}</span>
+          ${{on?`<span style="margin-left:auto"><span class="pill ${{pillClass(on.kind)}}">${{on.kind}}</span></span>`:''}}
         </li>`;
       }}).join('')}}</ul></div>`:''}}
   `;
-  detailsCt.querySelectorAll('.callsite[data-caller]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.caller)));
-  detailsCt.querySelectorAll('.rel-item[data-id]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.id)));
+  // wire up click-navigation inside the inspector (push to history)
+  detailsCt.querySelectorAll('.callsite[data-caller]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.caller,false)));
+  detailsCt.querySelectorAll('.rel-item[data-id]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.id,false)));
   detailsCt.scrollTop=0;
 }}
+
 function labelFor(id){{return GRAPH.nodes.find(n=>n.id===id)?.label||id;}}
+
+function escapeHtml(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));}}
+
+/* ─── full re-render (filter/mode changed) ──────────────────────────── */
 function fullRender(){{
+  // honour URL preselect on first run only
   if(!S.selected&&reqSelect){{
     const req=reqSelect.toLowerCase();
     const hit=GRAPH.nodes.find(n=>n.label.toLowerCase()===req)||GRAPH.nodes.find(n=>n.id.toLowerCase().includes(req));
     if(hit)S.selected=hit.id;
   }}
-  initSim();renderResults();renderDetails();
+  S.history=[];
+  initSim();renderResults();renderDetails();updateBackBtn();
+  // immediate fit so nodes are visible even before simulation settles
+  fitAll(60);
+  // re-fit after simulation has time to settle (improves layout quality in live browser)
+  let fitFrames=0;
+  function autoFit(){{fitFrames++;if(fitFrames===80){{fitAll(60);return;}}requestAnimationFrame(autoFit);}}
+  requestAnimationFrame(autoFit);
 }}
-function makeHandle(h,s,side){{
-  let dr=false,sx=0,sw=0;
-  h.addEventListener('mousedown',e=>{{dr=true;sx=e.clientX;sw=s.offsetWidth;h.classList.add('dragging');document.body.style.userSelect='none';document.body.style.cursor='col-resize';}});
-  window.addEventListener('mousemove',e=>{{if(!dr)return;const d=side==='left'?e.clientX-sx:sx-e.clientX;s.style.width=Math.max(160,Math.min(520,sw+d))+'px';resizeCanvas();S.dirty=true;}});
-  window.addEventListener('mouseup',()=>{{if(!dr)return;dr=false;h.classList.remove('dragging');document.body.style.userSelect='';document.body.style.cursor='';}});
-}}
-makeHandle(document.getElementById('handle-left'),  document.getElementById('sidebar-left'),  'left');
-makeHandle(document.getElementById('handle-right'), document.getElementById('sidebar-right'), 'right');
-function escapeHtml(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));}}
+
+/* ─── resize observer ───────────────────────────────────────────────── */
 const ro=new ResizeObserver(()=>{{resizeCanvas();S.dirty=true;}});
 ro.observe(document.getElementById('graph-area'));
 resizeCanvas();
+
+/* ─── event wiring ──────────────────────────────────────────────────── */
 searchEl.addEventListener('input',fullRender);
-viewModeEl.addEventListener('change',()=>{{S.selected=null;fullRender();}});
+viewModeEl.addEventListener('change',()=>{{S.selected=null;S.history=[];fullRender();}});
+
+/* ─── boot ──────────────────────────────────────────────────────────── */
 fullRender();
 loop();
 </script>
