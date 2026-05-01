@@ -506,196 +506,669 @@ fn reference_edges(nodes: &[Node], files: &[ScannedFile]) -> Vec<Edge> {
 
 fn render_html(graph: &Graph) -> String {
     let graph_json = graph_to_json(graph);
-    let escaped_title = escape_html(&format!("Codebase map: {}", graph.root));
+    let escaped_title = escape_html(&format!("Codebase map · {}", graph.root));
 
     format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{escaped_title}</title>
 <style>
-:root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }}
-body {{ margin: 0; background: #0d1117; color: #e6edf3; }}
-.app {{ display: grid; grid-template-columns: 360px 1fr 340px; min-height: 100vh; }}
-aside, main {{ border-right: 1px solid #30363d; }}
-aside, .details {{ padding: 18px; overflow: auto; }}
-h1 {{ font-size: 22px; margin: 0 0 8px; }}
-.muted {{ color: #8b949e; font-size: 13px; }}
-.stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 18px 0; }}
-.stat {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 10px; }}
-.stat strong {{ display: block; font-size: 24px; }}
-input, select {{ width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid #30363d; color: #e6edf3; background: #010409; }}
-.list {{ display: grid; gap: 8px; margin-top: 12px; }}
-button.item {{ text-align: left; border: 1px solid #30363d; background: #161b22; color: #e6edf3; padding: 10px; border-radius: 10px; cursor: pointer; }}
-button.item:hover, button.item.active {{ border-color: #58a6ff; background: #0b2442; }}
-.pill {{ display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #21262d; color: #a5d6ff; }}
-main {{ position: relative; overflow: hidden; }}
-svg {{ width: 100%; height: 100vh; display: block; background: radial-gradient(circle at top left, #172033, #0d1117 42%); }}
-line {{ stroke: #41546f; stroke-width: 1.4; opacity: .55; }}
-circle {{ stroke: #e6edf3; stroke-width: 1.5; cursor: pointer; }}
-text {{ fill: #e6edf3; font-size: 12px; pointer-events: none; text-shadow: 0 1px 4px #010409; }}
-.details h2 {{ margin-top: 0; }}
-.doc {{ white-space: pre-wrap; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 12px; line-height: 1.45; }}
+/* ── reset & tokens ──────────────────────────────────────────────────── */
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+:root{{
+  --bg:#07090f;
+  --surface:#0d1117;
+  --surface2:#131920;
+  --border:rgba(255,255,255,.07);
+  --border-hi:rgba(99,179,255,.45);
+  --text:#e2e8f4;
+  --text-muted:#7a8799;
+  --accent-file:#3ddc84;
+  --accent-fn:#4da6ff;
+  --accent-type:#bf7bff;
+  --accent-file-dim:rgba(61,220,132,.18);
+  --accent-fn-dim:rgba(77,166,255,.18);
+  --accent-type-dim:rgba(191,123,255,.18);
+  --glow-file:0 0 18px 4px rgba(61,220,132,.35);
+  --glow-fn:0 0 18px 4px rgba(77,166,255,.35);
+  --glow-type:0 0 18px 4px rgba(191,123,255,.35);
+  --radius:14px;
+  --handle:5px;
+  font-family:'Inter',ui-sans-serif,system-ui,sans-serif;
+  color-scheme:dark;
+}}
+html,body{{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-size:13px;line-height:1.55}}
+
+/* ── scrollbar styling ───────────────────────────────────────────────── */
+::-webkit-scrollbar{{width:6px;height:6px}}
+::-webkit-scrollbar-track{{background:transparent}}
+::-webkit-scrollbar-thumb{{background:rgba(255,255,255,.12);border-radius:3px}}
+::-webkit-scrollbar-thumb:hover{{background:rgba(255,255,255,.22)}}
+
+/* ── layout ──────────────────────────────────────────────────────────── */
+#app{{display:flex;flex-direction:row;height:100vh;overflow:hidden}}
+#sidebar-left{{width:300px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);flex-shrink:0;overflow:hidden}}
+#sidebar-right{{width:320px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);flex-shrink:0;overflow:hidden}}
+#graph-area{{flex:1 1 0;min-width:0;position:relative;overflow:hidden;background:radial-gradient(ellipse 80% 60% at 50% 40%,#0c1628 0%,var(--bg) 100%)}}
+
+/* ── resize handles ──────────────────────────────────────────────────── */
+.handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center;position:relative}}
+.handle:hover,.handle.dragging{{background:var(--border-hi)}}
+.handle::after{{content:'';display:block;width:2px;height:32px;border-radius:2px;background:rgba(255,255,255,.18)}}
+
+/* ── sidebar inner ───────────────────────────────────────────────────── */
+.sidebar-header{{padding:18px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0}}
+.sidebar-body{{flex:1 1 0;overflow-y:auto;overflow-x:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:10px}}
+.logo{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
+.logo-icon{{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4da6ff 0%,#bf7bff 100%);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}}
+.logo-text{{font-size:15px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(90deg,#4da6ff,#bf7bff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.tagline{{color:var(--text-muted);font-size:11.5px;margin-top:2px}}
+
+/* ── stats ───────────────────────────────────────────────────────────── */
+.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}}
+.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 8px;text-align:center}}
+.stat-value{{font-size:20px;font-weight:700;line-height:1}}
+.stat-label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}}
+.stat.file .stat-value{{color:var(--accent-file)}}
+.stat.fn   .stat-value{{color:var(--accent-fn)}}
+.stat.type .stat-value{{color:var(--accent-type)}}
+
+/* ── search / filter ─────────────────────────────────────────────────── */
+.search-wrap{{position:relative}}
+.search-icon{{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.4;pointer-events:none;font-size:13px}}
+input#search{{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;transition:border-color .15s}}
+input#search:focus{{border-color:var(--border-hi)}}
+select#kind{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%237a8799' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
+
+/* ── result list ─────────────────────────────────────────────────────── */
+.results-count{{font-size:11px;color:var(--text-muted);padding:2px 0 4px}}
+.item-list{{display:flex;flex-direction:column;gap:5px}}
+button.item{{text-align:left;border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer;transition:border-color .12s,background .12s,transform .1s;width:100%}}
+button.item:hover{{border-color:rgba(99,179,255,.3);background:#0f1e30;transform:translateX(2px)}}
+button.item.active{{border-color:var(--border-hi);background:rgba(77,166,255,.1)}}
+button.item.active-file{{border-color:rgba(61,220,132,.5);background:rgba(61,220,132,.08)}}
+button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,123,255,.08)}}
+.item-top{{display:flex;align-items:center;gap:6px;margin-bottom:3px}}
+.item-name{{font-weight:600;font-size:13px}}
+.item-path{{font-size:11px;color:var(--text-muted)}}
+.item-summary{{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}}
+
+/* ── pill badges ─────────────────────────────────────────────────────── */
+.pill{{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:999px}}
+.pill-file{{background:var(--accent-file-dim);color:var(--accent-file)}}
+.pill-function{{background:var(--accent-fn-dim);color:var(--accent-fn)}}
+.pill-type{{background:var(--accent-type-dim);color:var(--accent-type)}}
+
+/* ── graph canvas ────────────────────────────────────────────────────── */
+#graph-canvas{{position:absolute;inset:0;cursor:grab}}
+#graph-canvas:active{{cursor:grabbing}}
+#tooltip{{position:fixed;pointer-events:none;background:rgba(13,17,23,.92);border:1px solid var(--border-hi);border-radius:9px;padding:8px 12px;font-size:12px;color:var(--text);white-space:nowrap;backdrop-filter:blur(8px);display:none;z-index:99;box-shadow:0 4px 24px rgba(0,0,0,.5)}}
+.graph-legend{{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(13,17,23,.75);border:1px solid var(--border);border-radius:99px;padding:6px 18px;backdrop-filter:blur(8px);pointer-events:none}}
+.legend-item{{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted)}}
+.legend-dot{{width:9px;height:9px;border-radius:50%}}
+
+/* ── detail panel ────────────────────────────────────────────────────── */
+.detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.55}}
+.detail-placeholder svg{{opacity:.3}}
+#details-body h2{{font-size:16px;font-weight:700;margin-bottom:8px}}
+.detail-meta{{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}}
+.detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}}
+.detail-section{{margin-bottom:16px}}
+.detail-section h3{{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;font-weight:600}}
+.doc-box{{white-space:pre-wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;line-height:1.55;font-family:ui-monospace,monospace;font-size:12px;color:#c9d1d9}}
+.rel-list{{list-style:none;display:flex;flex-direction:column;gap:4px}}
+.rel-item{{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px}}
+.rel-arrow{{color:var(--text-muted);flex-shrink:0}}
+.rel-label{{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}}
 </style>
 </head>
 <body>
-<div class="app">
-<aside>
-<h1>Codebase Visualizer</h1>
-<div class="muted">Search functions, data structures, files, and doc-derived summaries.</div>
-<div class="stats" id="stats"></div>
-<input id="search" placeholder="Search label, path, docs..." autofocus />
-<select id="kind">
-<option value="all">All nodes</option>
-<option value="file">Files</option>
-<option value="function">Functions</option>
-<option value="type">Data structures</option>
-</select>
-<div class="list" id="results"></div>
+<div id="app">
+
+<!-- ─── LEFT SIDEBAR ──────────────────────────────────────────────────── -->
+<aside id="sidebar-left">
+  <div class="sidebar-header">
+    <div class="logo">
+      <div class="logo-icon">⬡</div>
+      <span class="logo-text">Codebase Visualizer</span>
+    </div>
+    <div class="tagline">Explore functions, types &amp; relationships</div>
+  </div>
+  <div class="sidebar-body">
+    <div class="stats" id="stats"></div>
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input id="search" placeholder="Search by name, path, docs…" autocomplete="off" spellcheck="false"/>
+    </div>
+    <select id="kind">
+      <option value="all">All nodes</option>
+      <option value="file">Files only</option>
+      <option value="function">Functions only</option>
+      <option value="type">Data structures only</option>
+    </select>
+    <div class="results-count" id="results-count"></div>
+    <div class="item-list" id="results"></div>
+  </div>
 </aside>
-<main><svg id="graph" role="img" aria-label="Codebase relationship graph"></svg></main>
-<section class="details" id="details">
-<h2>Select a node</h2>
-<p class="muted">Click a graph node or search result to inspect its summary, documentation, path, and relationships.</p>
-</section>
+
+<div class="handle" id="handle-left" title="Drag to resize"></div>
+
+<!-- ─── GRAPH AREA ────────────────────────────────────────────────────── -->
+<div id="graph-area">
+  <canvas id="graph-canvas" aria-label="Codebase relationship graph"></canvas>
+  <div id="tooltip"></div>
+  <div class="graph-legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#3ddc84"></div>File</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#4da6ff"></div>Function</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#bf7bff"></div>Type</div>
+  </div>
 </div>
+
+<div class="handle" id="handle-right" title="Drag to resize"></div>
+
+<!-- ─── RIGHT SIDEBAR ────────────────────────────────────────────────── -->
+<aside id="sidebar-right">
+  <div class="sidebar-header" style="padding-bottom:14px">
+    <div style="font-size:13px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em">Inspector</div>
+  </div>
+  <div class="sidebar-body" id="details-body">
+    <div class="detail-placeholder">
+      <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
+      <div style="font-weight:600;color:var(--text)">Select a node</div>
+      <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div>
+    </div>
+  </div>
+</aside>
+
+</div><!-- #app -->
+<div id="tooltip"></div>
+
 <script>
-const graph = {graph_json};
-const state = {{ selected: null, visible: graph.nodes }};
-const colors = {{ file: '#7ee787', function: '#58a6ff', type: '#d2a8ff' }};
-const radii = {{ file: 10, function: 7, type: 8 }};
-const search = document.getElementById('search');
-const kind = document.getElementById('kind');
-const results = document.getElementById('results');
-const details = document.getElementById('details');
-const svg = document.getElementById('graph');
+/* ═══════════════════════════════════════════════════════════════════════
+   DATA
+═══════════════════════════════════════════════════════════════════════ */
+const GRAPH = {graph_json};
+const COLORS = {{ file:'#3ddc84', function:'#4da6ff', type:'#bf7bff' }};
+const RADII  = {{ file:11, function:8, type:9 }};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════════════════════════════ */
+const S = {{
+  selected: null,
+  visible: [],
+  sim: [],        // simulation nodes with x,y,vx,vy
+  edgesVis: [],
+  panX: 0, panY: 0,
+  zoom: 1,
+  draggingNode: null,
+  panning: false,
+  lastMx: 0, lastMy: 0,
+  hot: null,       // hovered node id
+  dirty: true,
+}};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   DOM REFS
+═══════════════════════════════════════════════════════════════════════ */
+const searchEl  = document.getElementById('search');
+const kindEl    = document.getElementById('kind');
+const resultsCt = document.getElementById('results');
+const countEl   = document.getElementById('results-count');
+const detailsCt = document.getElementById('details-body');
+const canvas    = document.getElementById('graph-canvas');
+const tip       = document.getElementById('tooltip');
+const ctx       = canvas.getContext('2d');
+
+/* ═══════════════════════════════════════════════════════════════════════
+   URL PARAMS
+═══════════════════════════════════════════════════════════════════════ */
 const params = new URLSearchParams(window.location.search);
-const requestedSelect = params.get('select');
+const reqSelect = params.get('select');
+if (params.get('q')) searchEl.value = params.get('q');
+if (['all','file','function','type'].includes(params.get('kind'))) kindEl.value = params.get('kind');
 
-if (params.get('q')) search.value = params.get('q');
-if (['all', 'file', 'function', 'type'].includes(params.get('kind'))) kind.value = params.get('kind');
-
+/* ═══════════════════════════════════════════════════════════════════════
+   STATS BAR
+═══════════════════════════════════════════════════════════════════════ */
 document.getElementById('stats').innerHTML = [
-  ['Files', graph.stats.files || 0],
-  ['Funcs', graph.stats.functions || 0],
-  ['Types', graph.stats.types || 0],
-].map(([label, value]) => `<div class="stat"><strong>${{value}}</strong><span>${{label}}</span></div>`).join('');
+  ['file','file',GRAPH.stats.files||0,'Files'],
+  ['fn','function',GRAPH.stats.functions||0,'Funcs'],
+  ['type','type',GRAPH.stats.types||0,'Types'],
+].map(([cls,_,v,l])=>`<div class="stat ${{cls}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
 
+/* ═══════════════════════════════════════════════════════════════════════
+   FILTERING
+═══════════════════════════════════════════════════════════════════════ */
 function matches(node) {{
-  const q = search.value.trim().toLowerCase();
-  const kindValue = kind.value;
-  const haystack = `${{node.label}} ${{node.path}} ${{node.doc}} ${{node.summary}} ${{node.language}}`.toLowerCase();
-  return (kindValue === 'all' || node.kind === kindValue) && (!q || haystack.includes(q));
+  const q = searchEl.value.trim().toLowerCase();
+  const k = kindEl.value;
+  if (k !== 'all' && node.kind !== k) return false;
+  if (!q) return true;
+  return (node.label+' '+node.path+' '+node.doc+' '+node.summary+' '+node.language).toLowerCase().includes(q);
 }}
 
-function layout(nodes) {{
-  const width = svg.clientWidth || 900;
-  const height = svg.clientHeight || 700;
-  const cx = width / 2;
-  const cy = height / 2;
-  const rings = {{ file: Math.min(width, height) * .18, type: Math.min(width, height) * .30, function: Math.min(width, height) * .41 }};
-  const byKind = {{ file: [], type: [], function: [] }};
-  nodes.forEach(node => byKind[node.kind].push(node));
-  for (const group of Object.values(byKind)) {{
-    group.forEach((node, index) => {{
-      const angle = (Math.PI * 2 * index / Math.max(group.length, 1)) - Math.PI / 2;
-      const radius = rings[node.kind] || rings.function;
-      node.x = cx + Math.cos(angle) * radius;
-      node.y = cy + Math.sin(angle) * radius;
-    }});
+/* ═══════════════════════════════════════════════════════════════════════
+   FORCE SIMULATION
+═══════════════════════════════════════════════════════════════════════ */
+const K_SPRING   = 0.018;
+const K_REPEL    = 7000;
+const K_DAMP     = 0.82;
+const REST_LEN   = 140;
+const CENTER_K   = 0.012;
+
+function initSim() {{
+  const W = canvas.width, H = canvas.height;
+  const cx = W/2, cy = H/2;
+  // Build node map for quick lookup
+  const byId = new Map(S.sim.map(n=>[n.id,n]));
+  S.sim = S.visible.map((node,i) => {{
+    const old = byId.get(node.id);
+    if (old) return {{ ...old, node }};
+    const angle = (Math.PI*2*i/Math.max(S.visible.length,1));
+    const r = 180 + Math.random()*120;
+    return {{ id:node.id, node, x:cx+Math.cos(angle)*r, y:cy+Math.sin(angle)*r, vx:0, vy:0 }};
+  }});
+  const visIds = new Set(S.visible.map(n=>n.id));
+  S.edgesVis = GRAPH.edges.filter(e=>visIds.has(e.source)&&visIds.has(e.target));
+  S.dirty = true;
+}}
+
+function tick() {{
+  if (S.draggingNode) return;
+  const cx = canvas.width/2 + S.panX;
+  const cy = canvas.height/2 + S.panY;
+  let moving = false;
+
+  // repulsion between all pairs
+  for (let i=0;i<S.sim.length;i++) {{
+    const a = S.sim[i];
+    for (let j=i+1;j<S.sim.length;j++) {{
+      const b = S.sim[j];
+      const dx=a.x-b.x, dy=a.y-b.y;
+      const dist2 = dx*dx+dy*dy+1;
+      const force = K_REPEL/dist2;
+      const fx=force*dx, fy=force*dy;
+      a.vx+=fx; a.vy+=fy;
+      b.vx-=fx; b.vy-=fy;
+    }}
+  }}
+
+  // spring attraction along edges
+  const posMap = new Map(S.sim.map(n=>[n.id,n]));
+  for (const e of S.edgesVis) {{
+    const a=posMap.get(e.source), b=posMap.get(e.target);
+    if (!a||!b) continue;
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const dist=Math.sqrt(dx*dx+dy*dy)+0.01;
+    const force=K_SPRING*(dist-REST_LEN);
+    const fx=force*dx/dist, fy=force*dy/dist;
+    a.vx+=fx; a.vy+=fy;
+    b.vx-=fx; b.vy-=fy;
+  }}
+
+  // center gravity
+  for (const n of S.sim) {{
+    n.vx += (cx - n.x)*CENTER_K;
+    n.vy += (cy - n.y)*CENTER_K;
+    n.vx *= K_DAMP; n.vy *= K_DAMP;
+    n.x += n.vx; n.y += n.vy;
+    if (Math.abs(n.vx)>0.05||Math.abs(n.vy)>0.05) moving=true;
+  }}
+  if (moving) S.dirty=true;
+}}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CANVAS DRAWING
+═══════════════════════════════════════════════════════════════════════ */
+function draw() {{
+  const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // background grid
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,.028)';
+  ctx.lineWidth=1;
+  const gStep=50;
+  for (let x=0;x<W;x+=gStep) {{ ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke(); }}
+  for (let y=0;y<H;y+=gStep) {{ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke(); }}
+  ctx.restore();
+
+  const posMap = new Map(S.sim.map(n=>[n.id,n]));
+
+  // draw edges
+  for (const e of S.edgesVis) {{
+    const a=posMap.get(e.source), b=posMap.get(e.target);
+    if (!a||!b) continue;
+    const isRelated = S.selected && (e.source===S.selected||e.target===S.selected);
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y);
+    ctx.lineTo(b.x,b.y);
+    if (isRelated) {{
+      ctx.strokeStyle='rgba(99,179,255,.55)';
+      ctx.lineWidth=1.8;
+    }} else {{
+      ctx.strokeStyle='rgba(255,255,255,.07)';
+      ctx.lineWidth=1;
+    }}
+    ctx.stroke();
+  }}
+
+  // draw nodes
+  for (const n of S.sim) {{
+    const r = RADII[n.node.kind]||8;
+    const col = COLORS[n.node.kind]||'#aaa';
+    const isSelected = n.id===S.selected;
+    const isHot = n.id===S.hot;
+    const isRelated = S.selected && S.edgesVis.some(e=>(e.source===S.selected&&e.target===n.id)||(e.target===S.selected&&e.source===n.id));
+
+    ctx.save();
+
+    // outer glow
+    if (isSelected||isHot) {{
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = isSelected ? 28 : 14;
+    }} else if (isRelated) {{
+      ctx.shadowColor = col;
+      ctx.shadowBlur  = 10;
+    }}
+
+    // ring for selected
+    if (isSelected) {{
+      ctx.beginPath();
+      ctx.arc(n.x,n.y,r+5,0,Math.PI*2);
+      ctx.strokeStyle=col;
+      ctx.globalAlpha=0.45;
+      ctx.lineWidth=2;
+      ctx.stroke();
+      ctx.globalAlpha=1;
+    }}
+
+    // filled circle
+    ctx.beginPath();
+    ctx.arc(n.x,n.y,r,0,Math.PI*2);
+    if (isSelected||isHot) {{
+      ctx.fillStyle=col;
+    }} else if (isRelated) {{
+      ctx.fillStyle=col;
+      ctx.globalAlpha=0.75;
+    }} else {{
+      // dim unrelated nodes when something is selected
+      ctx.globalAlpha = S.selected ? 0.35 : 1;
+      const grad=ctx.createRadialGradient(n.x-r*.25,n.y-r*.25,r*.1,n.x,n.y,r);
+      grad.addColorStop(0,col);
+      grad.addColorStop(1,col+'88');
+      ctx.fillStyle=grad;
+    }}
+    ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.shadowBlur=0;
+
+    // label
+    ctx.font=`${{(isSelected||isHot)?'600 ':'400 '}}11px Inter,sans-serif`;
+    ctx.fillStyle = (S.selected && !isSelected && !isRelated) ? 'rgba(226,232,244,.3)' : '#e2e8f4';
+    ctx.textBaseline='middle';
+    ctx.fillText(n.node.label, n.x+r+5, n.y);
+    ctx.restore();
   }}
 }}
 
-function render() {{
-  state.visible = graph.nodes.filter(matches);
-  if (state.selected && !state.visible.some(node => node.id === state.selected)) {{
-    state.selected = null;
-  }}
-  if (!state.selected && requestedSelect) {{
-    const requested = requestedSelect.toLowerCase();
-    const match = state.visible.find(node => node.label.toLowerCase() === requested)
-      || state.visible.find(node => node.id.toLowerCase().includes(requested));
-    if (match) state.selected = match.id;
-  }}
-  if (!state.selected && state.visible.length === 1) {{
-    state.selected = state.visible[0].id;
-  }}
-  const visibleIds = new Set(state.visible.map(node => node.id));
-  layout(state.visible);
-  const positions = new Map(state.visible.map(node => [node.id, node]));
-  const edges = graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+/* ═══════════════════════════════════════════════════════════════════════
+   ANIMATION LOOP
+═══════════════════════════════════════════════════════════════════════ */
+function loop() {{
+  tick();
+  if (S.dirty) {{ draw(); S.dirty=false; }}
+  requestAnimationFrame(loop);
+}}
 
-  svg.innerHTML = edges.map(edge => {{
-    const source = positions.get(edge.source);
-    const target = positions.get(edge.target);
-    return `<line x1="${{source.x}}" y1="${{source.y}}" x2="${{target.x}}" y2="${{target.y}}"></line>`;
-  }}).join('') + state.visible.map(node => `
-    <g data-id="${{node.id}}">
-      <circle cx="${{node.x}}" cy="${{node.y}}" r="${{radii[node.kind] || 7}}" fill="${{colors[node.kind]}}"></circle>
-      <text x="${{node.x + 11}}" y="${{node.y + 4}}">${{escapeHtml(node.label)}}</text>
-    </g>
-  `).join('');
+/* ═══════════════════════════════════════════════════════════════════════
+   CANVAS RESIZE
+═══════════════════════════════════════════════════════════════════════ */
+function resizeCanvas() {{
+  const area = document.getElementById('graph-area');
+  canvas.width  = area.clientWidth;
+  canvas.height = area.clientHeight;
+  S.dirty = true;
+}}
 
-  svg.querySelectorAll('g').forEach(group => group.addEventListener('click', () => selectNode(group.dataset.id)));
-  renderResults();
+/* ═══════════════════════════════════════════════════════════════════════
+   HIT TEST
+═══════════════════════════════════════════════════════════════════════ */
+function hitTest(mx,my) {{
+  for (const n of S.sim) {{
+    const r=RADII[n.node.kind]||8;
+    const dx=n.x-mx, dy=n.y-my;
+    if (dx*dx+dy*dy <= (r+4)*(r+4)) return n;
+  }}
+  return null;
+}}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   POINTER EVENTS (canvas)
+═══════════════════════════════════════════════════════════════════════ */
+canvas.addEventListener('mousedown', e=>{{
+  const n=hitTest(e.offsetX,e.offsetY);
+  if (n) {{
+    S.draggingNode=n;
+    selectNode(n.id);
+  }} else {{
+    S.panning=true;
+    S.lastMx=e.clientX; S.lastMy=e.clientY;
+  }}
+}});
+
+canvas.addEventListener('mousemove', e=>{{
+  const n=hitTest(e.offsetX,e.offsetY);
+  const newHot = n?n.id:null;
+  if (newHot!==S.hot) {{ S.hot=newHot; S.dirty=true; }}
+
+  if (S.draggingNode) {{
+    S.draggingNode.x=e.offsetX;
+    S.draggingNode.y=e.offsetY;
+    S.draggingNode.vx=0; S.draggingNode.vy=0;
+    S.dirty=true;
+  }} else if (S.panning) {{
+    const dx=e.clientX-S.lastMx, dy=e.clientY-S.lastMy;
+    for (const n of S.sim) {{ n.x+=dx; n.y+=dy; }}
+    S.lastMx=e.clientX; S.lastMy=e.clientY;
+    S.dirty=true;
+  }}
+
+  if (n) {{
+    tip.style.display='block';
+    tip.style.left=(e.clientX+14)+'px';
+    tip.style.top=(e.clientY-8)+'px';
+    tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;
+  }} else {{
+    tip.style.display='none';
+  }}
+}});
+
+window.addEventListener('mouseup', ()=>{{
+  S.draggingNode=null;
+  S.panning=false;
+}});
+
+canvas.addEventListener('wheel', e=>{{
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.91;
+  const cx=e.offsetX, cy=e.offsetY;
+  for (const n of S.sim) {{
+    n.x = cx + (n.x-cx)*factor;
+    n.y = cy + (n.y-cy)*factor;
+  }}
+  S.dirty=true;
+}}, {{passive:false}});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SELECT NODE
+═══════════════════════════════════════════════════════════════════════ */
+function selectNode(id) {{
+  S.selected = id;
+  S.dirty = true;
   renderDetails();
+  renderResults();
+}}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SIDEBAR LIST
+═══════════════════════════════════════════════════════════════════════ */
+function pillClass(kind) {{
+  return kind==='file'?'pill-file':kind==='function'?'pill-function':'pill-type';
+}}
+function activeClass(node) {{
+  if (S.selected!==node.id) return '';
+  return node.kind==='file'?'active-file':node.kind==='type'?'active-type':'active';
 }}
 
 function renderResults() {{
-  results.innerHTML = state.visible.slice(0, 80).map(node => `
-    <button class="item ${{state.selected === node.id ? 'active' : ''}}" data-id="${{node.id}}">
-      <span class="pill">${{node.kind}}</span>
-      <strong>${{escapeHtml(node.label)}}</strong>
-      <div class="muted">${{escapeHtml(node.path)}}:${{node.line}}</div>
-      <div>${{escapeHtml(node.summary)}}</div>
+  const visible = S.visible.slice(0,100);
+  const total = S.visible.length;
+  countEl.textContent = total===0?'No matches':`${{total}} node${{total===1?'':'s'}}${{total>100?' (showing 100)':''}}`;
+  resultsCt.innerHTML = visible.map(node=>`
+    <button class="item ${{activeClass(node)}}" data-id="${{node.id}}">
+      <div class="item-top">
+        <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
+        <span class="item-name">${{escapeHtml(node.label)}}</span>
+      </div>
+      <div class="item-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
+      <div class="item-summary">${{escapeHtml(node.summary)}}</div>
     </button>
   `).join('');
-  results.querySelectorAll('button').forEach(button => button.addEventListener('click', () => selectNode(button.dataset.id)));
+  resultsCt.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>selectNode(b.dataset.id)));
 }}
 
-function selectNode(id) {{
-  state.selected = id;
-  renderDetails();
-  renderResults();
-}}
-
+/* ═══════════════════════════════════════════════════════════════════════
+   DETAIL PANEL
+═══════════════════════════════════════════════════════════════════════ */
 function renderDetails() {{
-  const id = state.selected;
-  const node = graph.nodes.find(candidate => candidate.id === id);
+  const id = S.selected;
+  const node = GRAPH.nodes.find(n=>n.id===id);
   if (!node) {{
-    details.innerHTML = `
-      <h2>Select a node</h2>
-      <p class="muted">Click a graph node or search result to inspect its summary, documentation, path, and relationships.</p>
-    `;
-    details.scrollTop = 0;
+    detailsCt.innerHTML=`<div class="detail-placeholder">
+      <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
+      <div style="font-weight:600;color:var(--text)">Select a node</div>
+      <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div>
+    </div>`;
     return;
   }}
-  const related = graph.edges.filter(edge => edge.source === id || edge.target === id).slice(0, 12);
-  details.innerHTML = `
-    <h2>${{escapeHtml(node.label)}}</h2>
-    <p><span class="pill">${{node.kind}}</span> <span class="muted">${{escapeHtml(node.language)}} - ${{escapeHtml(node.path)}}:${{node.line}}</span></p>
-    <h3>Summary</h3><p>${{escapeHtml(node.summary)}}</p>
-    <h3>Documentation</h3><div class="doc">${{escapeHtml(node.doc || 'No nearby documentation comment found.')}}</div>
-    <h3>Relationships</h3>
-    <ul>${{related.map(edge => `<li>${{escapeHtml(edge.label)}}: ${{escapeHtml(labelFor(edge.source))}} -> ${{escapeHtml(labelFor(edge.target))}}</li>`).join('') || '<li>No visible relationships.</li>'}}</ul>
+  const related = GRAPH.edges.filter(e=>e.source===id||e.target===id).slice(0,15);
+  const accentColor = COLORS[node.kind]||'#aaa';
+  detailsCt.innerHTML=`
+    <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${{accentColor}};flex-shrink:0;box-shadow:0 0 8px ${{accentColor}}"></span>
+        <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
+        <span style="font-size:11px;color:var(--text-muted)">${{escapeHtml(node.language)}}</span>
+      </div>
+      <h2 style="font-size:16px;font-weight:700;word-break:break-all">${{escapeHtml(node.label)}}</h2>
+      <div class="detail-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Summary</h3>
+      <p style="font-size:13px">${{escapeHtml(node.summary)}}</p>
+    </div>
+
+    <div class="detail-section">
+      <h3>Documentation</h3>
+      <div class="doc-box">${{escapeHtml(node.doc||'No nearby documentation comment found.')}}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Relationships <span style="font-weight:400;color:var(--text-muted)">(${{related.length}})</span></h3>
+      ${{related.length===0
+        ? '<p style="font-size:12px;color:var(--text-muted)">No visible relationships.</p>'
+        : `<ul class="rel-list">${{related.map(e=>{{
+            const other = e.source===id ? e.target : e.source;
+            const otherNode = GRAPH.nodes.find(n=>n.id===other);
+            const arrow = e.source===id ? '→' : '←';
+            return `<li class="rel-item">
+              <span class="rel-label">${{escapeHtml(e.label)}}</span>
+              <span class="rel-arrow">${{arrow}}</span>
+              <span style="font-size:12px;color:var(--text)">${{escapeHtml(otherNode?.label||other)}}</span>
+              ${{otherNode ? `<span style="margin-left:auto"><span class="pill ${{pillClass(otherNode.kind)}}">${{otherNode.kind}}</span></span>` : ''}}
+            </li>`;
+          }}).join('')}}</ul>`
+      }}
+    </div>
   `;
-  details.scrollTop = 0;
+  detailsCt.scrollTop=0;
 }}
 
-function labelFor(id) {{
-  return graph.nodes.find(node => node.id === id)?.label || id;
+/* ═══════════════════════════════════════════════════════════════════════
+   FULL RENDER (filter changed)
+═══════════════════════════════════════════════════════════════════════ */
+function fullRender() {{
+  S.visible = GRAPH.nodes.filter(matches);
+  if (S.selected && !S.visible.some(n=>n.id===S.selected)) S.selected=null;
+  // auto-select from URL param on first render
+  if (!S.selected && reqSelect) {{
+    const req=reqSelect.toLowerCase();
+    const hit=S.visible.find(n=>n.label.toLowerCase()===req)||S.visible.find(n=>n.id.toLowerCase().includes(req));
+    if (hit) S.selected=hit.id;
+  }}
+  if (!S.selected && S.visible.length===1) S.selected=S.visible[0].id;
+  initSim();
+  renderResults();
+  renderDetails();
 }}
 
-function escapeHtml(value) {{
-  return String(value).replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[ch]));
+/* ═══════════════════════════════════════════════════════════════════════
+   RESIZE HANDLES (drag)
+═══════════════════════════════════════════════════════════════════════ */
+function makeHandle(handleEl, sidebarEl, side) {{
+  let dragging=false, startX=0, startW=0;
+  handleEl.addEventListener('mousedown', e=>{{
+    dragging=true;
+    startX=e.clientX;
+    startW=sidebarEl.offsetWidth;
+    handleEl.classList.add('dragging');
+    document.body.style.userSelect='none';
+    document.body.style.cursor='col-resize';
+  }});
+  window.addEventListener('mousemove', e=>{{
+    if (!dragging) return;
+    const delta = side==='left' ? e.clientX-startX : startX-e.clientX;
+    const newW = Math.max(160, Math.min(520, startW+delta));
+    sidebarEl.style.width=newW+'px';
+    resizeCanvas();
+    S.dirty=true;
+  }});
+  window.addEventListener('mouseup', ()=>{{
+    if (!dragging) return;
+    dragging=false;
+    handleEl.classList.remove('dragging');
+    document.body.style.userSelect='';
+    document.body.style.cursor='';
+  }});
+}}
+makeHandle(document.getElementById('handle-left'),  document.getElementById('sidebar-left'),  'left');
+makeHandle(document.getElementById('handle-right'), document.getElementById('sidebar-right'), 'right');
+
+/* ═══════════════════════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════════════════════ */
+function escapeHtml(v) {{
+  return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));
 }}
 
-search.addEventListener('input', render);
-kind.addEventListener('change', render);
-window.addEventListener('resize', render);
-render();
+/* ═══════════════════════════════════════════════════════════════════════
+   BOOT
+═══════════════════════════════════════════════════════════════════════ */
+const ro = new ResizeObserver(()=>{{ resizeCanvas(); S.dirty=true; }});
+ro.observe(document.getElementById('graph-area'));
+resizeCanvas();
+
+searchEl.addEventListener('input',  fullRender);
+kindEl.addEventListener('change',   fullRender);
+
+fullRender();
+loop();
 </script>
 </body>
 </html>"#
@@ -988,7 +1461,9 @@ mod tests {
 
         assert!(html.contains("Codebase Visualizer"));
         assert!(html.contains("\"label\":\"run\""));
-        assert!(html.contains("Search functions"));
+        assert!(html.contains("graph-canvas"));
+        assert!(html.contains("sidebar-left"));
+        assert!(html.contains("handle-left"));
         assert!(!html.contains("applyInitialUrlState"));
     }
 
