@@ -813,135 +813,139 @@ fn render_html(graph: &Graph, embed_libs: bool) -> String {
 <style>
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
 :root{{
-  --bg:#07090f;--surface:#0d1117;--surface2:#131920;
-  --border:rgba(255,255,255,.07);--border-hi:rgba(99,179,255,.45);
-  --text:#e2e8f4;--text-muted:#7a8799;
-  --accent-file:#3ddc84;--accent-fn:#4da6ff;--accent-type:#bf7bff;
-  --accent-file-dim:rgba(61,220,132,.18);--accent-fn-dim:rgba(77,166,255,.18);--accent-type-dim:rgba(191,123,255,.18);
-  --handle:5px;--sidebar-left-w:300px;--sidebar-right-w:340px;
-  font-family:'Inter',ui-sans-serif,system-ui,sans-serif;color-scheme:dark;
+  --bg:#f0f4f8;--surface:#ffffff;--surface2:#f7f9fc;
+  --border:rgba(0,0,0,.09);--border-hi:rgba(59,130,246,.5);
+  --text:#1e293b;--text-muted:#64748b;
+  --accent-file:#059669;--accent-fn:#2563eb;--accent-type:#7c3aed;
+  --accent-file-dim:rgba(5,150,105,.12);--accent-fn-dim:rgba(37,99,235,.12);--accent-type-dim:rgba(124,58,237,.12);
+  --shadow:0 1px 4px rgba(0,0,0,.08),0 4px 16px rgba(0,0,0,.06);
+  --handle:5px;
+  font-family:'Inter',ui-sans-serif,system-ui,sans-serif;
 }}
 html,body{{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-size:13px;line-height:1.55}}
 ::-webkit-scrollbar{{width:6px;height:6px}}
 ::-webkit-scrollbar-track{{background:transparent}}
-::-webkit-scrollbar-thumb{{background:rgba(255,255,255,.12);border-radius:3px}}
-::-webkit-scrollbar-thumb:hover{{background:rgba(255,255,255,.22)}}
+::-webkit-scrollbar-thumb{{background:rgba(0,0,0,.18);border-radius:3px}}
+::-webkit-scrollbar-thumb:hover{{background:rgba(0,0,0,.28)}}
 
 /* ── layout ─────────────────────────────────────────────────────────── */
 #app{{display:flex;flex-direction:row;height:100vh;overflow:hidden}}
 
 /* sidebar base */
-.sidebar{{display:flex;flex-direction:column;background:var(--surface);flex-shrink:0;overflow:hidden;transition:width .2s ease}}
-#sidebar-left{{width:var(--sidebar-left-w);min-width:0;border-right:1px solid var(--border)}}
-#sidebar-right{{width:var(--sidebar-right-w);min-width:0;border-left:1px solid var(--border)}}
+.sidebar{{display:flex;flex-direction:column;background:var(--surface);flex-shrink:0;overflow:hidden;transition:width .22s cubic-bezier(.4,0,.2,1);box-shadow:var(--shadow)}}
+#sidebar-left{{width:300px;min-width:0;border-right:1px solid var(--border);z-index:2}}
+#sidebar-right{{width:340px;min-width:0;border-left:1px solid var(--border);z-index:2}}
 
-/* collapsed state – icon-strip only */
-.sidebar.collapsed{{width:36px!important}}
-.sidebar.collapsed .sidebar-body,
-.sidebar.collapsed .sidebar-header .sidebar-full-content{{display:none}}
-.sidebar.collapsed .sidebar-header{{padding:10px 0;display:flex;flex-direction:column;align-items:center;gap:8px;border-bottom:none}}
-.sidebar-collapse-btn{{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:color .15s,background .15s;flex-shrink:0}}
-.sidebar-collapse-btn:hover{{color:var(--text);background:rgba(255,255,255,.07)}}
-.sidebar-collapse-icon{{font-size:16px;line-height:1;width:20px;text-align:center}}
+/* collapsed state – a slim icon-strip that is ALWAYS clickable to expand */
+.sidebar.collapsed{{width:40px!important}}
+.sidebar.collapsed .sidebar-body{{display:none}}
+.sidebar.collapsed .sidebar-full-content{{display:none!important}}
+.sidebar.collapsed .sidebar-header{{padding:8px 0;align-items:center;border-bottom:none}}
+.sidebar.collapsed .sidebar-collapse-btn{{width:40px;height:100%}}
 
 /* graph area */
-#graph-area{{flex:1 1 0;min-width:0;position:relative;overflow:hidden;background:radial-gradient(ellipse 80% 60% at 50% 40%,#0c1628 0%,var(--bg) 100%)}}
+#graph-area{{flex:1 1 0;min-width:0;position:relative;overflow:hidden;background:linear-gradient(160deg,#e8f0fe 0%,#f0f4f8 50%,#e8f4ed 100%)}}
 
 /* resize handles */
-.handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center}}
+.handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center;z-index:3}}
 .handle:hover,.handle.dragging{{background:var(--border-hi)}}
-.handle::after{{content:'';display:block;width:2px;height:32px;border-radius:2px;background:rgba(255,255,255,.18)}}
-.sidebar.collapsed + .handle, .handle + .sidebar.collapsed{{opacity:.4;pointer-events:none}}
+.handle::after{{content:'';display:block;width:2px;height:28px;border-radius:2px;background:rgba(0,0,0,.15)}}
 
 /* sidebar inner */
-.sidebar-header{{padding:14px 16px 10px;border-bottom:1px solid var(--border);flex-shrink:0}}
-.sidebar-header-row{{display:flex;align-items:center;gap:6px}}
-.sidebar-body{{flex:1 1 0;overflow-y:auto;overflow-x:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:10px}}
-.logo{{display:flex;align-items:center;gap:8px;margin-bottom:5px}}
-.logo-icon{{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#4da6ff 0%,#bf7bff 100%);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}}
-.logo-text{{font-size:14px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(90deg,#4da6ff,#bf7bff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.sidebar-header{{padding:14px 14px 10px;border-bottom:1px solid var(--border);flex-shrink:0;display:flex;flex-direction:column;gap:0}}
+.sidebar-header-row{{display:flex;align-items:center;gap:7px}}
+.sidebar-body{{flex:1 1 0;overflow-y:auto;overflow-x:hidden;padding:14px;display:flex;flex-direction:column;gap:10px}}
+.logo{{display:flex;align-items:center;gap:8px;margin-bottom:4px}}
+.logo-icon{{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#2563eb 0%,#7c3aed 100%);display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;flex-shrink:0}}
+.logo-text{{font-size:14px;font-weight:700;letter-spacing:-.3px;color:var(--text)}}
 .tagline{{color:var(--text-muted);font-size:11px;margin-top:1px}}
+.sidebar-collapse-btn{{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:5px;border-radius:7px;display:flex;align-items:center;justify-content:center;transition:color .15s,background .15s;flex-shrink:0;font-size:15px;line-height:1}}
+.sidebar-collapse-btn:hover{{color:var(--text);background:rgba(0,0,0,.06)}}
 
 /* stats */
 .stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}}
-.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:7px 4px;text-align:center}}
+.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:8px 4px;text-align:center}}
 .stat-value{{font-size:16px;font-weight:700;line-height:1}}
 .stat-label{{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}}
 .stat.file .stat-value{{color:var(--accent-file)}}
 .stat.fn .stat-value{{color:var(--accent-fn)}}
 .stat.type .stat-value{{color:var(--accent-type)}}
-.stat.calls .stat-value{{color:#fb923c}}
+.stat.calls .stat-value{{color:#ea580c}}
 
 /* search / filter */
 .search-wrap{{position:relative}}
 .search-icon{{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.4;pointer-events:none;font-size:13px}}
-input#search{{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;transition:border-color .15s}}
-input#search:focus{{border-color:var(--border-hi)}}
-select{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%237a8799' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
+input#search{{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}}
+input#search:focus{{border-color:var(--border-hi);box-shadow:0 0 0 3px rgba(37,99,235,.12)}}
+select{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2364748b' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
 
 /* result list */
 .results-count{{font-size:11px;color:var(--text-muted);padding:2px 0 4px}}
 .item-list{{display:flex;flex-direction:column;gap:5px}}
-button.item{{text-align:left;border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer;transition:border-color .12s,background .12s,transform .1s;width:100%}}
-button.item:hover{{border-color:rgba(99,179,255,.3);background:#0f1e30;transform:translateX(2px)}}
-button.item.active{{border-color:var(--border-hi);background:rgba(77,166,255,.1)}}
-button.item.active-file{{border-color:rgba(61,220,132,.5);background:rgba(61,220,132,.08)}}
-button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,123,255,.08)}}
-.item-top{{display:flex;align-items:center;gap:6px;margin-bottom:3px}}
-.item-name{{font-weight:600;font-size:13px}}
-.item-path{{font-size:11px;color:var(--text-muted)}}
+button.item{{text-align:left;border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer;transition:border-color .12s,background .12s,box-shadow .12s;width:100%;min-width:0}}
+button.item:hover{{border-color:rgba(37,99,235,.35);background:#eff6ff;box-shadow:0 2px 8px rgba(37,99,235,.08)}}
+button.item.active{{border-color:var(--border-hi);background:#eff6ff;box-shadow:0 2px 8px rgba(37,99,235,.12)}}
+button.item.active-file{{border-color:rgba(5,150,105,.4);background:#ecfdf5}}
+button.item.active-type{{border-color:rgba(124,58,237,.4);background:#f5f3ff}}
+.item-top{{display:flex;align-items:center;gap:6px;margin-bottom:3px;min-width:0}}
+/* FIX: clamp name so it never overflows */
+.item-name{{font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}}
+.item-path{{font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .item-summary{{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}}
 
 /* pill badges */
-.pill{{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:999px}}
+.pill{{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:999px;flex-shrink:0}}
 .pill-file{{background:var(--accent-file-dim);color:var(--accent-file)}}
 .pill-function{{background:var(--accent-fn-dim);color:var(--accent-fn)}}
 .pill-type{{background:var(--accent-type-dim);color:var(--accent-type)}}
 
 /* graph canvas */
-#graph-canvas{{position:absolute;inset:0;cursor:grab}}
-#graph-canvas:active{{cursor:grabbing}}
+#graph-canvas{{position:absolute;inset:0;touch-action:none}}
 
-/* graph toolbar (top-right of graph area) */
-#graph-toolbar{{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:5px;z-index:10}}
-.tb-group{{display:flex;flex-direction:column;background:rgba(13,17,23,.82);border:1px solid var(--border);border-radius:10px;overflow:hidden;backdrop-filter:blur(8px)}}
-.tb-btn{{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:7px 10px;font-size:14px;line-height:1;transition:color .12s,background .12s;display:flex;align-items:center;justify-content:center;min-width:34px}}
-.tb-btn:hover{{color:var(--text);background:rgba(255,255,255,.07)}}
+/* floating toolbar */
+#graph-toolbar{{position:absolute;top:14px;right:14px;display:flex;flex-direction:column;gap:6px;z-index:10;user-select:none}}
+.tb-group{{display:flex;flex-direction:column;background:rgba(255,255,255,.92);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}}
+.tb-btn{{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:8px 12px;font-size:15px;line-height:1;transition:color .12s,background .12s;display:flex;align-items:center;justify-content:center;min-width:38px;gap:5px}}
+.tb-btn:hover{{color:var(--text);background:rgba(37,99,235,.07)}}
 .tb-btn + .tb-btn{{border-top:1px solid var(--border)}}
-.tb-sep{{height:1px;background:var(--border)}}
+.tb-btn span.tb-label{{font-size:10px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em}}
+#link-len-wrap{{background:rgba(255,255,255,.92);border:1px solid var(--border);border-radius:12px;padding:8px 12px;box-shadow:var(--shadow);display:flex;align-items:center;gap:8px}}
+#link-len-wrap label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;font-weight:600}}
+input[type=range]#link-len{{-webkit-appearance:none;appearance:none;width:80px;height:4px;border-radius:2px;background:#e2e8f0;outline:none;cursor:pointer}}
+input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent-fn);cursor:pointer;box-shadow:0 1px 4px rgba(37,99,235,.4)}}
 
-/* link-length slider row */
-#link-len-wrap{{background:rgba(13,17,23,.82);border:1px solid var(--border);border-radius:10px;padding:7px 10px;backdrop-filter:blur(8px);display:flex;align-items:center;gap:7px}}
-#link-len-wrap label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}}
-input[type=range]#link-len{{-webkit-appearance:none;appearance:none;width:80px;height:4px;border-radius:2px;background:var(--surface2);outline:none;cursor:pointer}}
-input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent-fn);cursor:pointer;box-shadow:0 0 6px rgba(77,166,255,.5)}}
+/* rotate hint badge */
+#rotate-hint{{position:absolute;bottom:50px;right:14px;font-size:10px;color:var(--text-muted);background:rgba(255,255,255,.82);border:1px solid var(--border);border-radius:8px;padding:4px 8px;pointer-events:none;box-shadow:var(--shadow)}}
 
-#tooltip{{position:fixed;pointer-events:none;background:rgba(13,17,23,.92);border:1px solid var(--border-hi);border-radius:9px;padding:8px 12px;font-size:12px;color:var(--text);white-space:nowrap;backdrop-filter:blur(8px);display:none;z-index:99;box-shadow:0 4px 24px rgba(0,0,0,.5)}}
-.graph-legend{{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(13,17,23,.75);border:1px solid var(--border);border-radius:99px;padding:5px 16px;backdrop-filter:blur(8px);pointer-events:none}}
+/* tooltip */
+#tooltip{{position:fixed;pointer-events:none;background:rgba(15,23,42,.88);border-radius:9px;padding:7px 12px;font-size:12px;color:#f8fafc;white-space:nowrap;display:none;z-index:99;box-shadow:0 4px 16px rgba(0,0,0,.22)}}
+
+/* legend */
+.graph-legend{{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(255,255,255,.88);border:1px solid var(--border);border-radius:99px;padding:5px 18px;box-shadow:var(--shadow);pointer-events:none}}
 .legend-item{{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted)}}
 .legend-dot{{width:9px;height:9px;border-radius:50%}}
 
-/* detail panel */
-.detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.5}}
+/* inspector */
+.detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.45}}
 .detail-section{{margin-bottom:16px}}
 .detail-section h3{{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;font-weight:600}}
-.detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}}
-.doc-box{{white-space:pre-wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;line-height:1.55;font-family:ui-monospace,monospace;font-size:12px;color:#c9d1d9}}
-.code-box{{white-space:pre;overflow:auto;background:#010409;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.45;max-height:40vh;color:#c9d1d9}}
+.detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.doc-box{{white-space:pre-wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;line-height:1.55;font-family:ui-monospace,monospace;font-size:12px;color:var(--text)}}
+.code-box{{white-space:pre;overflow:auto;background:#0f172a;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.45;max-height:40vh;color:#e2e8f0}}
 .rel-list{{list-style:none;display:flex;flex-direction:column;gap:4px}}
-.rel-item{{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px;cursor:pointer;transition:border-color .12s}}
-.rel-item:hover{{border-color:var(--border-hi)}}
+.rel-item{{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px;cursor:pointer;transition:border-color .12s,background .12s;min-width:0}}
+.rel-item:hover{{border-color:var(--border-hi);background:#eff6ff}}
+.rel-item-name{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}}
 .rel-arrow{{color:var(--text-muted);flex-shrink:0}}
-.rel-label{{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}}
-.callsite{{padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:11px;cursor:pointer;transition:border-color .12s}}
-.callsite:hover{{border-color:var(--border-hi)}}
+.rel-label{{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);flex-shrink:0}}
+.callsite{{padding:7px 10px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:11px;cursor:pointer;transition:border-color .12s,background .12s}}
+.callsite:hover{{border-color:var(--border-hi);background:#eff6ff}}
 .callsite-loc{{color:var(--text-muted);font-family:ui-monospace,monospace}}
-.callsite-snippet{{font-family:ui-monospace,monospace;color:#c9d1d9;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-
-/* back button in inspector header */
-#back-btn{{background:none;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;padding:4px 9px;border-radius:7px;font-size:11px;display:none;align-items:center;gap:4px;transition:border-color .12s,color .12s;white-space:nowrap}}
-#back-btn:hover{{border-color:var(--border-hi);color:var(--text)}}
+.callsite-snippet{{font-family:ui-monospace,monospace;color:var(--text-muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+#back-btn{{background:none;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;padding:4px 9px;border-radius:7px;font-size:11px;display:none;align-items:center;gap:4px;transition:border-color .12s,background .12s;white-space:nowrap;flex-shrink:0}}
+#back-btn:hover{{border-color:var(--border-hi);color:var(--text);background:#eff6ff}}
 #back-btn.visible{{display:flex}}
+.insp-title{{font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em}}
 </style>
 </head>
 <body>
@@ -951,9 +955,7 @@ input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:
 <aside id="sidebar-left" class="sidebar">
   <div class="sidebar-header">
     <div class="sidebar-header-row">
-      <button class="sidebar-collapse-btn" id="collapse-left" title="Collapse sidebar">
-        <span class="sidebar-collapse-icon">◀</span>
-      </button>
+      <button class="sidebar-collapse-btn" id="collapse-left" title="Collapse / expand">◀</button>
       <div class="sidebar-full-content" style="flex:1;min-width:0">
         <div class="logo"><div class="logo-icon">⬡</div><span class="logo-text">Codebase Visualizer</span></div>
         <div class="tagline">Call graph · types · relationships</div>
@@ -981,24 +983,25 @@ input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:
 <div id="graph-area">
   <canvas id="graph-canvas" aria-label="Codebase relationship graph"></canvas>
   <div id="tooltip"></div>
+  <div id="rotate-hint">Ctrl + drag to rotate</div>
 
-  <!-- floating toolbar -->
   <div id="graph-toolbar">
     <div class="tb-group">
-      <button class="tb-btn" id="btn-fit"    title="Fit all nodes in view">⊙</button>
-      <button class="tb-btn" id="btn-zoomin" title="Zoom in (+)">＋</button>
-      <button class="tb-btn" id="btn-zoomout"title="Zoom out (−)">－</button>
+      <button class="tb-btn" id="btn-fit"    title="Fit all in view (F)">⊙</button>
+      <button class="tb-btn" id="btn-zoomin" title="Zoom in (+ / scroll up)">＋</button>
+      <button class="tb-btn" id="btn-zoomout"title="Zoom out (− / scroll down)">－</button>
+      <button class="tb-btn" id="btn-reset"  title="Reset rotation">↺</button>
     </div>
     <div id="link-len-wrap">
       <label for="link-len">Link</label>
-      <input type="range" id="link-len" min="40" max="400" value="120" step="10"/>
+      <input type="range" id="link-len" min="20" max="300" value="50" step="5"/>
     </div>
   </div>
 
   <div class="graph-legend">
-    <div class="legend-item"><div class="legend-dot" style="background:#3ddc84"></div>File</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#4da6ff"></div>Function</div>
-    <div class="legend-item"><div class="legend-dot" style="background:#bf7bff"></div>Type</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>File</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#2563eb"></div>Function</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#7c3aed"></div>Type</div>
   </div>
 </div>
 
@@ -1008,52 +1011,66 @@ input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:
 <aside id="sidebar-right" class="sidebar">
   <div class="sidebar-header">
     <div class="sidebar-header-row" style="justify-content:space-between">
-      <button class="sidebar-collapse-btn" id="collapse-right" title="Collapse inspector">
-        <span class="sidebar-collapse-icon">▶</span>
-      </button>
+      <button class="sidebar-collapse-btn" id="collapse-right" title="Collapse / expand">▶</button>
       <div class="sidebar-full-content" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;justify-content:space-between">
-        <span style="font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em">Inspector</span>
+        <span class="insp-title">Inspector</span>
         <button id="back-btn" title="Go back">← <span id="back-label"></span></button>
       </div>
     </div>
   </div>
   <div class="sidebar-body" id="details-body">
     <div class="detail-placeholder">
-      <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
-      <div style="font-weight:600;color:var(--text)">Select a node</div>
+      <svg width="44" height="44" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><circle cx="24" cy="24" r="20"/><circle cx="24" cy="24" r="7"/><line x1="24" y1="4" x2="24" y2="17"/><line x1="24" y1="31" x2="24" y2="44"/><line x1="4" y1="24" x2="17" y2="24"/><line x1="31" y1="24" x2="44" y2="24"/></svg>
+      <div style="font-weight:600">Select a node</div>
       <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div>
     </div>
   </div>
 </aside>
 
 </div><!-- #app -->
-<div id="tooltip"></div>
 
 <script>
-/* ─── data ──────────────────────────────────────────────────────────── */
+/* ═══ DATA ══════════════════════════════════════════════════════════════ */
 const GRAPH  = {graph_json};
-const COLORS = {{ file:'#3ddc84', function:'#4da6ff', type:'#bf7bff' }};
-const RADII  = {{ file:11, function:8, type:9 }};
+const COLORS = {{ file:'#059669', function:'#2563eb', type:'#7c3aed' }};
+const RADII  = {{ file:12, function:9, type:10 }};
 
-/* ─── mutable state ─────────────────────────────────────────────────── */
-let K_REST = 120;           // link rest length – driven by slider
-const K_SPRING = 0.022;
-const K_REPEL  = 8000;
-const K_DAMP   = 0.80;
-const CENTER_K = 0.015;
+/* ═══ CAMERA ════════════════════════════════════════════════════════════
+   All graph coordinates are in "world space".
+   The camera transforms them to screen space with:
+     screen = rotate(world - worldCenter, angle) * scale + screenCenter
+   This means zoom is "scale the world around its own centre",
+   pan is "shift the world centre", rotate is "spin the world".        */
+const CAM = {{ tx:0, ty:0, scale:1, angle:0 }};
+
+function worldToScreen(wx, wy){{
+  const cosA=Math.cos(CAM.angle),sinA=Math.sin(CAM.angle);
+  const rx=wx*cosA - wy*sinA;
+  const ry=wx*sinA + wy*cosA;
+  return {{x: rx*CAM.scale + canvas.width/2  + CAM.tx,
+           y: ry*CAM.scale + canvas.height/2 + CAM.ty}};
+}}
+function screenToWorld(sx, sy){{
+  const dx=(sx - canvas.width/2  - CAM.tx)/CAM.scale;
+  const dy=(sy - canvas.height/2 - CAM.ty)/CAM.scale;
+  const cosA=Math.cos(-CAM.angle),sinA=Math.sin(-CAM.angle);
+  return {{x: dx*cosA - dy*sinA, y: dx*sinA + dy*cosA}};
+}}
+
+/* ═══ STATE ══════════════════════════════════════════════════════════════ */
+let K_REST  = 50;
+const K_SPRING = 0.025, K_REPEL = 5000, K_DAMP = 0.78, CENTER_K = 0.02;
 
 const S = {{
-  selected: null,
-  history:  [],           // navigation stack: array of node ids
-  visible: [], sim: [], edgesVis: [],
-  draggingNode: null, panning: false,
-  lastMx: 0, lastMy: 0, hot: null, dirty: true,
-  // sidebar state
-  leftCollapsed: false, rightCollapsed: false,
-  leftW: 300, rightW: 340,          // saved widths for restore
+  selected:null, history:[], visible:[], sim:[], edgesVis:[],
+  draggingNode:null,
+  gesture: null,    // {{ mode:'pan'|'rotate'|'pinch', lx,ly, touches }}
+  hot:null, dirty:true,
+  leftCollapsed:false, rightCollapsed:false,
+  leftW:300, rightW:340,
 }};
 
-/* ─── dom refs ──────────────────────────────────────────────────────── */
+/* ═══ DOM ════════════════════════════════════════════════════════════════ */
 const searchEl    = document.getElementById('search');
 const viewModeEl  = document.getElementById('viewMode');
 const resultsCt   = document.getElementById('results');
@@ -1068,21 +1085,21 @@ const backBtn     = document.getElementById('back-btn');
 const backLabel   = document.getElementById('back-label');
 const linkLenInput= document.getElementById('link-len');
 
-/* ─── url params ────────────────────────────────────────────────────── */
+/* ═══ URL PARAMS ══════════════════════════════════════════════════════════ */
 const params    = new URLSearchParams(window.location.search);
 const reqSelect = params.get('select');
 if (params.get('q')) searchEl.value = params.get('q');
 if (['callgraph','types'].includes(params.get('view'))) viewModeEl.value = params.get('view');
 
-/* ─── stats bar ─────────────────────────────────────────────────────── */
-document.getElementById('stats').innerHTML = [
+/* ═══ STATS ═══════════════════════════════════════════════════════════════ */
+document.getElementById('stats').innerHTML=[
   ['file','file',GRAPH.stats.files||0,'Files'],
   ['fn','function',GRAPH.stats.functions||0,'Funcs'],
   ['type','type',GRAPH.stats.types||0,'Types'],
   ['calls','calls',GRAPH.stats.calls||0,'Calls'],
-].map(([cls,_k,v,l])=>`<div class="stat ${{cls}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
+].map(([c,_,v,l])=>`<div class="stat ${{c}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
 
-/* ─── dataset helpers ───────────────────────────────────────────────── */
+/* ═══ DATASET ════════════════════════════════════════════════════════════ */
 function buildAdj(links){{
   const out=new Map(),inc=new Map();
   for(const l of links){{
@@ -1090,7 +1107,7 @@ function buildAdj(links){{
     if(!inc.has(l.target))inc.set(l.target,new Set());
     out.get(l.source).add(l.target);inc.get(l.target).add(l.source);
   }}
-  return {{out,inc}};
+  return{{out,inc}};
 }}
 function dataset(){{
   const m=viewModeEl.value;
@@ -1111,29 +1128,29 @@ function filteredDataset(){{
     }}
   }}
   const nodes=base.nodes.filter(n=>keep.has(n.id));
-  const kset=new Set(nodes.map(n=>n.id));
-  return{{nodes,links:base.links.filter(l=>kset.has(l.source)&&kset.has(l.target))}};
+  const ks=new Set(nodes.map(n=>n.id));
+  return{{nodes,links:base.links.filter(l=>ks.has(l.source)&&ks.has(l.target))}};
 }}
 
-/* ─── force simulation ──────────────────────────────────────────────── */
+/* ═══ SIMULATION (world space) ════════════════════════════════════════════ */
 function initSim(){{
-  const W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
   const byId=new Map(S.sim.map(n=>[n.id,n]));
   const ds=filteredDataset();
   S.visible=ds.nodes; S.edgesVis=ds.links;
+  const R=Math.min(canvas.width,canvas.height)/(CAM.scale*3)+40;
   S.sim=S.visible.map((node,i)=>{{
     const old=byId.get(node.id);
     if(old)return{{...old,node}};
     const angle=Math.PI*2*i/Math.max(S.visible.length,1);
-    const r=Math.min(W,H)*0.28+Math.random()*60;
-    return{{id:node.id,node,x:cx+Math.cos(angle)*r,y:cy+Math.sin(angle)*r,vx:0,vy:0}};
+    const r=R*(0.5+Math.random()*0.5);
+    return{{id:node.id,node,x:Math.cos(angle)*r,y:Math.sin(angle)*r,vx:0,vy:0}};
   }});
   S.dirty=true;
 }}
 
 function tick(){{
   if(S.draggingNode)return;
-  const cx=canvas.width/2,cy=canvas.height/2;let moving=false;
+  let moving=false;
   for(let i=0;i<S.sim.length;i++){{
     const a=S.sim[i];
     for(let j=i+1;j<S.sim.length;j++){{
@@ -1143,86 +1160,88 @@ function tick(){{
   }}
   const pm=new Map(S.sim.map(n=>[n.id,n]));
   for(const e of S.edgesVis){{
-    const a=pm.get(e.source),b=pm.get(e.target);
-    if(!a||!b)continue;
+    const a=pm.get(e.source),b=pm.get(e.target);if(!a||!b)continue;
     const dx=b.x-a.x,dy=b.y-a.y,dist=Math.sqrt(dx*dx+dy*dy)+.01,f=K_SPRING*(dist-K_REST);
-    const fx=f*dx/dist,fy=f*dy/dist;
-    a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+    a.vx+=f*dx/dist;a.vy+=f*dy/dist;b.vx-=f*dx/dist;b.vy-=f*dy/dist;
   }}
   for(const n of S.sim){{
-    n.vx+=(cx-n.x)*CENTER_K;n.vy+=(cy-n.y)*CENTER_K;
+    n.vx+=-n.x*CENTER_K;n.vy+=-n.y*CENTER_K;
     n.vx*=K_DAMP;n.vy*=K_DAMP;n.x+=n.vx;n.y+=n.vy;
-    if(Math.abs(n.vx)>.05||Math.abs(n.vy)>.05)moving=true;
+    if(Math.abs(n.vx)>.04||Math.abs(n.vy)>.04)moving=true;
   }}
   if(moving)S.dirty=true;
 }}
 
-/* ─── fit-all: pan+scale so every node is visible ───────────────────── */
-function fitAll(margin){{
+/* ═══ FIT ════════════════════════════════════════════════════════════════ */
+function fitAll(){{
   if(!S.sim.length)return;
-  margin=margin||60;
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
-  for(const n of S.sim){{
-    minX=Math.min(minX,n.x);maxX=Math.max(maxX,n.x);
-    minY=Math.min(minY,n.y);maxY=Math.max(maxY,n.y);
-  }}
-  const W=canvas.width,H=canvas.height;
+  for(const n of S.sim){{minX=Math.min(minX,n.x);maxX=Math.max(maxX,n.x);minY=Math.min(minY,n.y);maxY=Math.max(maxY,n.y);}}
+  const W=canvas.width,H=canvas.height,pad=60;
   const gW=maxX-minX||1,gH=maxY-minY||1;
-  const scale=Math.min((W-margin*2)/gW,(H-margin*2)/gH,2);
-  const cx=(minX+maxX)/2,cy=(minY+maxY)/2;
-  for(const n of S.sim){{n.x=(n.x-cx)*scale+W/2;n.y=(n.y-cy)*scale+H/2;n.vx=0;n.vy=0;}}
+  CAM.scale=Math.min((W-pad*2)/gW,(H-pad*2)/gH,3);
+  CAM.tx=0;CAM.ty=0;
   S.dirty=true;
 }}
 
-/* ─── zoom around canvas centre ─────────────────────────────────────── */
-function zoomBy(factor){{
-  const cx=canvas.width/2,cy=canvas.height/2;
-  for(const n of S.sim){{n.x=cx+(n.x-cx)*factor;n.y=cy+(n.y-cy)*factor;}}
-  S.dirty=true;
-}}
-
-/* ─── drawing ───────────────────────────────────────────────────────── */
+/* ═══ DRAWING ════════════════════════════════════════════════════════════ */
 function draw(){{
   const W=canvas.width,H=canvas.height;
   ctx.clearRect(0,0,W,H);
-  // subtle grid
-  ctx.save();ctx.strokeStyle='rgba(255,255,255,.022)';ctx.lineWidth=1;
-  for(let x=0;x<W;x+=60){{ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}}
-  for(let y=0;y<H;y+=60){{ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}}
+  // faint dot grid in screen space
+  ctx.save();
+  ctx.fillStyle='rgba(148,163,184,.18)';
+  const gs=40;
+  for(let x=gs/2;x<W;x+=gs)for(let y=gs/2;y<H;y+=gs){{ctx.beginPath();ctx.arc(x,y,1.2,0,Math.PI*2);ctx.fill();}}
   ctx.restore();
+
   const pm=new Map(S.sim.map(n=>[n.id,n]));
   // edges
   for(const e of S.edgesVis){{
     const a=pm.get(e.source),b=pm.get(e.target);if(!a||!b)continue;
+    const sa=worldToScreen(a.x,a.y),sb=worldToScreen(b.x,b.y);
     const rel=S.selected&&(e.source===S.selected||e.target===S.selected);
-    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
-    ctx.strokeStyle=rel?'rgba(99,179,255,.60)':'rgba(255,255,255,.08)';
-    ctx.lineWidth=rel?2:1;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(sa.x,sa.y);ctx.lineTo(sb.x,sb.y);
+    ctx.strokeStyle=rel?'rgba(37,99,235,.55)':'rgba(100,116,139,.22)';
+    ctx.lineWidth=rel?2.2:1;ctx.stroke();
   }}
   // nodes
   for(const n of S.sim){{
-    const r=RADII[n.node.kind]||8,col=COLORS[n.node.kind]||'#aaa';
+    const r=(RADII[n.node.kind]||8)*Math.max(0.5,Math.min(CAM.scale,2));
+    const col=COLORS[n.node.kind]||'#64748b';
+    const sp=worldToScreen(n.x,n.y);
     const isSel=n.id===S.selected,isHot=n.id===S.hot;
     const isRel=S.selected&&S.edgesVis.some(e=>(e.source===S.selected&&e.target===n.id)||(e.target===S.selected&&e.source===n.id));
     ctx.save();
-    if(isSel||isHot){{ctx.shadowColor=col;ctx.shadowBlur=isSel?30:16;}}
-    else if(isRel){{ctx.shadowColor=col;ctx.shadowBlur=12;}}
+    // shadow
+    if(isSel||isHot){{ctx.shadowColor=col;ctx.shadowBlur=isSel?24:12;}}
+    else if(isRel){{ctx.shadowColor=col;ctx.shadowBlur=10;}}
+    // selection ring
     if(isSel){{
-      ctx.beginPath();ctx.arc(n.x,n.y,r+6,0,Math.PI*2);
-      ctx.strokeStyle=col;ctx.globalAlpha=.4;ctx.lineWidth=2.5;ctx.stroke();ctx.globalAlpha=1;
+      ctx.beginPath();ctx.arc(sp.x,sp.y,r+7,0,Math.PI*2);
+      ctx.strokeStyle=col;ctx.globalAlpha=.3;ctx.lineWidth=3;ctx.stroke();ctx.globalAlpha=1;
     }}
-    ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);
-    if(isSel||isHot){{ctx.fillStyle=col;}}
-    else if(isRel){{ctx.fillStyle=col;ctx.globalAlpha=.78;}}
-    else{{
-      ctx.globalAlpha=S.selected?.32:1;
-      const g=ctx.createRadialGradient(n.x-r*.28,n.y-r*.28,r*.12,n.x,n.y,r);
-      g.addColorStop(0,col);g.addColorStop(1,col+'88');ctx.fillStyle=g;
+    // circle fill
+    ctx.beginPath();ctx.arc(sp.x,sp.y,r,0,Math.PI*2);
+    if(isSel||isHot){{
+      ctx.fillStyle=col;
+    }}else if(isRel){{
+      ctx.fillStyle=col;ctx.globalAlpha=.75;
+    }}else{{
+      ctx.globalAlpha=S.selected?.28:1;
+      // white core + color edge
+      const g=ctx.createRadialGradient(sp.x-r*.3,sp.y-r*.3,r*.1,sp.x,sp.y,r);
+      g.addColorStop(0,col+'cc');g.addColorStop(1,col);
+      ctx.fillStyle=g;
     }}
     ctx.fill();ctx.globalAlpha=1;ctx.shadowBlur=0;
-    ctx.font=`${{(isSel||isHot)?'600 ':'400 '}}11px Inter,sans-serif`;
-    ctx.fillStyle=(S.selected&&!isSel&&!isRel)?'rgba(226,232,244,.28)':'#e2e8f4';
-    ctx.textBaseline='middle';ctx.fillText(n.node.label,n.x+r+5,n.y);
+    // label (skip tiny nodes)
+    if(r>3){{
+      const fs=Math.max(9,Math.min(13,r*1.1));
+      ctx.font=`${{(isSel||isHot)?'600 ':'400 '}}${{fs}}px Inter,sans-serif`;
+      ctx.fillStyle=(S.selected&&!isSel&&!isRel)?'rgba(100,116,139,.4)':'#1e293b';
+      ctx.textBaseline='middle';ctx.fillText(n.node.label,sp.x+r+4,sp.y);
+    }}
     ctx.restore();
   }}
 }}
@@ -1234,253 +1253,282 @@ function resizeCanvas(){{
   canvas.width=a.clientWidth;canvas.height=a.clientHeight;S.dirty=true;
 }}
 
-/* ─── hit test ──────────────────────────────────────────────────────── */
-function hitTest(mx,my){{
-  for(const n of S.sim){{const r=RADII[n.node.kind]||8,dx=n.x-mx,dy=n.y-my;if(dx*dx+dy*dy<=(r+5)*(r+5))return n;}}
-  return null;
+/* ═══ HIT TEST (screen→world→check) ══════════════════════════════════════ */
+function hitTest(sx,sy){{
+  const w=screenToWorld(sx,sy);
+  let best=null,bestD=Infinity;
+  for(const n of S.sim){{
+    const dx=n.x-w.x,dy=n.y-w.y,d=dx*dx+dy*dy;
+    const rW=(RADII[n.node.kind]||8)+5/CAM.scale;
+    if(d<=rW*rW&&d<bestD){{best=n;bestD=d;}}
+  }}
+  return best;
 }}
 
-/* ─── pointer events ────────────────────────────────────────────────── */
+/* ═══ POINTER EVENTS ══════════════════════════════════════════════════════ */
+/* Mouse */
 canvas.addEventListener('mousedown',e=>{{
   const n=hitTest(e.offsetX,e.offsetY);
   if(n){{S.draggingNode=n;selectNode(n.id,true);}}
-  else{{S.panning=true;S.lastMx=e.clientX;S.lastMy=e.clientY;}}
+  else{{
+    const mode=e.ctrlKey||e.metaKey?'rotate':'pan';
+    S.gesture={{mode,lx:e.clientX,ly:e.clientY}};
+    canvas.style.cursor=mode==='rotate'?'crosshair':'grabbing';
+  }}
 }});
 canvas.addEventListener('mousemove',e=>{{
   const n=hitTest(e.offsetX,e.offsetY);
-  const newHot=n?n.id:null;
-  if(newHot!==S.hot){{S.hot=newHot;S.dirty=true;}}
+  if(n!==null?n.id:null !==S.hot){{S.hot=n?n.id:null;S.dirty=true;}}
   if(S.draggingNode){{
-    S.draggingNode.x=e.offsetX;S.draggingNode.y=e.offsetY;
+    const w=screenToWorld(e.offsetX,e.offsetY);
+    S.draggingNode.x=w.x;S.draggingNode.y=w.y;
     S.draggingNode.vx=0;S.draggingNode.vy=0;S.dirty=true;
-  }}else if(S.panning){{
-    const dx=e.clientX-S.lastMx,dy=e.clientY-S.lastMy;
-    for(const nd of S.sim){{nd.x+=dx;nd.y+=dy;}}
-    S.lastMx=e.clientX;S.lastMy=e.clientY;S.dirty=true;
+  }}else if(S.gesture){{
+    const dx=e.clientX-S.gesture.lx,dy=e.clientY-S.gesture.ly;
+    if(S.gesture.mode==='pan'){{CAM.tx+=dx;CAM.ty+=dy;}}
+    else{{CAM.angle+=dx*0.008;}}
+    S.gesture.lx=e.clientX;S.gesture.ly=e.clientY;S.dirty=true;
   }}
+  // tooltip
   if(n){{
     tip.style.display='block';
     tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-8)+'px';
     tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;
+    canvas.style.cursor='pointer';
+  }}else if(!S.gesture){{
+    tip.style.display='none';
+    canvas.style.cursor=e.ctrlKey||e.metaKey?'crosshair':'grab';
   }}else{{tip.style.display='none';}}
 }});
-window.addEventListener('mouseup',()=>{{S.draggingNode=null;S.panning=false;}});
+window.addEventListener('mouseup',()=>{{
+  S.draggingNode=null;S.gesture=null;
+  canvas.style.cursor='grab';
+}});
+// key modifier: update cursor live
+window.addEventListener('keydown',e=>{{if(e.ctrlKey||e.metaKey)canvas.style.cursor='crosshair';}});
+window.addEventListener('keyup',  e=>{{if(!e.ctrlKey&&!e.metaKey)canvas.style.cursor='grab';}});
+
+/* Scroll wheel zoom (around cursor) */
 canvas.addEventListener('wheel',e=>{{
   e.preventDefault();
-  const f=e.deltaY<0?1.12:.90,cx=e.offsetX,cy=e.offsetY;
-  for(const n of S.sim){{n.x=cx+(n.x-cx)*f;n.y=cy+(n.y-cy)*f;}}
+  const f=e.deltaY<0?1.12:.90;
+  const wx=e.offsetX,wy=e.offsetY;
+  // zoom toward cursor: adjust tx,ty so the world-point under the cursor stays fixed
+  CAM.tx=(CAM.tx-wx)*f+wx;
+  CAM.ty=(CAM.ty-wy)*f+wy;
+  CAM.scale*=f;
   S.dirty=true;
 }},{{passive:false}});
 
-/* toolbar buttons */
-document.getElementById('btn-fit').addEventListener('click',()=>fitAll(60));
-document.getElementById('btn-zoomin').addEventListener('click',()=>zoomBy(1.3));
-document.getElementById('btn-zoomout').addEventListener('click',()=>zoomBy(0.77));
+/* Touch pinch / pan / rotate */
+canvas.addEventListener('touchstart',e=>{{
+  e.preventDefault();
+  if(e.touches.length===1){{
+    const t=e.touches[0];
+    S.gesture={{mode:'pan',lx:t.clientX,ly:t.clientY}};
+  }}else if(e.touches.length===2){{
+    S.gesture={{
+      mode:'pinch',
+      lx:(e.touches[0].clientX+e.touches[1].clientX)/2,
+      ly:(e.touches[0].clientY+e.touches[1].clientY)/2,
+      dist:Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                      e.touches[0].clientY-e.touches[1].clientY),
+      angle:Math.atan2(e.touches[1].clientY-e.touches[0].clientY,
+                       e.touches[1].clientX-e.touches[0].clientX),
+    }};
+  }}
+}},{{passive:false}});
+canvas.addEventListener('touchmove',e=>{{
+  e.preventDefault();
+  if(!S.gesture)return;
+  if(e.touches.length===1&&S.gesture.mode==='pan'){{
+    const t=e.touches[0];
+    CAM.tx+=t.clientX-S.gesture.lx;CAM.ty+=t.clientY-S.gesture.ly;
+    S.gesture.lx=t.clientX;S.gesture.ly=t.clientY;S.dirty=true;
+  }}else if(e.touches.length===2&&S.gesture.mode==='pinch'){{
+    const mx=(e.touches[0].clientX+e.touches[1].clientX)/2;
+    const my=(e.touches[0].clientY+e.touches[1].clientY)/2;
+    const dist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                          e.touches[0].clientY-e.touches[1].clientY);
+    const ang=Math.atan2(e.touches[1].clientY-e.touches[0].clientY,
+                         e.touches[1].clientX-e.touches[0].clientX);
+    const f=dist/S.gesture.dist;
+    CAM.tx=(CAM.tx-mx)*f+mx;CAM.ty=(CAM.ty-my)*f+my;
+    CAM.scale*=f;
+    CAM.angle+=ang-S.gesture.angle;
+    S.gesture.dist=dist;S.gesture.angle=ang;S.gesture.lx=mx;S.gesture.ly=my;
+    S.dirty=true;
+  }}
+}},{{passive:false}});
+canvas.addEventListener('touchend',e=>{{if(e.touches.length===0)S.gesture=null;}},{{passive:false}});
+
+/* keyboard shortcuts */
+window.addEventListener('keydown',e=>{{
+  if(e.target!==document.body&&e.target!==canvas)return;
+  if(e.key==='f'||e.key==='F')fitAll();
+  if(e.key==='+'||e.key==='='){{CAM.scale*=1.2;S.dirty=true;}}
+  if(e.key==='-'){{CAM.scale*=0.83;S.dirty=true;}}
+  if(e.key==='r'||e.key==='R'){{CAM.angle=0;S.dirty=true;}}
+}});
+
+/* ═══ TOOLBAR BUTTONS ════════════════════════════════════════════════════ */
+document.getElementById('btn-fit').addEventListener('click',fitAll);
+document.getElementById('btn-zoomin').addEventListener('click',()=>{{CAM.scale*=1.3;S.dirty=true;}});
+document.getElementById('btn-zoomout').addEventListener('click',()=>{{CAM.scale*=0.77;S.dirty=true;}});
+document.getElementById('btn-reset').addEventListener('click',()=>{{CAM.angle=0;S.dirty=true;}});
 linkLenInput.addEventListener('input',()=>{{K_REST=+linkLenInput.value;S.dirty=true;}});
 
-/* ─── navigation history ────────────────────────────────────────────── */
-/* selectNode(id, fromGraph)
-   fromGraph=true means user clicked a canvas node → always reopen right sidebar
-   fromGraph=false/undefined means user clicked inside inspector (callsite/rel)
-   In both cases we push old selection onto history first.                     */
+/* ═══ NAVIGATION HISTORY ══════════════════════════════════════════════════ */
 function selectNode(id, fromGraph){{
-  if(S.selected && S.selected!==id){{
-    S.history.push(S.selected);
-    if(S.history.length>30)S.history.shift();
-  }}
-  S.selected=id;
-  S.dirty=true;
-  // clicking anything on the graph reopens the right sidebar to its saved width
-  if(fromGraph && S.rightCollapsed){{
-    S.rightCollapsed=false;
-    sidebarRight.classList.remove('collapsed');
+  if(S.selected&&S.selected!==id){{S.history.push(S.selected);if(S.history.length>30)S.history.shift();}}
+  S.selected=id;S.dirty=true;
+  if(fromGraph&&S.rightCollapsed){{
+    S.rightCollapsed=false;sidebarRight.classList.remove('collapsed');
     sidebarRight.style.width=S.rightW+'px';
-    document.getElementById('collapse-right').querySelector('.sidebar-collapse-icon').textContent='▶';
+    document.getElementById('collapse-right').textContent='▶';
     resizeCanvas();
   }}
-  renderDetails();
-  renderResults();
-  updateBackBtn();
+  renderDetails();renderResults();updateBackBtn();
 }}
-
 function goBack(){{
   if(!S.history.length)return;
-  const prev=S.history.pop();
-  S.selected=prev;
-  S.dirty=true;
-  renderDetails();
-  renderResults();
-  updateBackBtn();
+  S.selected=S.history.pop();S.dirty=true;
+  renderDetails();renderResults();updateBackBtn();
 }}
-
 function updateBackBtn(){{
   if(S.history.length){{
-    const prevId=S.history[S.history.length-1];
-    const prevNode=GRAPH.nodes.find(n=>n.id===prevId);
-    backLabel.textContent=prevNode?prevNode.label:'…';
-    backBtn.classList.add('visible');
-  }}else{{
-    backBtn.classList.remove('visible');
-  }}
+    const n=GRAPH.nodes.find(n=>n.id===S.history[S.history.length-1]);
+    backLabel.textContent=n?n.label:'…';backBtn.classList.add('visible');
+  }}else backBtn.classList.remove('visible');
 }}
 backBtn.addEventListener('click',goBack);
 
-/* ─── sidebar collapse ──────────────────────────────────────────────── */
+/* ═══ SIDEBAR COLLAPSE ════════════════════════════════════════════════════ */
 function setupCollapse(btnId, sidebarEl, side){{
   const btn=document.getElementById(btnId);
   btn.addEventListener('click',()=>{{
-    const collapsed=sidebarEl.classList.toggle('collapsed');
-    if(side==='left'){{
-      S.leftCollapsed=collapsed;
-      if(!collapsed)sidebarEl.style.width=S.leftW+'px';
-      btn.querySelector('.sidebar-collapse-icon').textContent=collapsed?'▶':'◀';
-    }}else{{
-      S.rightCollapsed=collapsed;
-      if(!collapsed)sidebarEl.style.width=S.rightW+'px';
-      btn.querySelector('.sidebar-collapse-icon').textContent=collapsed?'◀':'▶';
-    }}
-    resizeCanvas();
-    S.dirty=true;
-  }});
-}}
-setupCollapse('collapse-left',  sidebarLeft,  'left');
-setupCollapse('collapse-right', sidebarRight, 'right');
-
-/* ─── resize handles ────────────────────────────────────────────────── */
-function makeHandle(h, sidebarEl, side){{
-  let dr=false,sx=0,sw=0;
-  h.addEventListener('mousedown',e=>{{
-    if(side==='left'&&S.leftCollapsed)return;
-    if(side==='right'&&S.rightCollapsed)return;
-    dr=true;sx=e.clientX;sw=sidebarEl.offsetWidth;
-    h.classList.add('dragging');document.body.style.userSelect='none';document.body.style.cursor='col-resize';
-  }});
-  window.addEventListener('mousemove',e=>{{
-    if(!dr)return;
-    const d=side==='left'?e.clientX-sx:sx-e.clientX;
-    const nw=Math.max(160,Math.min(560,sw+d));
-    sidebarEl.style.width=nw+'px';
-    if(side==='left')S.leftW=nw; else S.rightW=nw;
+    const c=sidebarEl.classList.toggle('collapsed');
+    if(side==='left'){{S.leftCollapsed=c;if(!c)sidebarEl.style.width=S.leftW+'px';btn.textContent=c?'▶':'◀';}}
+    else{{S.rightCollapsed=c;if(!c)sidebarEl.style.width=S.rightW+'px';btn.textContent=c?'◀':'▶';}}
     resizeCanvas();S.dirty=true;
   }});
-  window.addEventListener('mouseup',()=>{{
-    if(!dr)return;dr=false;
-    h.classList.remove('dragging');document.body.style.userSelect='';document.body.style.cursor='';
-  }});
 }}
-makeHandle(document.getElementById('handle-left'),  sidebarLeft,  'left');
-makeHandle(document.getElementById('handle-right'), sidebarRight, 'right');
+setupCollapse('collapse-left', sidebarLeft,'left');
+setupCollapse('collapse-right',sidebarRight,'right');
 
-/* ─── pill / active helpers ─────────────────────────────────────────── */
+/* ═══ RESIZE HANDLES ══════════════════════════════════════════════════════ */
+function makeHandle(h,s,side){{
+  let dr=false,sx=0,sw=0;
+  h.addEventListener('mousedown',e=>{{
+    if(side==='left'&&S.leftCollapsed)return;if(side==='right'&&S.rightCollapsed)return;
+    dr=true;sx=e.clientX;sw=s.offsetWidth;h.classList.add('dragging');
+    document.body.style.userSelect='none';document.body.style.cursor='col-resize';
+  }});
+  window.addEventListener('mousemove',e=>{{
+    if(!dr)return;const d=side==='left'?e.clientX-sx:sx-e.clientX;
+    const nw=Math.max(180,Math.min(600,sw+d));s.style.width=nw+'px';
+    if(side==='left')S.leftW=nw;else S.rightW=nw;resizeCanvas();S.dirty=true;
+  }});
+  window.addEventListener('mouseup',()=>{{if(!dr)return;dr=false;h.classList.remove('dragging');document.body.style.userSelect='';document.body.style.cursor='';}});
+}}
+makeHandle(document.getElementById('handle-left'), sidebarLeft,'left');
+makeHandle(document.getElementById('handle-right'),sidebarRight,'right');
+
+/* ═══ HELPERS ════════════════════════════════════════════════════════════ */
 function pillClass(k){{return k==='file'?'pill-file':k==='function'?'pill-function':'pill-type';}}
 function activeClass(n){{
   if(S.selected!==n.id)return'';
   return n.kind==='file'?'active-file':n.kind==='type'?'active-type':'active';
 }}
+function escapeHtml(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));}}
+function labelFor(id){{return GRAPH.nodes.find(n=>n.id===id)?.label||id;}}
 
-/* ─── results list ──────────────────────────────────────────────────── */
+/* ═══ RENDER RESULTS ══════════════════════════════════════════════════════ */
 function renderResults(){{
   const ds=filteredDataset(),vis=ds.nodes.slice(0,100),tot=ds.nodes.length;
   countEl.textContent=tot===0?'No matches':`${{tot}} node${{tot===1?'':'s'}}${{tot>100?' (showing 100)':''}}`;
-  resultsCt.innerHTML=vis.map(node=>`
-    <button class="item ${{activeClass(node)}}" data-id="${{node.id}}">
-      <div class="item-top"><span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span><span class="item-name">${{escapeHtml(node.label)}}</span></div>
-      <div class="item-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
-      <div class="item-summary">${{escapeHtml(node.summary)}}</div>
+  resultsCt.innerHTML=vis.map(n=>`
+    <button class="item ${{activeClass(n)}}" data-id="${{n.id}}">
+      <div class="item-top"><span class="pill ${{pillClass(n.kind)}}">${{n.kind}}</span><span class="item-name">${{escapeHtml(n.label)}}</span></div>
+      <div class="item-path">${{escapeHtml(n.path)}}:${{n.line}}</div>
+      <div class="item-summary">${{escapeHtml(n.summary)}}</div>
     </button>`).join('');
   resultsCt.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>selectNode(b.dataset.id,false)));
 }}
 
-/* ─── detail (inspector) panel ──────────────────────────────────────── */
+/* ═══ RENDER DETAILS ══════════════════════════════════════════════════════ */
 function renderDetails(){{
   const id=S.selected,node=GRAPH.nodes.find(n=>n.id===id);
   if(!node){{
     detailsCt.innerHTML=`<div class="detail-placeholder">
-      <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
-      <div style="font-weight:600;color:var(--text)">Select a node</div>
+      <svg width="44" height="44" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2"><circle cx="24" cy="24" r="20"/><circle cx="24" cy="24" r="7"/><line x1="24" y1="4" x2="24" y2="17"/><line x1="24" y1="31" x2="24" y2="44"/><line x1="4" y1="24" x2="17" y2="24"/><line x1="31" y1="24" x2="44" y2="24"/></svg>
+      <div style="font-weight:600">Select a node</div>
       <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div></div>`;
     return;
   }}
-  const ac=COLORS[node.kind]||'#aaa';
+  const ac=COLORS[node.kind]||'#64748b';
   const outE=GRAPH.edges.filter(e=>e.source===id&&e.kind==='calls');
   const inE =GRAPH.edges.filter(e=>e.target===id&&e.kind==='calls');
   const relE=GRAPH.edges.filter(e=>(e.source===id||e.target===id)&&e.kind!=='calls').slice(0,12);
-  const callsites=inE.flatMap(e=>(e.callsites||[]).map(s=>Object.assign({{}},s,{{callerId:e.source}}))).slice(0,80);
+  const cs  =inE.flatMap(e=>(e.callsites||[]).map(s=>Object.assign({{}},s,{{callerId:e.source}}))).slice(0,80);
   detailsCt.innerHTML=`
     <div style="padding-bottom:13px;margin-bottom:13px;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
-        <span style="width:10px;height:10px;border-radius:50%;background:${{ac}};flex-shrink:0;box-shadow:0 0 8px ${{ac}}"></span>
+        <span style="width:10px;height:10px;border-radius:50%;background:${{ac}};flex-shrink:0;box-shadow:0 0 8px ${{ac}}55"></span>
         <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
         <span style="font-size:11px;color:var(--text-muted)">${{escapeHtml(node.language)}}</span>
       </div>
-      <h2 style="font-size:15px;font-weight:700;word-break:break-all">${{escapeHtml(node.label)}}</h2>
+      <h2 style="font-size:15px;font-weight:700;word-break:break-word;color:var(--text)">${{escapeHtml(node.label)}}</h2>
       <div class="detail-path">${{escapeHtml(node.path)}}:${{node.line}}${{node.endLine&&node.endLine!==node.line?'–'+node.endLine:''}}</div>
     </div>
     ${{node.doc?`<div class="detail-section"><h3>Documentation</h3><div class="doc-box">${{escapeHtml(node.doc)}}</div></div>`:''}}
     ${{node.code?`<div class="detail-section"><h3>Code</h3><pre class="code-box">${{escapeHtml(node.code)}}</pre></div>`:''}}
-    ${{callsites.length?`<div class="detail-section"><h3>Called by (${{callsites.length}})</h3><div style="display:flex;flex-direction:column;gap:4px">
-      ${{callsites.map(s=>`<div class="callsite" data-caller="${{escapeHtml(s.callerId)}}">
+    ${{cs.length?`<div class="detail-section"><h3>Called by (${{cs.length}})</h3><div style="display:flex;flex-direction:column;gap:4px">
+      ${{cs.map(s=>`<div class="callsite" data-caller="${{escapeHtml(s.callerId)}}">
         <div><strong>${{escapeHtml(labelFor(s.callerId))}}</strong> <span class="callsite-loc">${{escapeHtml(s.path)}}:${{s.line}}:${{s.col}}</span></div>
-        ${{s.snippet?`<div class="callsite-snippet">${{escapeHtml(s.snippet)}}</div>`:''}}
-      </div>`).join('')}}</div></div>`:''}}
+        ${{s.snippet?`<div class="callsite-snippet">${{escapeHtml(s.snippet)}}</div>`:''}}</div>`).join('')}}</div></div>`:''}}
     ${{outE.length?`<div class="detail-section"><h3>Calls (${{outE.length}})</h3><ul class="rel-list">
       ${{outE.slice(0,30).map(e=>`<li class="rel-item" data-id="${{escapeHtml(e.target)}}">
-        <span class="rel-arrow">→</span><span style="font-size:12px">${{escapeHtml(labelFor(e.target))}}</span>
-        <span style="margin-left:auto"><span class="pill pill-function">fn</span></span></li>`).join('')}}
-    </ul></div>`:''}}
+        <span class="rel-arrow">→</span><span class="rel-item-name">${{escapeHtml(labelFor(e.target))}}</span>
+        <span class="pill pill-function" style="flex-shrink:0">fn</span></li>`).join('')}}</ul></div>`:''}}
     ${{relE.length?`<div class="detail-section"><h3>Relationships (${{relE.length}})</h3><ul class="rel-list">
-      ${{relE.map(e=>{{
-        const o=e.source===id?e.target:e.source;
-        const on=GRAPH.nodes.find(n=>n.id===o);
-        const ar=e.source===id?'→':'←';
+      ${{relE.map(e=>{{const o=e.source===id?e.target:e.source;const on=GRAPH.nodes.find(n=>n.id===o);
         return`<li class="rel-item" data-id="${{escapeHtml(o)}}">
           <span class="rel-label">${{escapeHtml(e.label)}}</span>
-          <span class="rel-arrow">${{ar}}</span>
-          <span style="font-size:12px">${{escapeHtml(on?.label||o)}}</span>
-          ${{on?`<span style="margin-left:auto"><span class="pill ${{pillClass(on.kind)}}">${{on.kind}}</span></span>`:''}}
+          <span class="rel-arrow">${{e.source===id?'→':'←'}}</span>
+          <span class="rel-item-name">${{escapeHtml(on?.label||o)}}</span>
+          ${{on?`<span class="pill ${{pillClass(on.kind)}}" style="flex-shrink:0">${{on.kind}}</span>`:''}}
         </li>`;
       }}).join('')}}</ul></div>`:''}}
   `;
-  // wire up click-navigation inside the inspector (push to history)
   detailsCt.querySelectorAll('.callsite[data-caller]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.caller,false)));
   detailsCt.querySelectorAll('.rel-item[data-id]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.id,false)));
   detailsCt.scrollTop=0;
 }}
 
-function labelFor(id){{return GRAPH.nodes.find(n=>n.id===id)?.label||id;}}
-
-function escapeHtml(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));}}
-
-/* ─── full re-render (filter/mode changed) ──────────────────────────── */
+/* ═══ FULL RENDER ════════════════════════════════════════════════════════ */
 function fullRender(){{
-  // honour URL preselect on first run only
   if(!S.selected&&reqSelect){{
     const req=reqSelect.toLowerCase();
     const hit=GRAPH.nodes.find(n=>n.label.toLowerCase()===req)||GRAPH.nodes.find(n=>n.id.toLowerCase().includes(req));
     if(hit)S.selected=hit.id;
   }}
-  S.history=[];
+  S.history=[];CAM.tx=0;CAM.ty=0;CAM.angle=0;
   initSim();renderResults();renderDetails();updateBackBtn();
-  // immediate fit so nodes are visible even before simulation settles
-  fitAll(60);
-  // re-fit after simulation has time to settle (improves layout quality in live browser)
-  let fitFrames=0;
-  function autoFit(){{fitFrames++;if(fitFrames===80){{fitAll(60);return;}}requestAnimationFrame(autoFit);}}
-  requestAnimationFrame(autoFit);
+  // fit after first paint
+  requestAnimationFrame(()=>{{fitAll();
+    let frames=0;function refit(){{frames++;if(frames===60){{fitAll();return;}}requestAnimationFrame(refit);}}
+    requestAnimationFrame(refit);
+  }});
 }}
 
-/* ─── resize observer ───────────────────────────────────────────────── */
+/* ═══ BOOT ════════════════════════════════════════════════════════════════ */
 const ro=new ResizeObserver(()=>{{resizeCanvas();S.dirty=true;}});
 ro.observe(document.getElementById('graph-area'));
 resizeCanvas();
-
-/* ─── event wiring ──────────────────────────────────────────────────── */
 searchEl.addEventListener('input',fullRender);
 viewModeEl.addEventListener('change',()=>{{S.selected=null;S.history=[];fullRender();}});
-
-/* ─── boot ──────────────────────────────────────────────────────────── */
-fullRender();
-loop();
+fullRender();loop();
 </script>
 </body>
 </html>"#
