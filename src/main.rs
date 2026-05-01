@@ -768,16 +768,12 @@ fn summarize_file(source: &str) -> String {
 
 fn render_html(graph: &Graph, embed_libs: bool) -> String {
     let graph_json = graph_to_json(graph);
-    let escaped_title = escape_html(&format!("Codebase map: {}", graph.root));
+    let escaped_title = escape_html(&format!("Codebase map · {}", graph.root));
     let pinned_cdn = [
         "<script src=\"https://unpkg.com/3d-force-graph@1.77.0/dist/3d-force-graph.min.js\"></script>",
         "<script>if(!window.ForceGraph3D){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/3d-force-graph@1.77.0/dist/3d-force-graph.min.js';document.head.appendChild(s);}</script>",
     ]
     .join("");
-    // Always try to embed the local vendor bundle first so the HTML works offline.
-    // Fall back to CDN only when the file is absent.
-    // Always try to embed the local vendor bundle first so the HTML works offline.
-    // Wrap in try/catch so any runtime error during bundle init is captured.
     let lib_script = match fs::read_to_string("vendor/3d-force-graph.min.js") {
         Ok(js) => format!(
             "<script>try{{{js}}}catch(e){{window._vendorError=e&&e.message||String(e);}}</script>"
@@ -798,338 +794,401 @@ fn render_html(graph: &Graph, embed_libs: bool) -> String {
         r#"<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{escaped_title}</title>
 <script>window._earlyErrors=[];window.addEventListener('error',function(ev){{window._earlyErrors.push(ev.message||String(ev));}});</script>
 {lib_script}
 <style>
-:root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }}
-body {{ margin: 0; background: #0d1117; color: #e6edf3; }}
-.app {{ display: grid; grid-template-columns: 360px 1fr 420px; min-height: 100vh; }}
-aside, main {{ border-right: 1px solid #30363d; }}
-aside, .details {{ padding: 18px; overflow: auto; }}
-h1 {{ font-size: 22px; margin: 0 0 8px; }}
-.muted {{ color: #8b949e; font-size: 13px; }}
-.stats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 18px 0; }}
-.stat {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 10px; }}
-.stat strong {{ display: block; font-size: 24px; }}
-input, select {{ width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid #30363d; color: #e6edf3; background: #010409; }}
-.list {{ display: grid; gap: 8px; margin-top: 12px; }}
-button.item {{ text-align: left; border: 1px solid #30363d; background: #161b22; color: #e6edf3; padding: 10px; border-radius: 10px; cursor: pointer; }}
-button.item:hover, button.item.active {{ border-color: #58a6ff; background: #0b2442; }}
-.pill {{ display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: #21262d; color: #a5d6ff; }}
-main {{ position: relative; overflow: hidden; }}
-#graph3d {{ width: 100%; height: 100vh; background: radial-gradient(circle at top left, #172033, #0d1117 42%); }}
-.details h2 {{ margin-top: 0; }}
-.doc {{ white-space: pre-wrap; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 12px; line-height: 1.45; }}
-.code {{ white-space: pre; overflow: auto; background: #010409; border: 1px solid #30363d; border-radius: 12px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.45; max-height: 46vh; }}
-.usedBy {{ display: grid; gap: 8px; }}
-.usedByItem {{ background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 10px; cursor: pointer; }}
-.usedByItem:hover {{ border-color: #58a6ff; }}
-.errorBox {{ border: 1px solid #f85149; background: #2d0b0b; border-radius: 12px; padding: 12px; white-space: pre-wrap; }}
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+:root{{
+  --bg:#07090f;--surface:#0d1117;--surface2:#131920;
+  --border:rgba(255,255,255,.07);--border-hi:rgba(99,179,255,.45);
+  --text:#e2e8f4;--text-muted:#7a8799;
+  --accent-file:#3ddc84;--accent-fn:#4da6ff;--accent-type:#bf7bff;
+  --accent-file-dim:rgba(61,220,132,.18);--accent-fn-dim:rgba(77,166,255,.18);--accent-type-dim:rgba(191,123,255,.18);
+  --handle:5px;
+  font-family:'Inter',ui-sans-serif,system-ui,sans-serif;color-scheme:dark;
+}}
+html,body{{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-size:13px;line-height:1.55}}
+::-webkit-scrollbar{{width:6px;height:6px}}
+::-webkit-scrollbar-track{{background:transparent}}
+::-webkit-scrollbar-thumb{{background:rgba(255,255,255,.12);border-radius:3px}}
+::-webkit-scrollbar-thumb:hover{{background:rgba(255,255,255,.22)}}
+#app{{display:flex;flex-direction:row;height:100vh;overflow:hidden}}
+#sidebar-left{{width:300px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);flex-shrink:0;overflow:hidden}}
+#sidebar-right{{width:340px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);flex-shrink:0;overflow:hidden}}
+#graph-area{{flex:1 1 0;min-width:0;position:relative;overflow:hidden;background:radial-gradient(ellipse 80% 60% at 50% 40%,#0c1628 0%,var(--bg) 100%)}}
+.handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center}}
+.handle:hover,.handle.dragging{{background:var(--border-hi)}}
+.handle::after{{content:'';display:block;width:2px;height:32px;border-radius:2px;background:rgba(255,255,255,.18)}}
+.sidebar-header{{padding:18px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0}}
+.sidebar-body{{flex:1 1 0;overflow-y:auto;overflow-x:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:10px}}
+.logo{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
+.logo-icon{{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4da6ff 0%,#bf7bff 100%);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}}
+.logo-text{{font-size:15px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(90deg,#4da6ff,#bf7bff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.tagline{{color:var(--text-muted);font-size:11.5px;margin-top:2px}}
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}}
+.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 4px;text-align:center}}
+.stat-value{{font-size:17px;font-weight:700;line-height:1}}
+.stat-label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}}
+.stat.file .stat-value{{color:var(--accent-file)}}
+.stat.fn .stat-value{{color:var(--accent-fn)}}
+.stat.type .stat-value{{color:var(--accent-type)}}
+.stat.calls .stat-value{{color:#fb923c}}
+.search-wrap{{position:relative}}
+.search-icon{{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.4;pointer-events:none;font-size:13px}}
+input#search{{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;transition:border-color .15s}}
+input#search:focus{{border-color:var(--border-hi)}}
+select{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%237a8799' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
+.results-count{{font-size:11px;color:var(--text-muted);padding:2px 0 4px}}
+.item-list{{display:flex;flex-direction:column;gap:5px}}
+button.item{{text-align:left;border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer;transition:border-color .12s,background .12s,transform .1s;width:100%}}
+button.item:hover{{border-color:rgba(99,179,255,.3);background:#0f1e30;transform:translateX(2px)}}
+button.item.active{{border-color:var(--border-hi);background:rgba(77,166,255,.1)}}
+button.item.active-file{{border-color:rgba(61,220,132,.5);background:rgba(61,220,132,.08)}}
+button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,123,255,.08)}}
+.item-top{{display:flex;align-items:center;gap:6px;margin-bottom:3px}}
+.item-name{{font-weight:600;font-size:13px}}
+.item-path{{font-size:11px;color:var(--text-muted)}}
+.item-summary{{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}}
+.pill{{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:999px}}
+.pill-file{{background:var(--accent-file-dim);color:var(--accent-file)}}
+.pill-function{{background:var(--accent-fn-dim);color:var(--accent-fn)}}
+.pill-type{{background:var(--accent-type-dim);color:var(--accent-type)}}
+#graph-canvas{{position:absolute;inset:0;cursor:grab}}
+#graph-canvas:active{{cursor:grabbing}}
+#tooltip{{position:fixed;pointer-events:none;background:rgba(13,17,23,.92);border:1px solid var(--border-hi);border-radius:9px;padding:8px 12px;font-size:12px;color:var(--text);white-space:nowrap;backdrop-filter:blur(8px);display:none;z-index:99;box-shadow:0 4px 24px rgba(0,0,0,.5)}}
+.graph-legend{{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(13,17,23,.75);border:1px solid var(--border);border-radius:99px;padding:6px 18px;backdrop-filter:blur(8px);pointer-events:none}}
+.legend-item{{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted)}}
+.legend-dot{{width:9px;height:9px;border-radius:50%}}
+.detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.55}}
+.detail-section{{margin-bottom:16px}}
+.detail-section h3{{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;font-weight:600}}
+.detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}}
+.doc-box{{white-space:pre-wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;line-height:1.55;font-family:ui-monospace,monospace;font-size:12px;color:#c9d1d9}}
+.code-box{{white-space:pre;overflow:auto;background:#010409;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.45;max-height:40vh;color:#c9d1d9}}
+.rel-list{{list-style:none;display:flex;flex-direction:column;gap:4px}}
+.rel-item{{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px;cursor:pointer;transition:border-color .12s}}
+.rel-item:hover{{border-color:var(--border-hi)}}
+.rel-arrow{{color:var(--text-muted);flex-shrink:0}}
+.rel-label{{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}}
+.callsite{{padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:11px;cursor:pointer;transition:border-color .12s}}
+.callsite:hover{{border-color:var(--border-hi)}}
+.callsite-loc{{color:var(--text-muted);font-family:ui-monospace,monospace}}
+.callsite-snippet{{font-family:ui-monospace,monospace;color:#c9d1d9;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 </style>
 </head>
 <body>
-<div class="app">
-<aside>
-<h1>Codebase Visualizer</h1>
-<div class="muted">3D Rust call graph + code sidebar. Click a function to follow callers/callees and inspect code.</div>
-<div class="stats" id="stats"></div>
-<select id="viewMode">
-  <option value="callgraph">Call graph</option>
-  <option value="types">Data structures</option>
-</select>
-<input id="search" placeholder="Search label, path, docs..." autofocus />
-<div class="list" id="results"></div>
+<div id="app">
+<aside id="sidebar-left">
+  <div class="sidebar-header">
+    <div class="logo"><div class="logo-icon">⬡</div><span class="logo-text">Codebase Visualizer</span></div>
+    <div class="tagline">Call graph · types · relationships</div>
+  </div>
+  <div class="sidebar-body">
+    <div class="stats" id="stats"></div>
+    <select id="viewMode">
+      <option value="callgraph">Call graph</option>
+      <option value="types">Data structures</option>
+    </select>
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input id="search" placeholder="Search by name, path, docs…" autocomplete="off" spellcheck="false"/>
+    </div>
+    <div class="results-count" id="results-count"></div>
+    <div class="item-list" id="results"></div>
+  </div>
 </aside>
-<main><div id="graph3d" role="img" aria-label="3D codebase graph"></div></main>
-<section class="details" id="details">
-<h2>Select a node</h2>
-<p class="muted">Click a function node to see its code and where it’s used.</p>
-</section>
+<div class="handle" id="handle-left" title="Drag to resize"></div>
+<div id="graph-area">
+  <canvas id="graph-canvas" aria-label="Codebase relationship graph"></canvas>
+  <div id="tooltip"></div>
+  <div class="graph-legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#3ddc84"></div>File</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#4da6ff"></div>Function</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#bf7bff"></div>Type</div>
+  </div>
+</div>
+<div class="handle" id="handle-right" title="Drag to resize"></div>
+<aside id="sidebar-right">
+  <div class="sidebar-header" style="padding-bottom:14px">
+    <div style="font-size:13px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em">Inspector</div>
+  </div>
+  <div class="sidebar-body" id="details-body">
+    <div class="detail-placeholder">
+      <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
+      <div style="font-weight:600;color:var(--text)">Select a node</div>
+      <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div>
+    </div>
+  </div>
+</aside>
 </div>
 <script>
-const graph = {graph_json};
-const state = {{ selected: null }};
-const colors = {{ file: '#7ee787', function: '#58a6ff', type: '#d2a8ff' }};
-const search = document.getElementById('search');
-const viewMode = document.getElementById('viewMode');
-const results = document.getElementById('results');
-const details = document.getElementById('details');
-const graphEl = document.getElementById('graph3d');
-const params = new URLSearchParams(window.location.search);
-const requestedSelect = params.get('select');
-
-if (params.get('q')) search.value = params.get('q');
-if (['callgraph', 'types'].includes(params.get('view'))) viewMode.value = params.get('view');
+const GRAPH = {graph_json};
+const COLORS = {{ file:'#3ddc84', function:'#4da6ff', type:'#bf7bff' }};
+const RADII  = {{ file:11, function:8, type:9 }};
+const S = {{
+  selected:null, visible:[], sim:[], edgesVis:[],
+  draggingNode:null, panning:false, lastMx:0, lastMy:0, hot:null, dirty:true,
+}};
+const searchEl   = document.getElementById('search');
+const viewModeEl = document.getElementById('viewMode');
+const resultsCt  = document.getElementById('results');
+const countEl    = document.getElementById('results-count');
+const detailsCt  = document.getElementById('details-body');
+const canvas     = document.getElementById('graph-canvas');
+const tip        = document.getElementById('tooltip');
+const ctx        = canvas.getContext('2d');
+const params     = new URLSearchParams(window.location.search);
+const reqSelect  = params.get('select');
+if (params.get('q')) searchEl.value = params.get('q');
+if (['callgraph','types'].includes(params.get('view'))) viewModeEl.value = params.get('view');
 
 document.getElementById('stats').innerHTML = [
-  ['Files', graph.stats.files || 0],
-  ['Funcs', graph.stats.functions || 0],
-  ['Types', graph.stats.types || 0],
-  ['Calls', graph.stats.calls || 0],
-].map(([label, value]) => `<div class="stat"><strong>${{value}}</strong><span>${{label}}</span></div>`).join('');
-
-function escapeHtml(value) {{
-  return String(value).replace(/[&<>"']/g, ch => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[ch]));
-}}
-
-function labelFor(id) {{
-  return graph.nodes.find(node => node.id === id)?.label || id;
-}}
+  ['file','file',GRAPH.stats.files||0,'Files'],
+  ['fn','function',GRAPH.stats.functions||0,'Funcs'],
+  ['type','type',GRAPH.stats.types||0,'Types'],
+  ['calls','calls',GRAPH.stats.calls||0,'Calls'],
+].map(([cls,_k,v,l])=>`<div class="stat ${{cls}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
 
 function buildAdjacency(links) {{
-  const out = new Map();
-  const inc = new Map();
-  for (const link of links) {{
-    if (!out.has(link.source)) out.set(link.source, new Set());
-    if (!inc.has(link.target)) inc.set(link.target, new Set());
-    out.get(link.source).add(link.target);
-    inc.get(link.target).add(link.source);
+  const out=new Map(), inc=new Map();
+  for (const l of links) {{
+    if (!out.has(l.source)) out.set(l.source,new Set());
+    if (!inc.has(l.target)) inc.set(l.target,new Set());
+    out.get(l.source).add(l.target); inc.get(l.target).add(l.source);
   }}
-  return {{ out, inc }};
+  return {{out,inc}};
 }}
-
 function dataset() {{
-  const mode = viewMode.value;
-  if (mode === 'callgraph') {{
-    const nodes = graph.nodes.filter(n => n.kind === 'function');
-    const links = graph.edges.filter(e => e.kind === 'calls');
-    return {{ nodes, links }};
+  const mode=viewModeEl.value;
+  if (mode==='callgraph') {{
+    return {{nodes:GRAPH.nodes.filter(n=>n.kind==='function'),links:GRAPH.edges.filter(e=>e.kind==='calls')}};
   }}
-  const typeIds = new Set(graph.nodes.filter(n => n.kind === 'type').map(n => n.id));
-  const nodes = graph.nodes.filter(n => n.kind === 'file' || n.kind === 'type');
-  const links = graph.edges.filter(e => e.kind === 'contains' && typeIds.has(e.target));
-  return {{ nodes, links }};
+  const typeIds=new Set(GRAPH.nodes.filter(n=>n.kind==='type').map(n=>n.id));
+  return {{
+    nodes:GRAPH.nodes.filter(n=>n.kind==='file'||n.kind==='type'),
+    links:GRAPH.edges.filter(e=>e.kind==='contains'&&typeIds.has(e.target)),
+  }};
 }}
-
-function matchesNode(node, q) {{
-  if (!q) return true;
-  const haystack = `${{node.label}} ${{node.path}} ${{node.doc}} ${{node.summary}}`.toLowerCase();
-  return haystack.includes(q);
-}}
-
 function filteredDataset() {{
-  const q = search.value.trim().toLowerCase();
-  const base = dataset();
+  const q=searchEl.value.trim().toLowerCase();
+  const base=dataset();
   if (!q) return base;
-
-  const {{ out, inc }} = buildAdjacency(base.links);
-  const keep = new Set();
+  const {{out,inc}}=buildAdjacency(base.links);
+  const keep=new Set();
   for (const n of base.nodes) {{
-    if (matchesNode(n, q)) {{
+    if ((n.label+' '+n.path+' '+n.doc+' '+n.summary).toLowerCase().includes(q)) {{
       keep.add(n.id);
-      for (const nb of (out.get(n.id) || [])) keep.add(nb);
-      for (const nb of (inc.get(n.id) || [])) keep.add(nb);
+      for (const nb of (out.get(n.id)||[])) keep.add(nb);
+      for (const nb of (inc.get(n.id)||[])) keep.add(nb);
     }}
   }}
-  const nodes = base.nodes.filter(n => keep.has(n.id));
-  const keepIds = new Set(nodes.map(n => n.id));
-  const links = base.links.filter(l => keepIds.has(l.source) && keepIds.has(l.target));
-  return {{ nodes, links }};
+  const nodes=base.nodes.filter(n=>keep.has(n.id));
+  const keepIds=new Set(nodes.map(n=>n.id));
+  return {{nodes, links:base.links.filter(l=>keepIds.has(l.source)&&keepIds.has(l.target))}};
 }}
 
-function showInitError(message) {{
-  graphEl.innerHTML =
-    '<div class="errorBox"><strong>3D graph failed to initialize</strong>' +
-    '<br><br>' + escapeHtml(message) +
-    '<br><br>Try:<br>' +
-    '&bull; Hard-refresh (Ctrl+Shift+R)<br>' +
-    '&bull; Open DevTools Console for the full error<br>' +
-    '&bull; Re-generate with: <code>cargo run -- . --output codebase-map.html</code>' +
-    '</div>';
+const K_SPRING=0.018,K_REPEL=7000,K_DAMP=0.82,REST_LEN=140,CENTER_K=0.012;
+function initSim() {{
+  const W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
+  const byId=new Map(S.sim.map(n=>[n.id,n]));
+  const ds=filteredDataset();
+  S.visible=ds.nodes; S.edgesVis=ds.links;
+  S.sim=S.visible.map((node,i)=>{{
+    const old=byId.get(node.id);
+    if (old) return {{...old,node}};
+    const angle=Math.PI*2*i/Math.max(S.visible.length,1);
+    const r=180+Math.random()*120;
+    return {{id:node.id,node,x:cx+Math.cos(angle)*r,y:cy+Math.sin(angle)*r,vx:0,vy:0}};
+  }});
+  S.dirty=true;
 }}
-
-function idOf(value) {{
-  return (value && typeof value === 'object') ? value.id : value;
-}}
-
-// _earlyErrors was started in <head> before the vendor bundle; reuse it here.
-const _scriptErrors = window._earlyErrors || [];
-
-let fg = null;
-function initForceGraph() {{
-  // Accept either the global name or window property (handles some strict-mode edge-cases).
-  const FG3D = window.ForceGraph3D || (typeof ForceGraph3D !== 'undefined' ? ForceGraph3D : null);
-  if (typeof FG3D !== 'function') return false;
-  // Set explicit pixel dimensions so the WebGL renderer gets a non-zero canvas size.
-  const w = graphEl.clientWidth || graphEl.parentElement?.clientWidth || window.innerWidth;
-  const h = (graphEl.clientHeight || window.innerHeight);
-  graphEl.style.width = w + 'px';
-  graphEl.style.height = h + 'px';
-  try {{
-    fg = FG3D()(graphEl)
-      .backgroundColor('#0d1117')
-      .nodeId('id')
-      .nodeLabel(node => `${{node.label}}\\n${{node.path}}:${{node.line}}`)
-      .nodeRelSize(6)
-      .linkSource('source')
-      .linkTarget('target')
-      .onNodeClick(node => selectNode(node.id));
-  }} catch (err) {{
-    _scriptErrors.push('ForceGraph3D() threw: ' + err.message);
-    return false;
+function tick() {{
+  if (S.draggingNode) return;
+  const cx=canvas.width/2,cy=canvas.height/2; let moving=false;
+  for (let i=0;i<S.sim.length;i++) {{
+    const a=S.sim[i];
+    for (let j=i+1;j<S.sim.length;j++) {{
+      const b=S.sim[j],dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+1,f=K_REPEL/d2;
+      a.vx+=f*dx;a.vy+=f*dy;b.vx-=f*dx;b.vy-=f*dy;
+    }}
   }}
-  return true;
+  const pm=new Map(S.sim.map(n=>[n.id,n]));
+  for (const e of S.edgesVis) {{
+    const a=pm.get(e.source),b=pm.get(e.target);
+    if (!a||!b) continue;
+    const dx=b.x-a.x,dy=b.y-a.y,dist=Math.sqrt(dx*dx+dy*dy)+0.01,f=K_SPRING*(dist-REST_LEN);
+    const fx=f*dx/dist,fy=f*dy/dist;
+    a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+  }}
+  for (const n of S.sim) {{
+    n.vx+=(cx-n.x)*CENTER_K;n.vy+=(cy-n.y)*CENTER_K;
+    n.vx*=K_DAMP;n.vy*=K_DAMP;n.x+=n.vx;n.y+=n.vy;
+    if (Math.abs(n.vx)>0.05||Math.abs(n.vy)>0.05) moving=true;
+  }}
+  if (moving) S.dirty=true;
 }}
-
-function renderResults() {{
-  const ds = filteredDataset();
-  results.innerHTML = ds.nodes.slice(0, 120).map(node => `
-    <button class="item ${{state.selected === node.id ? 'active' : ''}}" data-id="${{escapeHtml(node.id)}}">
-      <span class="pill">${{node.kind}}</span>
-      <strong>${{escapeHtml(node.label)}}</strong>
-      <div class="muted">${{escapeHtml(node.path)}}:${{node.line}}</div>
-      <div>${{escapeHtml(node.summary)}}</div>
-    </button>
-  `).join('');
-  results.querySelectorAll('button').forEach(button => button.addEventListener('click', () => selectNode(button.dataset.id)));
+function draw() {{
+  const W=canvas.width,H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.save();ctx.strokeStyle='rgba(255,255,255,.028)';ctx.lineWidth=1;
+  for (let x=0;x<W;x+=50){{ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}}
+  for (let y=0;y<H;y+=50){{ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}}
+  ctx.restore();
+  const pm=new Map(S.sim.map(n=>[n.id,n]));
+  for (const e of S.edgesVis) {{
+    const a=pm.get(e.source),b=pm.get(e.target);
+    if (!a||!b) continue;
+    const rel=S.selected&&(e.source===S.selected||e.target===S.selected);
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=rel?'rgba(99,179,255,.55)':'rgba(255,255,255,.07)';
+    ctx.lineWidth=rel?1.8:1;ctx.stroke();
+  }}
+  for (const n of S.sim) {{
+    const r=RADII[n.node.kind]||8,col=COLORS[n.node.kind]||'#aaa';
+    const isSel=n.id===S.selected,isHot=n.id===S.hot;
+    const isRel=S.selected&&S.edgesVis.some(e=>(e.source===S.selected&&e.target===n.id)||(e.target===S.selected&&e.source===n.id));
+    ctx.save();
+    if (isSel||isHot){{ctx.shadowColor=col;ctx.shadowBlur=isSel?28:14;}}
+    else if (isRel){{ctx.shadowColor=col;ctx.shadowBlur=10;}}
+    if (isSel){{
+      ctx.beginPath();ctx.arc(n.x,n.y,r+5,0,Math.PI*2);
+      ctx.strokeStyle=col;ctx.globalAlpha=0.45;ctx.lineWidth=2;ctx.stroke();ctx.globalAlpha=1;
+    }}
+    ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);
+    if (isSel||isHot){{ctx.fillStyle=col;}}
+    else if (isRel){{ctx.fillStyle=col;ctx.globalAlpha=0.75;}}
+    else{{
+      ctx.globalAlpha=S.selected?0.35:1;
+      const g=ctx.createRadialGradient(n.x-r*.25,n.y-r*.25,r*.1,n.x,n.y,r);
+      g.addColorStop(0,col);g.addColorStop(1,col+'88');ctx.fillStyle=g;
+    }}
+    ctx.fill();ctx.globalAlpha=1;ctx.shadowBlur=0;
+    ctx.font=`${{(isSel||isHot)?'600 ':'400 '}}11px Inter,sans-serif`;
+    ctx.fillStyle=(S.selected&&!isSel&&!isRel)?'rgba(226,232,244,.3)':'#e2e8f4';
+    ctx.textBaseline='middle';ctx.fillText(n.node.label,n.x+r+5,n.y);
+    ctx.restore();
+  }}
 }}
-
-function selectNode(id) {{
-  state.selected = id;
-  renderDetails();
-  renderResults();
-  renderGraph();
+function loop(){{tick();if(S.dirty){{draw();S.dirty=false;}}requestAnimationFrame(loop);}}
+function resizeCanvas(){{
+  const a=document.getElementById('graph-area');
+  canvas.width=a.clientWidth;canvas.height=a.clientHeight;S.dirty=true;
 }}
+function hitTest(mx,my){{
+  for (const n of S.sim){{const r=RADII[n.node.kind]||8,dx=n.x-mx,dy=n.y-my;if(dx*dx+dy*dy<=(r+4)*(r+4))return n;}}return null;
+}}
+canvas.addEventListener('mousedown',e=>{{
+  const n=hitTest(e.offsetX,e.offsetY);
+  if(n){{S.draggingNode=n;selectNode(n.id);}}
+  else{{S.panning=true;S.lastMx=e.clientX;S.lastMy=e.clientY;}}
+}});
+canvas.addEventListener('mousemove',e=>{{
+  const n=hitTest(e.offsetX,e.offsetY);
+  if(n!==null?n.id:null!==S.hot){{S.hot=n?n.id:null;S.dirty=true;}}
+  if(S.draggingNode){{S.draggingNode.x=e.offsetX;S.draggingNode.y=e.offsetY;S.draggingNode.vx=0;S.draggingNode.vy=0;S.dirty=true;}}
+  else if(S.panning){{for(const nd of S.sim){{nd.x+=e.clientX-S.lastMx;nd.y+=e.clientY-S.lastMy;}}S.lastMx=e.clientX;S.lastMy=e.clientY;S.dirty=true;}}
+  if(n){{tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-8)+'px';tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;}}
+  else{{tip.style.display='none';}}
+}});
+window.addEventListener('mouseup',()=>{{S.draggingNode=null;S.panning=false;}});
+canvas.addEventListener('wheel',e=>{{
+  e.preventDefault();const f=e.deltaY<0?1.1:0.91,cx=e.offsetX,cy=e.offsetY;
+  for(const n of S.sim){{n.x=cx+(n.x-cx)*f;n.y=cy+(n.y-cy)*f;}}S.dirty=true;
+}},{{passive:false}});
 
-function renderDetails() {{
-  const id = state.selected;
-  const node = graph.nodes.find(candidate => candidate.id === id);
-  if (!node) {{
-    details.innerHTML = `
-      <h2>Select a node</h2>
-      <p class="muted">Click a function node to see its code and where it’s used.</p>
-    `;
-    details.scrollTop = 0;
+function selectNode(id){{S.selected=id;S.dirty=true;renderDetails();renderResults();}}
+
+function pillClass(k){{return k==='file'?'pill-file':k==='function'?'pill-function':'pill-type';}}
+function activeClass(n){{
+  if(S.selected!==n.id)return'';
+  return n.kind==='file'?'active-file':n.kind==='type'?'active-type':'active';
+}}
+function renderResults(){{
+  const ds=filteredDataset(),vis=ds.nodes.slice(0,100),tot=ds.nodes.length;
+  countEl.textContent=tot===0?'No matches':`${{tot}} node${{tot===1?'':'s'}}${{tot>100?' (showing 100)':''}}`;
+  resultsCt.innerHTML=vis.map(node=>`
+    <button class="item ${{activeClass(node)}}" data-id="${{node.id}}">
+      <div class="item-top"><span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span><span class="item-name">${{escapeHtml(node.label)}}</span></div>
+      <div class="item-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
+      <div class="item-summary">${{escapeHtml(node.summary)}}</div>
+    </button>`).join('');
+  resultsCt.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>selectNode(b.dataset.id)));
+}}
+function renderDetails(){{
+  const id=S.selected,node=GRAPH.nodes.find(n=>n.id===id);
+  if(!node){{
+    detailsCt.innerHTML=`<div class="detail-placeholder">
+      <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
+      <div style="font-weight:600;color:var(--text)">Select a node</div>
+      <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div></div>`;
     return;
   }}
-
-  const incoming = graph.edges.filter(e => e.kind === 'calls' && e.target === id);
-  const outgoing = graph.edges.filter(e => e.kind === 'calls' && e.source === id);
-  const usedBy = incoming.flatMap(e => (e.callsites || []).map(site => ({{ ...site, callerId: e.source }})));
-
-  details.innerHTML = `
-    <h2>${{escapeHtml(node.label)}}</h2>
-    <p><span class="pill">${{node.kind}}</span> <span class="muted">${{escapeHtml(node.language)}} - ${{escapeHtml(node.path)}}:${{node.line}}-${{node.endLine || node.line}}</span></p>
-    <h3>Documentation</h3><div class="doc">${{escapeHtml(node.doc || 'No nearby documentation comment found.')}}</div>
-    <h3>Code</h3><pre class="code">${{escapeHtml(node.code || 'No code captured for this node.')}}</pre>
-    <h3>Used by (${{usedBy.length}})</h3>
-    <div class="usedBy">
-      ${{usedBy.slice(0, 250).map(site => `
-        <div class="usedByItem" data-caller="${{escapeHtml(site.callerId)}}" title="Click to jump to caller">
-          <div><strong>${{escapeHtml(labelFor(site.callerId))}}</strong> <span class="muted">${{escapeHtml(site.path)}}:${{site.line}}:${{site.col}}</span></div>
-          <div class="muted">${{escapeHtml(site.snippet || '')}}</div>
-        </div>
-      `).join('') || '<div class="muted">No recorded call sites.</div>'}}
+  const ac=COLORS[node.kind]||'#aaa';
+  const outE=GRAPH.edges.filter(e=>e.source===id&&e.kind==='calls');
+  const inE=GRAPH.edges.filter(e=>e.target===id&&e.kind==='calls');
+  const relE=GRAPH.edges.filter(e=>(e.source===id||e.target===id)&&e.kind!=='calls').slice(0,12);
+  const callsites=inE.flatMap(e=>(e.callsites||[]).map(s=>Object.assign({{}},s,{{callerId:e.source}}))).slice(0,80);
+  detailsCt.innerHTML=`
+    <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${{ac}};flex-shrink:0;box-shadow:0 0 8px ${{ac}}"></span>
+        <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
+        <span style="font-size:11px;color:var(--text-muted)">${{escapeHtml(node.language)}}</span>
+      </div>
+      <h2 style="font-size:16px;font-weight:700;word-break:break-all">${{escapeHtml(node.label)}}</h2>
+      <div class="detail-path">${{escapeHtml(node.path)}}:${{node.line}}${{node.endLine&&node.endLine!==node.line?'–'+node.endLine:''}}</div>
     </div>
-    <h3>Calls (${{outgoing.length}})</h3>
-    <div class="usedBy">
-      ${{outgoing.slice(0, 150).map(e => `
-        <div class="usedByItem" data-target="${{escapeHtml(e.target)}}" title="Click to jump to callee">
-          <div><strong>${{escapeHtml(labelFor(e.target))}}</strong></div>
-        </div>
-      `).join('') || '<div class="muted">No outgoing calls recorded.</div>'}}
-    </div>
+    ${{node.doc?`<div class="detail-section"><h3>Documentation</h3><div class="doc-box">${{escapeHtml(node.doc)}}</div></div>`:''}}
+    ${{node.code?`<div class="detail-section"><h3>Code</h3><pre class="code-box">${{escapeHtml(node.code)}}</pre></div>`:''}}
+    ${{callsites.length?`<div class="detail-section"><h3>Called by (${{callsites.length}})</h3><div style="display:flex;flex-direction:column;gap:4px">
+      ${{callsites.map(s=>`<div class="callsite" data-caller="${{escapeHtml(s.callerId)}}">
+        <div><strong>${{escapeHtml(labelFor(s.callerId))}}</strong> <span class="callsite-loc">${{escapeHtml(s.path)}}:${{s.line}}:${{s.col}}</span></div>
+        ${{s.snippet?`<div class="callsite-snippet">${{escapeHtml(s.snippet)}}</div>`:''}}
+      </div>`).join('')}}</div></div>`:''}}
+    ${{outE.length?`<div class="detail-section"><h3>Calls (${{outE.length}})</h3><ul class="rel-list">
+      ${{outE.slice(0,30).map(e=>`<li class="rel-item" data-id="${{escapeHtml(e.target)}}">
+        <span class="rel-arrow">→</span><span style="font-size:12px">${{escapeHtml(labelFor(e.target))}}</span>
+        <span style="margin-left:auto"><span class="pill pill-function">fn</span></span></li>`).join('')}}
+    </ul></div>`:''}}
+    ${{relE.length?`<div class="detail-section"><h3>Relationships (${{relE.length}})</h3><ul class="rel-list">
+      ${{relE.map(e=>{{const o=e.source===id?e.target:e.source;const on=GRAPH.nodes.find(n=>n.id===o);const ar=e.source===id?'→':'←';
+        return`<li class="rel-item" data-id="${{escapeHtml(o)}}"><span class="rel-label">${{escapeHtml(e.label)}}</span><span class="rel-arrow">${{ar}}</span><span style="font-size:12px">${{escapeHtml(on?.label||o)}}</span>
+        ${{on?`<span style="margin-left:auto"><span class="pill ${{pillClass(on.kind)}}">${{on.kind}}</span></span>`:''}}
+        </li>`;
+      }}).join('')}}</ul></div>`:''}}
   `;
-  details.scrollTop = 0;
-
-  details.querySelectorAll('.usedByItem[data-caller]').forEach(el => {{
-    el.addEventListener('click', () => {{
-      const caller = el.getAttribute('data-caller');
-      if (caller) selectNode(caller);
-    }});
-  }});
-  details.querySelectorAll('.usedByItem[data-target]').forEach(el => {{
-    el.addEventListener('click', () => {{
-      const target = el.getAttribute('data-target');
-      if (target) selectNode(target);
-    }});
-  }});
+  detailsCt.querySelectorAll('.callsite[data-caller]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.caller)));
+  detailsCt.querySelectorAll('.rel-item[data-id]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.id)));
+  detailsCt.scrollTop=0;
 }}
-
-function renderGraph() {{
-  if (!fg) return;
-  const ds = filteredDataset();
-  const selected = state.selected;
-  const {{ out, inc }} = buildAdjacency(ds.links);
-  const neighbors = new Set();
-  if (selected) {{
-    neighbors.add(selected);
-    for (const t of (out.get(selected) || [])) neighbors.add(t);
-    for (const s of (inc.get(selected) || [])) neighbors.add(s);
+function labelFor(id){{return GRAPH.nodes.find(n=>n.id===id)?.label||id;}}
+function fullRender(){{
+  if(!S.selected&&reqSelect){{
+    const req=reqSelect.toLowerCase();
+    const hit=GRAPH.nodes.find(n=>n.label.toLowerCase()===req)||GRAPH.nodes.find(n=>n.id.toLowerCase().includes(req));
+    if(hit)S.selected=hit.id;
   }}
-
-  fg.graphData({{ nodes: ds.nodes, links: ds.links }});
-  fg.nodeColor(node => {{
-    if (!selected) return colors[node.kind] || '#58a6ff';
-    if (node.id === selected) return '#f0f6fc';
-    if (neighbors.has(node.id)) return colors[node.kind] || '#58a6ff';
-    return '#30363d';
-  }});
-  fg.linkColor(link => {{
-    const s = idOf(link.source);
-    const t = idOf(link.target);
-    if (!selected) return '#41546f';
-    if (s === selected || t === selected) return '#58a6ff';
-    return '#30363d';
-  }});
-  fg.linkWidth(link => {{
-    const s = idOf(link.source);
-    const t = idOf(link.target);
-    return (selected && (s === selected || t === selected)) ? 2.5 : 1;
-  }});
-
-  // Delay zoomToFit so the force simulation has time to stabilize.
-  setTimeout(() => {{
-    if (!fg) return;
-    if (selected) {{
-      fg.zoomToFit(600, 70, n => n.id === selected || neighbors.has(n.id));
-    }} else {{
-      fg.zoomToFit(600, 70);
-    }}
-  }}, 500);
+  initSim();renderResults();renderDetails();
 }}
-
-function renderAll() {{
-  if (!state.selected && requestedSelect) {{
-    const requested = requestedSelect.toLowerCase();
-    const match = graph.nodes.find(n => n.label.toLowerCase() === requested) || graph.nodes.find(n => n.id.toLowerCase().includes(requested));
-    if (match) state.selected = match.id;
-  }}
-  renderResults();
-  renderDetails();
-  if (!fg) {{
-    if (!initForceGraph()) {{
-      setTimeout(() => {{
-        if (!fg && !initForceGraph()) {{
-          const parts = ['ForceGraph3D is not available after waiting.'];
-          if (window._vendorError) parts.push('Vendor bundle error: ' + window._vendorError);
-          const allErrs = (window._earlyErrors || []).concat(_scriptErrors);
-          if (allErrs.length) parts.push('JS errors: ' + allErrs.join(' | '));
-          showInitError(parts.join(' '));
-        }} else {{
-          renderGraph();
-        }}
-      }}, 250);
-      return;
-    }}
-  }}
-  renderGraph();
+function makeHandle(h,s,side){{
+  let dr=false,sx=0,sw=0;
+  h.addEventListener('mousedown',e=>{{dr=true;sx=e.clientX;sw=s.offsetWidth;h.classList.add('dragging');document.body.style.userSelect='none';document.body.style.cursor='col-resize';}});
+  window.addEventListener('mousemove',e=>{{if(!dr)return;const d=side==='left'?e.clientX-sx:sx-e.clientX;s.style.width=Math.max(160,Math.min(520,sw+d))+'px';resizeCanvas();S.dirty=true;}});
+  window.addEventListener('mouseup',()=>{{if(!dr)return;dr=false;h.classList.remove('dragging');document.body.style.userSelect='';document.body.style.cursor='';}});
 }}
-
-search.addEventListener('input', renderAll);
-viewMode.addEventListener('change', () => {{ state.selected = null; renderAll(); }});
-window.addEventListener('resize', () => {{
-  if (!fg) return;
-  const w = graphEl.parentElement ? graphEl.parentElement.clientWidth : window.innerWidth;
-  const h = window.innerHeight;
-  graphEl.style.width = w + 'px';
-  graphEl.style.height = h + 'px';
-  fg.width(w).height(h);
-}});
-renderAll();
+makeHandle(document.getElementById('handle-left'),  document.getElementById('sidebar-left'),  'left');
+makeHandle(document.getElementById('handle-right'), document.getElementById('sidebar-right'), 'right');
+function escapeHtml(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));}}
+const ro=new ResizeObserver(()=>{{resizeCanvas();S.dirty=true;}});
+ro.observe(document.getElementById('graph-area'));
+resizeCanvas();
+searchEl.addEventListener('input',fullRender);
+viewModeEl.addEventListener('change',()=>{{S.selected=null;fullRender();}});
+fullRender();
+loop();
 </script>
 </body>
 </html>"#
@@ -1301,7 +1360,10 @@ mod tests {
 
         assert!(html.contains("Codebase Visualizer"));
         assert!(html.contains("\"label\":\"run\""));
-        assert!(html.contains("3D Rust call graph"));
+        assert!(html.contains("graph-canvas"));
+        assert!(html.contains("sidebar-left"));
+        assert!(html.contains("handle-left"));
+        assert!(!html.contains("applyInitialUrlState"));
     }
 
     #[test]
