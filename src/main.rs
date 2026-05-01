@@ -1,8 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use tree_sitter::{Node as TsNode, Parser as TsParser};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -11,6 +13,7 @@ struct Args {
     input: PathBuf,
     output: PathBuf,
     max_file_bytes: u64,
+    embed_libs: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -20,9 +23,11 @@ struct Node {
     kind: NodeKind,
     path: String,
     line: usize,
+    end_line: usize,
     language: String,
     doc: String,
     summary: String,
+    code: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +41,24 @@ enum NodeKind {
 struct Edge {
     source: String,
     target: String,
+    kind: EdgeKind,
     label: String,
+    callsites: Vec<Callsite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EdgeKind {
+    Contains,
+    Calls,
+}
+
+#[derive(Debug, Clone)]
+struct Callsite {
+    path: String,
+    line: usize,
+    col: usize,
+    snippet: String,
+    caller: String,
 }
 
 #[derive(Debug)]
@@ -48,24 +70,35 @@ struct Graph {
 }
 
 #[derive(Debug, Clone)]
-struct PatternSet {
-    function: SymbolPattern,
-    data_type: SymbolPattern,
-    doc_prefixes: &'static [&'static str],
+struct RustFunctionDef {
+    id: String,
+    name: String,
+    path: String,
+    start_byte: usize,
+    end_byte: usize,
+    start_line: usize,
+    end_line: usize,
+    code: String,
+    doc: String,
 }
 
 #[derive(Debug, Clone)]
-enum SymbolPattern {
-    RustFunction,
-    RustType,
-    PythonFunction,
-    PythonType,
-    JsFunction,
-    JsType,
-    GoFunction,
-    GoType,
-    JavaLikeFunction,
-    JavaLikeType,
+struct RustTypeDef {
+    id: String,
+    name: String,
+    path: String,
+    start_line: usize,
+    end_line: usize,
+    doc: String,
+}
+
+#[derive(Debug, Clone)]
+struct RustCall {
+    caller_id: String,
+    callee_name: String,
+    path: String,
+    byte: usize,
+    snippet: String,
 }
 
 #[derive(Debug)]
@@ -84,7 +117,7 @@ fn main() -> Result<()> {
     })?;
 
     let graph = scan_codebase(&root, args.max_file_bytes)?;
-    let html = render_html(&graph);
+    let html = render_html(&graph, args.embed_libs);
 
     fs::write(&args.output, html)
         .map_err(|err| format!("failed to write {}: {err}", args.output.display()))?;
@@ -109,6 +142,7 @@ fn parse_args() -> Result<Args> {
     let mut input = PathBuf::from(".");
     let mut output = PathBuf::from("codebase-map.html");
     let mut max_file_bytes = 500_000;
+    let mut embed_libs = false;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
 
@@ -130,6 +164,9 @@ fn parse_args() -> Result<Args> {
                     .ok_or_else(|| "--max-file-bytes requires a number".to_string())?
                     .parse()
                     .map_err(|err| format!("invalid --max-file-bytes value: {err}"))?;
+            }
+            "--embed-libs" => {
+                embed_libs = true;
             }
             _ if arg.starts_with("--output=") => {
                 output = PathBuf::from(arg.trim_start_matches("--output="));
@@ -156,12 +193,13 @@ fn parse_args() -> Result<Args> {
         input,
         output,
         max_file_bytes,
+        embed_libs,
     })
 }
 
 fn print_help() {
     println!(
-        "codebase-visualizer\n\nUSAGE:\n    codebase_visualizer [INPUT] [--output FILE] [--max-file-bytes BYTES]\n\nGenerates a self-contained searchable HTML graph of files, functions, data structures, docs, and simple references."
+        "codebase-visualizer\n\nUSAGE:\n    codebase_visualizer [INPUT] [--output FILE] [--max-file-bytes BYTES] [--embed-libs]\n\nGenerates a self-contained searchable 3D HTML call graph of Rust functions (plus a types view)."
     );
 }
 
@@ -169,6 +207,10 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut scanned_files = Vec::new();
+    let mut rust_functions: Vec<RustFunctionDef> = Vec::new();
+    let mut rust_types: Vec<RustTypeDef> = Vec::new();
+    let mut rust_calls: Vec<RustCall> = Vec::new();
+    let mut parser = rust_parser()?;
 
     for path in collect_source_files(root, max_file_bytes)? {
         let source = fs::read_to_string(&path)
@@ -182,9 +224,11 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
             kind: NodeKind::File,
             path: relative_path.clone(),
             line: 1,
+            end_line: source.lines().count().max(1),
             language: language.clone(),
             doc: String::new(),
             summary: summarize_file(&source),
+            code: String::new(),
         };
 
         scanned_files.push(ScannedFile {
@@ -193,19 +237,65 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
         });
         nodes.push(file_node);
 
-        if let Some(patterns) = patterns_for(&language) {
-            for symbol in extract_symbols(&source, &relative_path, &language, patterns) {
-                edges.push(Edge {
-                    source: file_id.clone(),
-                    target: symbol.id.clone(),
-                    label: "contains".to_string(),
-                });
-                nodes.push(symbol);
-            }
+        if language == "rust" {
+            let (defs, type_defs, calls) =
+                parse_rust_symbols_and_calls(&mut parser, &source, &relative_path)?;
+            rust_functions.extend(defs);
+            rust_types.extend(type_defs);
+            rust_calls.extend(calls);
         }
     }
 
-    edges.extend(reference_edges(&nodes, &scanned_files));
+    // Add Rust function/type nodes and file->symbol containment edges.
+    for def in &rust_functions {
+        let node = Node {
+            id: def.id.clone(),
+            label: def.name.clone(),
+            kind: NodeKind::Function,
+            path: def.path.clone(),
+            line: def.start_line,
+            end_line: def.end_line,
+            language: "rust".to_string(),
+            doc: def.doc.clone(),
+            summary: format!("fn {} (lines {}-{})", def.name, def.start_line, def.end_line),
+            code: def.code.clone(),
+        };
+        let file_id = node_id("file", &def.path, 0, &def.path);
+        edges.push(Edge {
+            source: file_id,
+            target: node.id.clone(),
+            kind: EdgeKind::Contains,
+            label: "contains".to_string(),
+            callsites: Vec::new(),
+        });
+        nodes.push(node);
+    }
+
+    for def in &rust_types {
+        let node = Node {
+            id: def.id.clone(),
+            label: def.name.clone(),
+            kind: NodeKind::Type,
+            path: def.path.clone(),
+            line: def.start_line,
+            end_line: def.end_line,
+            language: "rust".to_string(),
+            doc: def.doc.clone(),
+            summary: format!("type {} (lines {}-{})", def.name, def.start_line, def.end_line),
+            code: String::new(),
+        };
+        let file_id = node_id("file", &def.path, 0, &def.path);
+        edges.push(Edge {
+            source: file_id,
+            target: node.id.clone(),
+            kind: EdgeKind::Contains,
+            label: "contains".to_string(),
+            callsites: Vec::new(),
+        });
+        nodes.push(node);
+    }
+
+    edges.extend(build_rust_call_edges(&nodes, &scanned_files, &rust_calls));
 
     let mut stats = BTreeMap::new();
     stats.insert(
@@ -229,6 +319,10 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
             .filter(|node| node.kind == NodeKind::Type)
             .count(),
     );
+    stats.insert(
+        "calls".to_string(),
+        edges.iter().filter(|edge| edge.kind == EdgeKind::Calls).count(),
+    );
 
     Ok(Graph {
         root: root.display().to_string(),
@@ -236,6 +330,372 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
         edges,
         stats,
     })
+}
+
+fn rust_parser() -> Result<TsParser> {
+    let mut parser = TsParser::new();
+    parser
+        .set_language(&tree_sitter_rust::language())
+        .map_err(|_| "failed to load tree-sitter-rust grammar".to_string())?;
+    Ok(parser)
+}
+
+fn parse_rust_symbols_and_calls(
+    parser: &mut TsParser,
+    source: &str,
+    path: &str,
+) -> Result<(Vec<RustFunctionDef>, Vec<RustTypeDef>, Vec<RustCall>)> {
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| "failed to parse rust source".to_string())?;
+    let root = tree.root_node();
+
+    let mut funcs = Vec::new();
+    let mut types = Vec::new();
+    let mut calls = Vec::new();
+
+    collect_rust_defs(root, source, path, &mut funcs, &mut types);
+    collect_rust_calls(root, source, path, &funcs, &mut calls);
+
+    Ok((funcs, types, calls))
+}
+
+fn collect_rust_defs(
+    node: TsNode,
+    source: &str,
+    path: &str,
+    funcs: &mut Vec<RustFunctionDef>,
+    types: &mut Vec<RustTypeDef>,
+) {
+    let kind = node.kind();
+    if kind == "function_item" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+                let (start_line, _) = byte_to_line_col(source, start_byte);
+                let (end_line, _) = byte_to_line_col(source, end_byte);
+                let code = source.get(start_byte..end_byte).unwrap_or("").to_string();
+                let doc = rust_doc_comment_before(source, start_byte);
+                let id = node_id("fn", path, start_line, name);
+                funcs.push(RustFunctionDef {
+                    id,
+                    name: name.to_string(),
+                    path: path.to_string(),
+                    start_byte,
+                    end_byte,
+                    start_line,
+                    end_line,
+                    code,
+                    doc,
+                });
+            }
+        }
+    } else if matches!(
+        kind,
+        "struct_item" | "enum_item" | "trait_item" | "type_item" | "impl_item"
+    ) {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+                let (start_line, _) = byte_to_line_col(source, start_byte);
+                let (end_line, _) = byte_to_line_col(source, end_byte);
+                let doc = rust_doc_comment_before(source, start_byte);
+                let id = node_id("type", path, start_line, name);
+                types.push(RustTypeDef {
+                    id,
+                    name: name.to_string(),
+                    path: path.to_string(),
+                    start_line,
+                    end_line,
+                    doc,
+                });
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_defs(child, source, path, funcs, types);
+    }
+}
+
+fn collect_rust_calls(
+    node: TsNode,
+    source: &str,
+    path: &str,
+    funcs: &[RustFunctionDef],
+    calls: &mut Vec<RustCall>,
+) {
+    match node.kind() {
+        // Direct function call: foo(...)
+        "call_expression" => {
+            if let Some(func_node) = node.child_by_field_name("function") {
+                if let Some((callee_name, byte)) = rust_callee_name_and_byte(func_node, source) {
+                    if let Some(caller_id) = find_enclosing_function_id(node, funcs) {
+                        let snippet = line_snippet_at_byte(source, byte).unwrap_or_default();
+                        calls.push(RustCall {
+                            caller_id,
+                            callee_name,
+                            path: path.to_string(),
+                            byte,
+                            snippet,
+                        });
+                    }
+                }
+            }
+        }
+        // Method call: receiver.method(...)
+        "method_call_expression" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                    let byte = name_node.start_byte();
+                    if let Some(caller_id) = find_enclosing_function_id(node, funcs) {
+                        let snippet = line_snippet_at_byte(source, byte).unwrap_or_default();
+                        calls.push(RustCall {
+                            caller_id,
+                            callee_name: name.to_string(),
+                            path: path.to_string(),
+                            byte,
+                            snippet,
+                        });
+                    }
+                }
+            }
+        }
+        // Function-pointer argument: e.g. iter.map(fn_name) — the identifier is a
+        // direct child of the argument list, not itself a call_expression.
+        "arguments" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
+                        if funcs.iter().any(|f| f.name == name) {
+                            if let Some(caller_id) =
+                                find_enclosing_function_id(child, funcs)
+                            {
+                                let byte = child.start_byte();
+                                let snippet =
+                                    line_snippet_at_byte(source, byte).unwrap_or_default();
+                                calls.push(RustCall {
+                                    caller_id,
+                                    callee_name: name.to_string(),
+                                    path: path.to_string(),
+                                    byte,
+                                    snippet,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Macro bodies (e.g. format!(...)) are stored as flat token_tree nodes —
+        // tree-sitter doesn't parse their contents as structured call_expressions.
+        // Text-scan for function name occurrences: both `fn_name(` (call) and
+        // bare `fn_name` (function-pointer reference, e.g. .map(fn_name)).
+        "token_tree" => {
+            if let Ok(raw) = node.utf8_text(source.as_bytes()) {
+                if let Some(caller_id) = find_enclosing_function_id(node, funcs) {
+                    let start_byte = node.start_byte();
+                    let raw_bytes = raw.as_bytes();
+                    for func in funcs {
+                        if func.id == caller_id {
+                            continue; // skip self-references
+                        }
+                        let name = func.name.as_str();
+                        let mut offset = 0usize;
+                        while let Some(rel) = raw[offset..].find(name) {
+                            let abs = offset + rel;
+                            let after = abs + name.len();
+                            // Word boundary before the name.
+                            let preceded_by_ident = abs > 0 && {
+                                let b = raw_bytes[abs - 1];
+                                b.is_ascii_alphanumeric() || b == b'_'
+                            };
+                            // Word boundary after the name.
+                            let followed_by_ident = after < raw_bytes.len() && {
+                                let b = raw_bytes[after];
+                                b.is_ascii_alphanumeric() || b == b'_'
+                            };
+                            if !preceded_by_ident && !followed_by_ident {
+                                let abs_byte = start_byte + abs;
+                                let snippet =
+                                    line_snippet_at_byte(source, abs_byte).unwrap_or_default();
+                                calls.push(RustCall {
+                                    caller_id: caller_id.clone(),
+                                    callee_name: func.name.clone(),
+                                    path: path.to_string(),
+                                    byte: abs_byte,
+                                    snippet,
+                                });
+                            }
+                            offset += rel + name.len().max(1);
+                        }
+                    }
+                }
+            }
+            // token_tree children are raw tokens — no further AST recursion needed.
+            return;
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_calls(child, source, path, funcs, calls);
+    }
+}
+
+fn find_enclosing_function_id(node: TsNode, funcs: &[RustFunctionDef]) -> Option<String> {
+    // Map by byte ranges; linear scan is OK for small repos.
+    let start = node.start_byte();
+    funcs.iter()
+        .find(|f| f.start_byte <= start && start <= f.end_byte)
+        .map(|f| f.id.clone())
+}
+
+fn rust_callee_name_and_byte(func_node: TsNode, source: &str) -> Option<(String, usize)> {
+    // Covers `foo()` and `module::foo()` patterns.
+    match func_node.kind() {
+        "identifier" => Some((
+            func_node.utf8_text(source.as_bytes()).ok()?.to_string(),
+            func_node.start_byte(),
+        )),
+        "scoped_identifier" => {
+            // Grab the last identifier in a path.
+            let mut cursor = func_node.walk();
+            let mut last_ident: Option<TsNode> = None;
+            for child in func_node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    last_ident = Some(child);
+                }
+            }
+            let ident = last_ident?;
+            Some((
+                ident.utf8_text(source.as_bytes()).ok()?.to_string(),
+                ident.start_byte(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn build_rust_call_edges(nodes: &[Node], files: &[ScannedFile], calls: &[RustCall]) -> Vec<Edge> {
+    let mut name_to_ids: HashMap<&str, Vec<&str>> = HashMap::new();
+    for node in nodes.iter().filter(|n| n.kind == NodeKind::Function) {
+        name_to_ids.entry(node.label.as_str()).or_default().push(node.id.as_str());
+    }
+
+    let mut by_file_source: HashMap<&str, &str> = HashMap::new();
+    for file in files {
+        by_file_source.insert(file.node.path.as_str(), file.source.as_str());
+    }
+
+    let mut edge_map: HashMap<(String, String), Vec<Callsite>> = HashMap::new();
+
+    for call in calls {
+        let Some(callee_ids) = name_to_ids.get(call.callee_name.as_str()) else {
+            continue;
+        };
+        // Avoid incorrect edges when multiple defs share a name.
+        if callee_ids.len() != 1 {
+            continue;
+        }
+        let callee_id = callee_ids[0].to_string();
+        let (line, col) = if let Some(src) = by_file_source.get(call.path.as_str()) {
+            byte_to_line_col(src, call.byte)
+        } else {
+            (1, 1)
+        };
+
+        let callsite = Callsite {
+            path: call.path.clone(),
+            line,
+            col,
+            snippet: call.snippet.clone(),
+            caller: call.caller_id.clone(),
+        };
+        edge_map
+            .entry((call.caller_id.clone(), callee_id))
+            .or_default()
+            .push(callsite);
+    }
+
+    let mut edges = Vec::new();
+    for ((source, target), callsites) in edge_map {
+        edges.push(Edge {
+            source,
+            target,
+            kind: EdgeKind::Calls,
+            label: "calls".to_string(),
+            callsites,
+        });
+    }
+    edges
+}
+
+fn byte_to_line_col(source: &str, byte: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for (idx, ch) in source.char_indices() {
+        if idx >= byte {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+fn line_snippet_at_byte(source: &str, byte: usize) -> Option<String> {
+    let mut start = 0usize;
+    let mut end = source.len();
+    for (idx, ch) in source.char_indices() {
+        if idx >= byte {
+            end = source[idx..]
+                .find('\n')
+                .map(|off| idx + off)
+                .unwrap_or(source.len());
+            break;
+        }
+        if ch == '\n' {
+            start = idx + 1;
+        }
+    }
+    Some(source.get(start..end)?.trim().to_string())
+}
+
+fn rust_doc_comment_before(source: &str, start_byte: usize) -> String {
+    let prefix = source.get(..start_byte).unwrap_or("");
+    let mut lines: Vec<&str> = prefix.lines().collect();
+    lines.reverse();
+    let mut doc = Vec::new();
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("///") {
+            doc.push(trimmed.trim_start_matches("///").trim());
+            continue;
+        }
+        if trimmed.starts_with("//!") {
+            doc.push(trimmed.trim_start_matches("//!").trim());
+            continue;
+        }
+        if trimmed.is_empty() {
+            if !doc.is_empty() {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
+    doc.reverse();
+    doc.join("\n").trim().to_string()
 }
 
 fn collect_source_files(root: &Path, max_file_bytes: u64) -> Result<Vec<PathBuf>> {
@@ -298,162 +758,6 @@ fn language_for(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn patterns_for(language: &str) -> Option<PatternSet> {
-    Some(match language {
-        "rust" => PatternSet {
-            function: SymbolPattern::RustFunction,
-            data_type: SymbolPattern::RustType,
-            doc_prefixes: &["///", "//!"],
-        },
-        "python" => PatternSet {
-            function: SymbolPattern::PythonFunction,
-            data_type: SymbolPattern::PythonType,
-            doc_prefixes: &["#", "\"\"\"", "'''"],
-        },
-        "javascript" | "typescript" => PatternSet {
-            function: SymbolPattern::JsFunction,
-            data_type: SymbolPattern::JsType,
-            doc_prefixes: &["//", "/*", "*"],
-        },
-        "go" => PatternSet {
-            function: SymbolPattern::GoFunction,
-            data_type: SymbolPattern::GoType,
-            doc_prefixes: &["//"],
-        },
-        "java" | "c" | "cpp" => PatternSet {
-            function: SymbolPattern::JavaLikeFunction,
-            data_type: SymbolPattern::JavaLikeType,
-            doc_prefixes: &["//", "/*", "*"],
-        },
-        _ => return None,
-    })
-}
-
-fn extract_symbols(source: &str, path: &str, language: &str, patterns: PatternSet) -> Vec<Node> {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut nodes = Vec::new();
-
-    for (index, line) in lines.iter().enumerate() {
-        if let Some(name) = capture_symbol(&patterns.function, line) {
-            nodes.push(symbol_node(
-                NodeKind::Function,
-                &name,
-                path,
-                index + 1,
-                language,
-                &lines,
-                &patterns,
-            ));
-        }
-
-        if let Some(name) = capture_symbol(&patterns.data_type, line) {
-            nodes.push(symbol_node(
-                NodeKind::Type,
-                &name,
-                path,
-                index + 1,
-                language,
-                &lines,
-                &patterns,
-            ));
-        }
-    }
-
-    nodes
-}
-
-fn capture_symbol(pattern: &SymbolPattern, line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    let name = match pattern {
-        SymbolPattern::RustFunction => {
-            symbol_after_keywords(trimmed, &["pub", "async", "fn"], "fn")
-        }
-        SymbolPattern::RustType => {
-            symbol_after_any_keyword(trimmed, &["struct", "enum", "trait", "type"])
-        }
-        SymbolPattern::PythonFunction => {
-            let without_async = trimmed.strip_prefix("async ").unwrap_or(trimmed);
-            without_async
-                .strip_prefix("def ")
-                .and_then(first_identifier)
-        }
-        SymbolPattern::PythonType => trimmed.strip_prefix("class ").and_then(first_identifier),
-        SymbolPattern::JsFunction => capture_js_function(trimmed),
-        SymbolPattern::JsType => symbol_after_any_keyword(trimmed, &["class", "interface", "type"]),
-        SymbolPattern::GoFunction => capture_go_function(trimmed),
-        SymbolPattern::GoType => trimmed.strip_prefix("type ").and_then(first_identifier),
-        SymbolPattern::JavaLikeFunction => capture_java_like_function(trimmed),
-        SymbolPattern::JavaLikeType => {
-            symbol_after_any_keyword(trimmed, &["class", "struct", "enum", "interface"])
-        }
-    };
-
-    name.filter(|name| !name.is_empty() && !is_keyword(name))
-}
-
-fn symbol_node(
-    kind: NodeKind,
-    name: &str,
-    path: &str,
-    line: usize,
-    language: &str,
-    lines: &[&str],
-    patterns: &PatternSet,
-) -> Node {
-    let doc = preceding_doc(lines, line.saturating_sub(1), patterns.doc_prefixes);
-    let summary = if doc.is_empty() {
-        format!("{} discovered near line {}.", kind_label(&kind), line)
-    } else {
-        first_sentence(&doc)
-    };
-
-    Node {
-        id: node_id(kind_label(&kind), path, line, name),
-        label: name.to_string(),
-        kind,
-        path: path.to_string(),
-        line,
-        language: language.to_string(),
-        doc,
-        summary,
-    }
-}
-
-fn preceding_doc(lines: &[&str], declaration_index: usize, prefixes: &[&str]) -> String {
-    let mut docs = Vec::new();
-    let mut index = declaration_index;
-    while index > 0 {
-        index -= 1;
-        let trimmed = lines[index].trim();
-        if trimmed.is_empty() {
-            if docs.is_empty() {
-                continue;
-            }
-            break;
-        }
-
-        if let Some(cleaned) = clean_doc_line(trimmed, prefixes) {
-            if !cleaned.is_empty() {
-                docs.push(cleaned);
-            }
-        } else {
-            break;
-        }
-    }
-
-    docs.reverse();
-    docs.join(" ").trim().to_string()
-}
-
-fn clean_doc_line(line: &str, prefixes: &[&str]) -> Option<String> {
-    for prefix in prefixes {
-        if let Some(rest) = line.strip_prefix(prefix) {
-            return Some(rest.trim_matches('/').trim_matches('*').trim().to_string());
-        }
-    }
-    None
-}
-
 fn summarize_file(source: &str) -> String {
     let non_empty = source
         .lines()
@@ -462,51 +766,29 @@ fn summarize_file(source: &str) -> String {
     format!("{non_empty} non-empty lines scanned.")
 }
 
-fn reference_edges(nodes: &[Node], files: &[ScannedFile]) -> Vec<Edge> {
-    let symbols: Vec<&Node> = nodes
-        .iter()
-        .filter(|node| matches!(node.kind, NodeKind::Function | NodeKind::Type))
-        .collect();
-    let by_path: HashMap<&str, Vec<&Node>> =
-        symbols.iter().fold(HashMap::new(), |mut map, node| {
-            map.entry(node.path.as_str()).or_default().push(*node);
-            map
-        });
-
-    let mut edges = Vec::new();
-    let mut seen = HashSet::new();
-
-    for file in files {
-        let Some(local_symbols) = by_path.get(file.node.path.as_str()) else {
-            continue;
-        };
-
-        for source_symbol in local_symbols {
-            for target_symbol in &symbols {
-                if source_symbol.id == target_symbol.id {
-                    continue;
-                }
-
-                if source_mentions(&file.source, &target_symbol.label) {
-                    let key = format!("{}->{}", source_symbol.id, target_symbol.id);
-                    if seen.insert(key) {
-                        edges.push(Edge {
-                            source: source_symbol.id.clone(),
-                            target: target_symbol.id.clone(),
-                            label: "mentions".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    edges
-}
-
-fn render_html(graph: &Graph) -> String {
+fn render_html(graph: &Graph, embed_libs: bool) -> String {
     let graph_json = graph_to_json(graph);
     let escaped_title = escape_html(&format!("Codebase map · {}", graph.root));
+    let pinned_cdn = [
+        "<script src=\"https://unpkg.com/3d-force-graph@1.77.0/dist/3d-force-graph.min.js\"></script>",
+        "<script>if(!window.ForceGraph3D){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/3d-force-graph@1.77.0/dist/3d-force-graph.min.js';document.head.appendChild(s);}</script>",
+    ]
+    .join("");
+    let lib_script = match fs::read_to_string("vendor/3d-force-graph.min.js") {
+        Ok(js) => format!(
+            "<script>try{{{js}}}catch(e){{window._vendorError=e&&e.message||String(e);}}</script>"
+        ),
+        Err(_) => {
+            if embed_libs {
+                eprintln!(
+                    "Warning: --embed-libs specified but vendor/3d-force-graph.min.js was not \
+                     found; falling back to CDN. Run: curl -L -o vendor/3d-force-graph.min.js \
+                     https://unpkg.com/3d-force-graph@1.77.0/dist/3d-force-graph.min.js"
+                );
+            }
+            pinned_cdn
+        }
+    };
 
     format!(
         r#"<!doctype html>
@@ -515,75 +797,50 @@ fn render_html(graph: &Graph) -> String {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{escaped_title}</title>
+<script>window._earlyErrors=[];window.addEventListener('error',function(ev){{window._earlyErrors.push(ev.message||String(ev));}});</script>
+{lib_script}
 <style>
-/* ── reset & tokens ──────────────────────────────────────────────────── */
 *,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
 :root{{
-  --bg:#07090f;
-  --surface:#0d1117;
-  --surface2:#131920;
-  --border:rgba(255,255,255,.07);
-  --border-hi:rgba(99,179,255,.45);
-  --text:#e2e8f4;
-  --text-muted:#7a8799;
-  --accent-file:#3ddc84;
-  --accent-fn:#4da6ff;
-  --accent-type:#bf7bff;
-  --accent-file-dim:rgba(61,220,132,.18);
-  --accent-fn-dim:rgba(77,166,255,.18);
-  --accent-type-dim:rgba(191,123,255,.18);
-  --glow-file:0 0 18px 4px rgba(61,220,132,.35);
-  --glow-fn:0 0 18px 4px rgba(77,166,255,.35);
-  --glow-type:0 0 18px 4px rgba(191,123,255,.35);
-  --radius:14px;
+  --bg:#07090f;--surface:#0d1117;--surface2:#131920;
+  --border:rgba(255,255,255,.07);--border-hi:rgba(99,179,255,.45);
+  --text:#e2e8f4;--text-muted:#7a8799;
+  --accent-file:#3ddc84;--accent-fn:#4da6ff;--accent-type:#bf7bff;
+  --accent-file-dim:rgba(61,220,132,.18);--accent-fn-dim:rgba(77,166,255,.18);--accent-type-dim:rgba(191,123,255,.18);
   --handle:5px;
-  font-family:'Inter',ui-sans-serif,system-ui,sans-serif;
-  color-scheme:dark;
+  font-family:'Inter',ui-sans-serif,system-ui,sans-serif;color-scheme:dark;
 }}
 html,body{{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-size:13px;line-height:1.55}}
-
-/* ── scrollbar styling ───────────────────────────────────────────────── */
 ::-webkit-scrollbar{{width:6px;height:6px}}
 ::-webkit-scrollbar-track{{background:transparent}}
 ::-webkit-scrollbar-thumb{{background:rgba(255,255,255,.12);border-radius:3px}}
 ::-webkit-scrollbar-thumb:hover{{background:rgba(255,255,255,.22)}}
-
-/* ── layout ──────────────────────────────────────────────────────────── */
 #app{{display:flex;flex-direction:row;height:100vh;overflow:hidden}}
 #sidebar-left{{width:300px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);flex-shrink:0;overflow:hidden}}
-#sidebar-right{{width:320px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);flex-shrink:0;overflow:hidden}}
+#sidebar-right{{width:340px;min-width:160px;max-width:520px;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);flex-shrink:0;overflow:hidden}}
 #graph-area{{flex:1 1 0;min-width:0;position:relative;overflow:hidden;background:radial-gradient(ellipse 80% 60% at 50% 40%,#0c1628 0%,var(--bg) 100%)}}
-
-/* ── resize handles ──────────────────────────────────────────────────── */
-.handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center;position:relative}}
+.handle{{width:var(--handle);cursor:col-resize;flex-shrink:0;background:var(--border);transition:background .15s;display:flex;align-items:center;justify-content:center}}
 .handle:hover,.handle.dragging{{background:var(--border-hi)}}
 .handle::after{{content:'';display:block;width:2px;height:32px;border-radius:2px;background:rgba(255,255,255,.18)}}
-
-/* ── sidebar inner ───────────────────────────────────────────────────── */
 .sidebar-header{{padding:18px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0}}
 .sidebar-body{{flex:1 1 0;overflow-y:auto;overflow-x:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:10px}}
 .logo{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
 .logo-icon{{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4da6ff 0%,#bf7bff 100%);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}}
 .logo-text{{font-size:15px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(90deg,#4da6ff,#bf7bff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
 .tagline{{color:var(--text-muted);font-size:11.5px;margin-top:2px}}
-
-/* ── stats ───────────────────────────────────────────────────────────── */
-.stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}}
-.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:9px 8px;text-align:center}}
-.stat-value{{font-size:20px;font-weight:700;line-height:1}}
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}}
+.stat{{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 4px;text-align:center}}
+.stat-value{{font-size:17px;font-weight:700;line-height:1}}
 .stat-label{{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin-top:3px}}
 .stat.file .stat-value{{color:var(--accent-file)}}
-.stat.fn   .stat-value{{color:var(--accent-fn)}}
+.stat.fn .stat-value{{color:var(--accent-fn)}}
 .stat.type .stat-value{{color:var(--accent-type)}}
-
-/* ── search / filter ─────────────────────────────────────────────────── */
+.stat.calls .stat-value{{color:#fb923c}}
 .search-wrap{{position:relative}}
 .search-icon{{position:absolute;left:11px;top:50%;transform:translateY(-50%);opacity:.4;pointer-events:none;font-size:13px}}
 input#search{{width:100%;padding:9px 12px 9px 32px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;transition:border-color .15s}}
 input#search:focus{{border-color:var(--border-hi)}}
-select#kind{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%237a8799' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
-
-/* ── result list ─────────────────────────────────────────────────────── */
+select{{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%237a8799' d='M6 8 0 0h12z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}}
 .results-count{{font-size:11px;color:var(--text-muted);padding:2px 0 4px}}
 .item-list{{display:flex;flex-direction:column;gap:5px}}
 button.item{{text-align:left;border:1px solid var(--border);background:var(--surface2);color:var(--text);padding:9px 11px;border-radius:10px;cursor:pointer;transition:border-color .12s,background .12s,transform .1s;width:100%}}
@@ -595,68 +852,55 @@ button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,1
 .item-name{{font-weight:600;font-size:13px}}
 .item-path{{font-size:11px;color:var(--text-muted)}}
 .item-summary{{font-size:11.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}}
-
-/* ── pill badges ─────────────────────────────────────────────────────── */
 .pill{{display:inline-block;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:999px}}
 .pill-file{{background:var(--accent-file-dim);color:var(--accent-file)}}
 .pill-function{{background:var(--accent-fn-dim);color:var(--accent-fn)}}
 .pill-type{{background:var(--accent-type-dim);color:var(--accent-type)}}
-
-/* ── graph canvas ────────────────────────────────────────────────────── */
 #graph-canvas{{position:absolute;inset:0;cursor:grab}}
 #graph-canvas:active{{cursor:grabbing}}
 #tooltip{{position:fixed;pointer-events:none;background:rgba(13,17,23,.92);border:1px solid var(--border-hi);border-radius:9px;padding:8px 12px;font-size:12px;color:var(--text);white-space:nowrap;backdrop-filter:blur(8px);display:none;z-index:99;box-shadow:0 4px 24px rgba(0,0,0,.5)}}
 .graph-legend{{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:14px;background:rgba(13,17,23,.75);border:1px solid var(--border);border-radius:99px;padding:6px 18px;backdrop-filter:blur(8px);pointer-events:none}}
 .legend-item{{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted)}}
 .legend-dot{{width:9px;height:9px;border-radius:50%}}
-
-/* ── detail panel ────────────────────────────────────────────────────── */
 .detail-placeholder{{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:32px;gap:10px;opacity:.55}}
-.detail-placeholder svg{{opacity:.3}}
-#details-body h2{{font-size:16px;font-weight:700;margin-bottom:8px}}
-.detail-meta{{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}}
-.detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}}
 .detail-section{{margin-bottom:16px}}
 .detail-section h3{{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;font-weight:600}}
+.detail-path{{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}}
 .doc-box{{white-space:pre-wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;line-height:1.55;font-family:ui-monospace,monospace;font-size:12px;color:#c9d1d9}}
+.code-box{{white-space:pre;overflow:auto;background:#010409;border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.45;max-height:40vh;color:#c9d1d9}}
 .rel-list{{list-style:none;display:flex;flex-direction:column;gap:4px}}
-.rel-item{{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px}}
+.rel-item{{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:12px;cursor:pointer;transition:border-color .12s}}
+.rel-item:hover{{border-color:var(--border-hi)}}
 .rel-arrow{{color:var(--text-muted);flex-shrink:0}}
 .rel-label{{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}}
+.callsite{{padding:6px 9px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);font-size:11px;cursor:pointer;transition:border-color .12s}}
+.callsite:hover{{border-color:var(--border-hi)}}
+.callsite-loc{{color:var(--text-muted);font-family:ui-monospace,monospace}}
+.callsite-snippet{{font-family:ui-monospace,monospace;color:#c9d1d9;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
 </style>
 </head>
 <body>
 <div id="app">
-
-<!-- ─── LEFT SIDEBAR ──────────────────────────────────────────────────── -->
 <aside id="sidebar-left">
   <div class="sidebar-header">
-    <div class="logo">
-      <div class="logo-icon">⬡</div>
-      <span class="logo-text">Codebase Visualizer</span>
-    </div>
-    <div class="tagline">Explore functions, types &amp; relationships</div>
+    <div class="logo"><div class="logo-icon">⬡</div><span class="logo-text">Codebase Visualizer</span></div>
+    <div class="tagline">Call graph · types · relationships</div>
   </div>
   <div class="sidebar-body">
     <div class="stats" id="stats"></div>
+    <select id="viewMode">
+      <option value="callgraph">Call graph</option>
+      <option value="types">Data structures</option>
+    </select>
     <div class="search-wrap">
       <span class="search-icon">⌕</span>
       <input id="search" placeholder="Search by name, path, docs…" autocomplete="off" spellcheck="false"/>
     </div>
-    <select id="kind">
-      <option value="all">All nodes</option>
-      <option value="file">Files only</option>
-      <option value="function">Functions only</option>
-      <option value="type">Data structures only</option>
-    </select>
     <div class="results-count" id="results-count"></div>
     <div class="item-list" id="results"></div>
   </div>
 </aside>
-
 <div class="handle" id="handle-left" title="Drag to resize"></div>
-
-<!-- ─── GRAPH AREA ────────────────────────────────────────────────────── -->
 <div id="graph-area">
   <canvas id="graph-canvas" aria-label="Codebase relationship graph"></canvas>
   <div id="tooltip"></div>
@@ -666,10 +910,7 @@ button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,1
     <div class="legend-item"><div class="legend-dot" style="background:#bf7bff"></div>Type</div>
   </div>
 </div>
-
 <div class="handle" id="handle-right" title="Drag to resize"></div>
-
-<!-- ─── RIGHT SIDEBAR ────────────────────────────────────────────────── -->
 <aside id="sidebar-right">
   <div class="sidebar-header" style="padding-bottom:14px">
     <div style="font-size:13px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em">Inspector</div>
@@ -682,491 +923,270 @@ button.item.active-type{{border-color:rgba(191,123,255,.5);background:rgba(191,1
     </div>
   </div>
 </aside>
-
-</div><!-- #app -->
-<div id="tooltip"></div>
-
+</div>
 <script>
-/* ═══════════════════════════════════════════════════════════════════════
-   DATA
-═══════════════════════════════════════════════════════════════════════ */
 const GRAPH = {graph_json};
 const COLORS = {{ file:'#3ddc84', function:'#4da6ff', type:'#bf7bff' }};
 const RADII  = {{ file:11, function:8, type:9 }};
-
-/* ═══════════════════════════════════════════════════════════════════════
-   STATE
-═══════════════════════════════════════════════════════════════════════ */
 const S = {{
-  selected: null,
-  visible: [],
-  sim: [],        // simulation nodes with x,y,vx,vy
-  edgesVis: [],
-  panX: 0, panY: 0,
-  zoom: 1,
-  draggingNode: null,
-  panning: false,
-  lastMx: 0, lastMy: 0,
-  hot: null,       // hovered node id
-  dirty: true,
+  selected:null, visible:[], sim:[], edgesVis:[],
+  draggingNode:null, panning:false, lastMx:0, lastMy:0, hot:null, dirty:true,
 }};
-
-/* ═══════════════════════════════════════════════════════════════════════
-   DOM REFS
-═══════════════════════════════════════════════════════════════════════ */
-const searchEl  = document.getElementById('search');
-const kindEl    = document.getElementById('kind');
-const resultsCt = document.getElementById('results');
-const countEl   = document.getElementById('results-count');
-const detailsCt = document.getElementById('details-body');
-const canvas    = document.getElementById('graph-canvas');
-const tip       = document.getElementById('tooltip');
-const ctx       = canvas.getContext('2d');
-
-/* ═══════════════════════════════════════════════════════════════════════
-   URL PARAMS
-═══════════════════════════════════════════════════════════════════════ */
-const params = new URLSearchParams(window.location.search);
-const reqSelect = params.get('select');
+const searchEl   = document.getElementById('search');
+const viewModeEl = document.getElementById('viewMode');
+const resultsCt  = document.getElementById('results');
+const countEl    = document.getElementById('results-count');
+const detailsCt  = document.getElementById('details-body');
+const canvas     = document.getElementById('graph-canvas');
+const tip        = document.getElementById('tooltip');
+const ctx        = canvas.getContext('2d');
+const params     = new URLSearchParams(window.location.search);
+const reqSelect  = params.get('select');
 if (params.get('q')) searchEl.value = params.get('q');
-if (['all','file','function','type'].includes(params.get('kind'))) kindEl.value = params.get('kind');
+if (['callgraph','types'].includes(params.get('view'))) viewModeEl.value = params.get('view');
 
-/* ═══════════════════════════════════════════════════════════════════════
-   STATS BAR
-═══════════════════════════════════════════════════════════════════════ */
 document.getElementById('stats').innerHTML = [
   ['file','file',GRAPH.stats.files||0,'Files'],
   ['fn','function',GRAPH.stats.functions||0,'Funcs'],
   ['type','type',GRAPH.stats.types||0,'Types'],
-].map(([cls,_,v,l])=>`<div class="stat ${{cls}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
+  ['calls','calls',GRAPH.stats.calls||0,'Calls'],
+].map(([cls,_k,v,l])=>`<div class="stat ${{cls}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
 
-/* ═══════════════════════════════════════════════════════════════════════
-   FILTERING
-═══════════════════════════════════════════════════════════════════════ */
-function matches(node) {{
-  const q = searchEl.value.trim().toLowerCase();
-  const k = kindEl.value;
-  if (k !== 'all' && node.kind !== k) return false;
-  if (!q) return true;
-  return (node.label+' '+node.path+' '+node.doc+' '+node.summary+' '+node.language).toLowerCase().includes(q);
+function buildAdjacency(links) {{
+  const out=new Map(), inc=new Map();
+  for (const l of links) {{
+    if (!out.has(l.source)) out.set(l.source,new Set());
+    if (!inc.has(l.target)) inc.set(l.target,new Set());
+    out.get(l.source).add(l.target); inc.get(l.target).add(l.source);
+  }}
+  return {{out,inc}};
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   FORCE SIMULATION
-═══════════════════════════════════════════════════════════════════════ */
-const K_SPRING   = 0.018;
-const K_REPEL    = 7000;
-const K_DAMP     = 0.82;
-const REST_LEN   = 140;
-const CENTER_K   = 0.012;
-
-function initSim() {{
-  const W = canvas.width, H = canvas.height;
-  const cx = W/2, cy = H/2;
-  // Build node map for quick lookup
-  const byId = new Map(S.sim.map(n=>[n.id,n]));
-  S.sim = S.visible.map((node,i) => {{
-    const old = byId.get(node.id);
-    if (old) return {{ ...old, node }};
-    const angle = (Math.PI*2*i/Math.max(S.visible.length,1));
-    const r = 180 + Math.random()*120;
-    return {{ id:node.id, node, x:cx+Math.cos(angle)*r, y:cy+Math.sin(angle)*r, vx:0, vy:0 }};
-  }});
-  const visIds = new Set(S.visible.map(n=>n.id));
-  S.edgesVis = GRAPH.edges.filter(e=>visIds.has(e.source)&&visIds.has(e.target));
-  S.dirty = true;
+function dataset() {{
+  const mode=viewModeEl.value;
+  if (mode==='callgraph') {{
+    return {{nodes:GRAPH.nodes.filter(n=>n.kind==='function'),links:GRAPH.edges.filter(e=>e.kind==='calls')}};
+  }}
+  const typeIds=new Set(GRAPH.nodes.filter(n=>n.kind==='type').map(n=>n.id));
+  return {{
+    nodes:GRAPH.nodes.filter(n=>n.kind==='file'||n.kind==='type'),
+    links:GRAPH.edges.filter(e=>e.kind==='contains'&&typeIds.has(e.target)),
+  }};
 }}
-
-function tick() {{
-  if (S.draggingNode) return;
-  const cx = canvas.width/2 + S.panX;
-  const cy = canvas.height/2 + S.panY;
-  let moving = false;
-
-  // repulsion between all pairs
-  for (let i=0;i<S.sim.length;i++) {{
-    const a = S.sim[i];
-    for (let j=i+1;j<S.sim.length;j++) {{
-      const b = S.sim[j];
-      const dx=a.x-b.x, dy=a.y-b.y;
-      const dist2 = dx*dx+dy*dy+1;
-      const force = K_REPEL/dist2;
-      const fx=force*dx, fy=force*dy;
-      a.vx+=fx; a.vy+=fy;
-      b.vx-=fx; b.vy-=fy;
+function filteredDataset() {{
+  const q=searchEl.value.trim().toLowerCase();
+  const base=dataset();
+  if (!q) return base;
+  const {{out,inc}}=buildAdjacency(base.links);
+  const keep=new Set();
+  for (const n of base.nodes) {{
+    if ((n.label+' '+n.path+' '+n.doc+' '+n.summary).toLowerCase().includes(q)) {{
+      keep.add(n.id);
+      for (const nb of (out.get(n.id)||[])) keep.add(nb);
+      for (const nb of (inc.get(n.id)||[])) keep.add(nb);
     }}
   }}
+  const nodes=base.nodes.filter(n=>keep.has(n.id));
+  const keepIds=new Set(nodes.map(n=>n.id));
+  return {{nodes, links:base.links.filter(l=>keepIds.has(l.source)&&keepIds.has(l.target))}};
+}}
 
-  // spring attraction along edges
-  const posMap = new Map(S.sim.map(n=>[n.id,n]));
-  for (const e of S.edgesVis) {{
-    const a=posMap.get(e.source), b=posMap.get(e.target);
-    if (!a||!b) continue;
-    const dx=b.x-a.x, dy=b.y-a.y;
-    const dist=Math.sqrt(dx*dx+dy*dy)+0.01;
-    const force=K_SPRING*(dist-REST_LEN);
-    const fx=force*dx/dist, fy=force*dy/dist;
-    a.vx+=fx; a.vy+=fy;
-    b.vx-=fx; b.vy-=fy;
+const K_SPRING=0.018,K_REPEL=7000,K_DAMP=0.82,REST_LEN=140,CENTER_K=0.012;
+function initSim() {{
+  const W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
+  const byId=new Map(S.sim.map(n=>[n.id,n]));
+  const ds=filteredDataset();
+  S.visible=ds.nodes; S.edgesVis=ds.links;
+  S.sim=S.visible.map((node,i)=>{{
+    const old=byId.get(node.id);
+    if (old) return {{...old,node}};
+    const angle=Math.PI*2*i/Math.max(S.visible.length,1);
+    const r=180+Math.random()*120;
+    return {{id:node.id,node,x:cx+Math.cos(angle)*r,y:cy+Math.sin(angle)*r,vx:0,vy:0}};
+  }});
+  S.dirty=true;
+}}
+function tick() {{
+  if (S.draggingNode) return;
+  const cx=canvas.width/2,cy=canvas.height/2; let moving=false;
+  for (let i=0;i<S.sim.length;i++) {{
+    const a=S.sim[i];
+    for (let j=i+1;j<S.sim.length;j++) {{
+      const b=S.sim[j],dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+1,f=K_REPEL/d2;
+      a.vx+=f*dx;a.vy+=f*dy;b.vx-=f*dx;b.vy-=f*dy;
+    }}
   }}
-
-  // center gravity
+  const pm=new Map(S.sim.map(n=>[n.id,n]));
+  for (const e of S.edgesVis) {{
+    const a=pm.get(e.source),b=pm.get(e.target);
+    if (!a||!b) continue;
+    const dx=b.x-a.x,dy=b.y-a.y,dist=Math.sqrt(dx*dx+dy*dy)+0.01,f=K_SPRING*(dist-REST_LEN);
+    const fx=f*dx/dist,fy=f*dy/dist;
+    a.vx+=fx;a.vy+=fy;b.vx-=fx;b.vy-=fy;
+  }}
   for (const n of S.sim) {{
-    n.vx += (cx - n.x)*CENTER_K;
-    n.vy += (cy - n.y)*CENTER_K;
-    n.vx *= K_DAMP; n.vy *= K_DAMP;
-    n.x += n.vx; n.y += n.vy;
+    n.vx+=(cx-n.x)*CENTER_K;n.vy+=(cy-n.y)*CENTER_K;
+    n.vx*=K_DAMP;n.vy*=K_DAMP;n.x+=n.vx;n.y+=n.vy;
     if (Math.abs(n.vx)>0.05||Math.abs(n.vy)>0.05) moving=true;
   }}
   if (moving) S.dirty=true;
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   CANVAS DRAWING
-═══════════════════════════════════════════════════════════════════════ */
 function draw() {{
-  const W=canvas.width, H=canvas.height;
+  const W=canvas.width,H=canvas.height;
   ctx.clearRect(0,0,W,H);
-
-  // background grid
-  ctx.save();
-  ctx.strokeStyle='rgba(255,255,255,.028)';
-  ctx.lineWidth=1;
-  const gStep=50;
-  for (let x=0;x<W;x+=gStep) {{ ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke(); }}
-  for (let y=0;y<H;y+=gStep) {{ ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke(); }}
+  ctx.save();ctx.strokeStyle='rgba(255,255,255,.028)';ctx.lineWidth=1;
+  for (let x=0;x<W;x+=50){{ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}}
+  for (let y=0;y<H;y+=50){{ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}}
   ctx.restore();
-
-  const posMap = new Map(S.sim.map(n=>[n.id,n]));
-
-  // draw edges
+  const pm=new Map(S.sim.map(n=>[n.id,n]));
   for (const e of S.edgesVis) {{
-    const a=posMap.get(e.source), b=posMap.get(e.target);
+    const a=pm.get(e.source),b=pm.get(e.target);
     if (!a||!b) continue;
-    const isRelated = S.selected && (e.source===S.selected||e.target===S.selected);
-    ctx.beginPath();
-    ctx.moveTo(a.x,a.y);
-    ctx.lineTo(b.x,b.y);
-    if (isRelated) {{
-      ctx.strokeStyle='rgba(99,179,255,.55)';
-      ctx.lineWidth=1.8;
-    }} else {{
-      ctx.strokeStyle='rgba(255,255,255,.07)';
-      ctx.lineWidth=1;
-    }}
-    ctx.stroke();
+    const rel=S.selected&&(e.source===S.selected||e.target===S.selected);
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.strokeStyle=rel?'rgba(99,179,255,.55)':'rgba(255,255,255,.07)';
+    ctx.lineWidth=rel?1.8:1;ctx.stroke();
   }}
-
-  // draw nodes
   for (const n of S.sim) {{
-    const r = RADII[n.node.kind]||8;
-    const col = COLORS[n.node.kind]||'#aaa';
-    const isSelected = n.id===S.selected;
-    const isHot = n.id===S.hot;
-    const isRelated = S.selected && S.edgesVis.some(e=>(e.source===S.selected&&e.target===n.id)||(e.target===S.selected&&e.source===n.id));
-
+    const r=RADII[n.node.kind]||8,col=COLORS[n.node.kind]||'#aaa';
+    const isSel=n.id===S.selected,isHot=n.id===S.hot;
+    const isRel=S.selected&&S.edgesVis.some(e=>(e.source===S.selected&&e.target===n.id)||(e.target===S.selected&&e.source===n.id));
     ctx.save();
-
-    // outer glow
-    if (isSelected||isHot) {{
-      ctx.shadowColor = col;
-      ctx.shadowBlur  = isSelected ? 28 : 14;
-    }} else if (isRelated) {{
-      ctx.shadowColor = col;
-      ctx.shadowBlur  = 10;
+    if (isSel||isHot){{ctx.shadowColor=col;ctx.shadowBlur=isSel?28:14;}}
+    else if (isRel){{ctx.shadowColor=col;ctx.shadowBlur=10;}}
+    if (isSel){{
+      ctx.beginPath();ctx.arc(n.x,n.y,r+5,0,Math.PI*2);
+      ctx.strokeStyle=col;ctx.globalAlpha=0.45;ctx.lineWidth=2;ctx.stroke();ctx.globalAlpha=1;
     }}
-
-    // ring for selected
-    if (isSelected) {{
-      ctx.beginPath();
-      ctx.arc(n.x,n.y,r+5,0,Math.PI*2);
-      ctx.strokeStyle=col;
-      ctx.globalAlpha=0.45;
-      ctx.lineWidth=2;
-      ctx.stroke();
-      ctx.globalAlpha=1;
+    ctx.beginPath();ctx.arc(n.x,n.y,r,0,Math.PI*2);
+    if (isSel||isHot){{ctx.fillStyle=col;}}
+    else if (isRel){{ctx.fillStyle=col;ctx.globalAlpha=0.75;}}
+    else{{
+      ctx.globalAlpha=S.selected?0.35:1;
+      const g=ctx.createRadialGradient(n.x-r*.25,n.y-r*.25,r*.1,n.x,n.y,r);
+      g.addColorStop(0,col);g.addColorStop(1,col+'88');ctx.fillStyle=g;
     }}
-
-    // filled circle
-    ctx.beginPath();
-    ctx.arc(n.x,n.y,r,0,Math.PI*2);
-    if (isSelected||isHot) {{
-      ctx.fillStyle=col;
-    }} else if (isRelated) {{
-      ctx.fillStyle=col;
-      ctx.globalAlpha=0.75;
-    }} else {{
-      // dim unrelated nodes when something is selected
-      ctx.globalAlpha = S.selected ? 0.35 : 1;
-      const grad=ctx.createRadialGradient(n.x-r*.25,n.y-r*.25,r*.1,n.x,n.y,r);
-      grad.addColorStop(0,col);
-      grad.addColorStop(1,col+'88');
-      ctx.fillStyle=grad;
-    }}
-    ctx.fill();
-    ctx.globalAlpha=1;
-    ctx.shadowBlur=0;
-
-    // label
-    ctx.font=`${{(isSelected||isHot)?'600 ':'400 '}}11px Inter,sans-serif`;
-    ctx.fillStyle = (S.selected && !isSelected && !isRelated) ? 'rgba(226,232,244,.3)' : '#e2e8f4';
-    ctx.textBaseline='middle';
-    ctx.fillText(n.node.label, n.x+r+5, n.y);
+    ctx.fill();ctx.globalAlpha=1;ctx.shadowBlur=0;
+    ctx.font=`${{(isSel||isHot)?'600 ':'400 '}}11px Inter,sans-serif`;
+    ctx.fillStyle=(S.selected&&!isSel&&!isRel)?'rgba(226,232,244,.3)':'#e2e8f4';
+    ctx.textBaseline='middle';ctx.fillText(n.node.label,n.x+r+5,n.y);
     ctx.restore();
   }}
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   ANIMATION LOOP
-═══════════════════════════════════════════════════════════════════════ */
-function loop() {{
-  tick();
-  if (S.dirty) {{ draw(); S.dirty=false; }}
-  requestAnimationFrame(loop);
+function loop(){{tick();if(S.dirty){{draw();S.dirty=false;}}requestAnimationFrame(loop);}}
+function resizeCanvas(){{
+  const a=document.getElementById('graph-area');
+  canvas.width=a.clientWidth;canvas.height=a.clientHeight;S.dirty=true;
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   CANVAS RESIZE
-═══════════════════════════════════════════════════════════════════════ */
-function resizeCanvas() {{
-  const area = document.getElementById('graph-area');
-  canvas.width  = area.clientWidth;
-  canvas.height = area.clientHeight;
-  S.dirty = true;
+function hitTest(mx,my){{
+  for (const n of S.sim){{const r=RADII[n.node.kind]||8,dx=n.x-mx,dy=n.y-my;if(dx*dx+dy*dy<=(r+4)*(r+4))return n;}}return null;
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   HIT TEST
-═══════════════════════════════════════════════════════════════════════ */
-function hitTest(mx,my) {{
-  for (const n of S.sim) {{
-    const r=RADII[n.node.kind]||8;
-    const dx=n.x-mx, dy=n.y-my;
-    if (dx*dx+dy*dy <= (r+4)*(r+4)) return n;
-  }}
-  return null;
-}}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   POINTER EVENTS (canvas)
-═══════════════════════════════════════════════════════════════════════ */
-canvas.addEventListener('mousedown', e=>{{
+canvas.addEventListener('mousedown',e=>{{
   const n=hitTest(e.offsetX,e.offsetY);
-  if (n) {{
-    S.draggingNode=n;
-    selectNode(n.id);
-  }} else {{
-    S.panning=true;
-    S.lastMx=e.clientX; S.lastMy=e.clientY;
-  }}
+  if(n){{S.draggingNode=n;selectNode(n.id);}}
+  else{{S.panning=true;S.lastMx=e.clientX;S.lastMy=e.clientY;}}
 }});
-
-canvas.addEventListener('mousemove', e=>{{
+canvas.addEventListener('mousemove',e=>{{
   const n=hitTest(e.offsetX,e.offsetY);
-  const newHot = n?n.id:null;
-  if (newHot!==S.hot) {{ S.hot=newHot; S.dirty=true; }}
-
-  if (S.draggingNode) {{
-    S.draggingNode.x=e.offsetX;
-    S.draggingNode.y=e.offsetY;
-    S.draggingNode.vx=0; S.draggingNode.vy=0;
-    S.dirty=true;
-  }} else if (S.panning) {{
-    const dx=e.clientX-S.lastMx, dy=e.clientY-S.lastMy;
-    for (const n of S.sim) {{ n.x+=dx; n.y+=dy; }}
-    S.lastMx=e.clientX; S.lastMy=e.clientY;
-    S.dirty=true;
-  }}
-
-  if (n) {{
-    tip.style.display='block';
-    tip.style.left=(e.clientX+14)+'px';
-    tip.style.top=(e.clientY-8)+'px';
-    tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;
-  }} else {{
-    tip.style.display='none';
-  }}
+  if(n!==null?n.id:null!==S.hot){{S.hot=n?n.id:null;S.dirty=true;}}
+  if(S.draggingNode){{S.draggingNode.x=e.offsetX;S.draggingNode.y=e.offsetY;S.draggingNode.vx=0;S.draggingNode.vy=0;S.dirty=true;}}
+  else if(S.panning){{for(const nd of S.sim){{nd.x+=e.clientX-S.lastMx;nd.y+=e.clientY-S.lastMy;}}S.lastMx=e.clientX;S.lastMy=e.clientY;S.dirty=true;}}
+  if(n){{tip.style.display='block';tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-8)+'px';tip.textContent=`${{n.node.kind.toUpperCase()}}  ${{n.node.label}}  ·  ${{n.node.path}}:${{n.node.line}}`;}}
+  else{{tip.style.display='none';}}
 }});
+window.addEventListener('mouseup',()=>{{S.draggingNode=null;S.panning=false;}});
+canvas.addEventListener('wheel',e=>{{
+  e.preventDefault();const f=e.deltaY<0?1.1:0.91,cx=e.offsetX,cy=e.offsetY;
+  for(const n of S.sim){{n.x=cx+(n.x-cx)*f;n.y=cy+(n.y-cy)*f;}}S.dirty=true;
+}},{{passive:false}});
 
-window.addEventListener('mouseup', ()=>{{
-  S.draggingNode=null;
-  S.panning=false;
-}});
+function selectNode(id){{S.selected=id;S.dirty=true;renderDetails();renderResults();}}
 
-canvas.addEventListener('wheel', e=>{{
-  e.preventDefault();
-  const factor = e.deltaY < 0 ? 1.1 : 0.91;
-  const cx=e.offsetX, cy=e.offsetY;
-  for (const n of S.sim) {{
-    n.x = cx + (n.x-cx)*factor;
-    n.y = cy + (n.y-cy)*factor;
-  }}
-  S.dirty=true;
-}}, {{passive:false}});
-
-/* ═══════════════════════════════════════════════════════════════════════
-   SELECT NODE
-═══════════════════════════════════════════════════════════════════════ */
-function selectNode(id) {{
-  S.selected = id;
-  S.dirty = true;
-  renderDetails();
-  renderResults();
+function pillClass(k){{return k==='file'?'pill-file':k==='function'?'pill-function':'pill-type';}}
+function activeClass(n){{
+  if(S.selected!==n.id)return'';
+  return n.kind==='file'?'active-file':n.kind==='type'?'active-type':'active';
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   SIDEBAR LIST
-═══════════════════════════════════════════════════════════════════════ */
-function pillClass(kind) {{
-  return kind==='file'?'pill-file':kind==='function'?'pill-function':'pill-type';
-}}
-function activeClass(node) {{
-  if (S.selected!==node.id) return '';
-  return node.kind==='file'?'active-file':node.kind==='type'?'active-type':'active';
-}}
-
-function renderResults() {{
-  const visible = S.visible.slice(0,100);
-  const total = S.visible.length;
-  countEl.textContent = total===0?'No matches':`${{total}} node${{total===1?'':'s'}}${{total>100?' (showing 100)':''}}`;
-  resultsCt.innerHTML = visible.map(node=>`
+function renderResults(){{
+  const ds=filteredDataset(),vis=ds.nodes.slice(0,100),tot=ds.nodes.length;
+  countEl.textContent=tot===0?'No matches':`${{tot}} node${{tot===1?'':'s'}}${{tot>100?' (showing 100)':''}}`;
+  resultsCt.innerHTML=vis.map(node=>`
     <button class="item ${{activeClass(node)}}" data-id="${{node.id}}">
-      <div class="item-top">
-        <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
-        <span class="item-name">${{escapeHtml(node.label)}}</span>
-      </div>
+      <div class="item-top"><span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span><span class="item-name">${{escapeHtml(node.label)}}</span></div>
       <div class="item-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
       <div class="item-summary">${{escapeHtml(node.summary)}}</div>
-    </button>
-  `).join('');
+    </button>`).join('');
   resultsCt.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>selectNode(b.dataset.id)));
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   DETAIL PANEL
-═══════════════════════════════════════════════════════════════════════ */
-function renderDetails() {{
-  const id = S.selected;
-  const node = GRAPH.nodes.find(n=>n.id===id);
-  if (!node) {{
+function renderDetails(){{
+  const id=S.selected,node=GRAPH.nodes.find(n=>n.id===id);
+  if(!node){{
     detailsCt.innerHTML=`<div class="detail-placeholder">
       <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="7" stroke="currentColor" stroke-width="2"/><line x1="24" y1="4" x2="24" y2="17" stroke="currentColor" stroke-width="2"/><line x1="24" y1="31" x2="24" y2="44" stroke="currentColor" stroke-width="2"/><line x1="4" y1="24" x2="17" y2="24" stroke="currentColor" stroke-width="2"/><line x1="31" y1="24" x2="44" y2="24" stroke="currentColor" stroke-width="2"/></svg>
       <div style="font-weight:600;color:var(--text)">Select a node</div>
-      <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div>
-    </div>`;
+      <div style="font-size:12px">Click any node in the graph<br>or pick one from the list</div></div>`;
     return;
   }}
-  const related = GRAPH.edges.filter(e=>e.source===id||e.target===id).slice(0,15);
-  const accentColor = COLORS[node.kind]||'#aaa';
+  const ac=COLORS[node.kind]||'#aaa';
+  const outE=GRAPH.edges.filter(e=>e.source===id&&e.kind==='calls');
+  const inE=GRAPH.edges.filter(e=>e.target===id&&e.kind==='calls');
+  const relE=GRAPH.edges.filter(e=>(e.source===id||e.target===id)&&e.kind!=='calls').slice(0,12);
+  const callsites=inE.flatMap(e=>(e.callsites||[]).map(s=>Object.assign({{}},s,{{callerId:e.source}}))).slice(0,80);
   detailsCt.innerHTML=`
     <div style="padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span style="width:10px;height:10px;border-radius:50%;background:${{accentColor}};flex-shrink:0;box-shadow:0 0 8px ${{accentColor}}"></span>
+        <span style="width:10px;height:10px;border-radius:50%;background:${{ac}};flex-shrink:0;box-shadow:0 0 8px ${{ac}}"></span>
         <span class="pill ${{pillClass(node.kind)}}">${{node.kind}}</span>
         <span style="font-size:11px;color:var(--text-muted)">${{escapeHtml(node.language)}}</span>
       </div>
       <h2 style="font-size:16px;font-weight:700;word-break:break-all">${{escapeHtml(node.label)}}</h2>
-      <div class="detail-path">${{escapeHtml(node.path)}}:${{node.line}}</div>
+      <div class="detail-path">${{escapeHtml(node.path)}}:${{node.line}}${{node.endLine&&node.endLine!==node.line?'–'+node.endLine:''}}</div>
     </div>
-
-    <div class="detail-section">
-      <h3>Summary</h3>
-      <p style="font-size:13px">${{escapeHtml(node.summary)}}</p>
-    </div>
-
-    <div class="detail-section">
-      <h3>Documentation</h3>
-      <div class="doc-box">${{escapeHtml(node.doc||'No nearby documentation comment found.')}}</div>
-    </div>
-
-    <div class="detail-section">
-      <h3>Relationships <span style="font-weight:400;color:var(--text-muted)">(${{related.length}})</span></h3>
-      ${{related.length===0
-        ? '<p style="font-size:12px;color:var(--text-muted)">No visible relationships.</p>'
-        : `<ul class="rel-list">${{related.map(e=>{{
-            const other = e.source===id ? e.target : e.source;
-            const otherNode = GRAPH.nodes.find(n=>n.id===other);
-            const arrow = e.source===id ? '→' : '←';
-            return `<li class="rel-item">
-              <span class="rel-label">${{escapeHtml(e.label)}}</span>
-              <span class="rel-arrow">${{arrow}}</span>
-              <span style="font-size:12px;color:var(--text)">${{escapeHtml(otherNode?.label||other)}}</span>
-              ${{otherNode ? `<span style="margin-left:auto"><span class="pill ${{pillClass(otherNode.kind)}}">${{otherNode.kind}}</span></span>` : ''}}
-            </li>`;
-          }}).join('')}}</ul>`
-      }}
-    </div>
+    ${{node.doc?`<div class="detail-section"><h3>Documentation</h3><div class="doc-box">${{escapeHtml(node.doc)}}</div></div>`:''}}
+    ${{node.code?`<div class="detail-section"><h3>Code</h3><pre class="code-box">${{escapeHtml(node.code)}}</pre></div>`:''}}
+    ${{callsites.length?`<div class="detail-section"><h3>Called by (${{callsites.length}})</h3><div style="display:flex;flex-direction:column;gap:4px">
+      ${{callsites.map(s=>`<div class="callsite" data-caller="${{escapeHtml(s.callerId)}}">
+        <div><strong>${{escapeHtml(labelFor(s.callerId))}}</strong> <span class="callsite-loc">${{escapeHtml(s.path)}}:${{s.line}}:${{s.col}}</span></div>
+        ${{s.snippet?`<div class="callsite-snippet">${{escapeHtml(s.snippet)}}</div>`:''}}
+      </div>`).join('')}}</div></div>`:''}}
+    ${{outE.length?`<div class="detail-section"><h3>Calls (${{outE.length}})</h3><ul class="rel-list">
+      ${{outE.slice(0,30).map(e=>`<li class="rel-item" data-id="${{escapeHtml(e.target)}}">
+        <span class="rel-arrow">→</span><span style="font-size:12px">${{escapeHtml(labelFor(e.target))}}</span>
+        <span style="margin-left:auto"><span class="pill pill-function">fn</span></span></li>`).join('')}}
+    </ul></div>`:''}}
+    ${{relE.length?`<div class="detail-section"><h3>Relationships (${{relE.length}})</h3><ul class="rel-list">
+      ${{relE.map(e=>{{const o=e.source===id?e.target:e.source;const on=GRAPH.nodes.find(n=>n.id===o);const ar=e.source===id?'→':'←';
+        return`<li class="rel-item" data-id="${{escapeHtml(o)}}"><span class="rel-label">${{escapeHtml(e.label)}}</span><span class="rel-arrow">${{ar}}</span><span style="font-size:12px">${{escapeHtml(on?.label||o)}}</span>
+        ${{on?`<span style="margin-left:auto"><span class="pill ${{pillClass(on.kind)}}">${{on.kind}}</span></span>`:''}}
+        </li>`;
+      }}).join('')}}</ul></div>`:''}}
   `;
+  detailsCt.querySelectorAll('.callsite[data-caller]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.caller)));
+  detailsCt.querySelectorAll('.rel-item[data-id]').forEach(el=>el.addEventListener('click',()=>selectNode(el.dataset.id)));
   detailsCt.scrollTop=0;
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   FULL RENDER (filter changed)
-═══════════════════════════════════════════════════════════════════════ */
-function fullRender() {{
-  S.visible = GRAPH.nodes.filter(matches);
-  if (S.selected && !S.visible.some(n=>n.id===S.selected)) S.selected=null;
-  // auto-select from URL param on first render
-  if (!S.selected && reqSelect) {{
+function labelFor(id){{return GRAPH.nodes.find(n=>n.id===id)?.label||id;}}
+function fullRender(){{
+  if(!S.selected&&reqSelect){{
     const req=reqSelect.toLowerCase();
-    const hit=S.visible.find(n=>n.label.toLowerCase()===req)||S.visible.find(n=>n.id.toLowerCase().includes(req));
-    if (hit) S.selected=hit.id;
+    const hit=GRAPH.nodes.find(n=>n.label.toLowerCase()===req)||GRAPH.nodes.find(n=>n.id.toLowerCase().includes(req));
+    if(hit)S.selected=hit.id;
   }}
-  if (!S.selected && S.visible.length===1) S.selected=S.visible[0].id;
-  initSim();
-  renderResults();
-  renderDetails();
+  initSim();renderResults();renderDetails();
 }}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   RESIZE HANDLES (drag)
-═══════════════════════════════════════════════════════════════════════ */
-function makeHandle(handleEl, sidebarEl, side) {{
-  let dragging=false, startX=0, startW=0;
-  handleEl.addEventListener('mousedown', e=>{{
-    dragging=true;
-    startX=e.clientX;
-    startW=sidebarEl.offsetWidth;
-    handleEl.classList.add('dragging');
-    document.body.style.userSelect='none';
-    document.body.style.cursor='col-resize';
-  }});
-  window.addEventListener('mousemove', e=>{{
-    if (!dragging) return;
-    const delta = side==='left' ? e.clientX-startX : startX-e.clientX;
-    const newW = Math.max(160, Math.min(520, startW+delta));
-    sidebarEl.style.width=newW+'px';
-    resizeCanvas();
-    S.dirty=true;
-  }});
-  window.addEventListener('mouseup', ()=>{{
-    if (!dragging) return;
-    dragging=false;
-    handleEl.classList.remove('dragging');
-    document.body.style.userSelect='';
-    document.body.style.cursor='';
-  }});
+function makeHandle(h,s,side){{
+  let dr=false,sx=0,sw=0;
+  h.addEventListener('mousedown',e=>{{dr=true;sx=e.clientX;sw=s.offsetWidth;h.classList.add('dragging');document.body.style.userSelect='none';document.body.style.cursor='col-resize';}});
+  window.addEventListener('mousemove',e=>{{if(!dr)return;const d=side==='left'?e.clientX-sx:sx-e.clientX;s.style.width=Math.max(160,Math.min(520,sw+d))+'px';resizeCanvas();S.dirty=true;}});
+  window.addEventListener('mouseup',()=>{{if(!dr)return;dr=false;h.classList.remove('dragging');document.body.style.userSelect='';document.body.style.cursor='';}});
 }}
 makeHandle(document.getElementById('handle-left'),  document.getElementById('sidebar-left'),  'left');
 makeHandle(document.getElementById('handle-right'), document.getElementById('sidebar-right'), 'right');
-
-/* ═══════════════════════════════════════════════════════════════════════
-   HELPERS
-═══════════════════════════════════════════════════════════════════════ */
-function escapeHtml(v) {{
-  return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));
-}}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   BOOT
-═══════════════════════════════════════════════════════════════════════ */
-const ro = new ResizeObserver(()=>{{ resizeCanvas(); S.dirty=true; }});
+function escapeHtml(v){{return String(v).replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}}[c]));}}
+const ro=new ResizeObserver(()=>{{resizeCanvas();S.dirty=true;}});
 ro.observe(document.getElementById('graph-area'));
 resizeCanvas();
-
-searchEl.addEventListener('input',  fullRender);
-kindEl.addEventListener('change',   fullRender);
-
+searchEl.addEventListener('input',fullRender);
+viewModeEl.addEventListener('change',()=>{{S.selected=null;fullRender();}});
 fullRender();
 loop();
 </script>
@@ -1202,30 +1222,73 @@ fn graph_to_json(graph: &Graph) -> String {
 
 fn node_to_json(node: &Node) -> String {
     format!(
-        "{{\"id\":{},\"label\":{},\"kind\":{},\"path\":{},\"line\":{},\"language\":{},\"doc\":{},\"summary\":{}}}",
+        "{{\"id\":{},\"label\":{},\"kind\":{},\"path\":{},\"line\":{},\"endLine\":{},\"language\":{},\"doc\":{},\"summary\":{},\"code\":{}}}",
         json_string(&node.id),
         json_string(&node.label),
         json_string(kind_label(&node.kind)),
         json_string(&node.path),
         node.line,
+        node.end_line,
         json_string(&node.language),
         json_string(&node.doc),
-        json_string(&node.summary)
+        json_string(&node.summary),
+        json_string(&node.code)
     )
 }
 
 fn edge_to_json(edge: &Edge) -> String {
     format!(
-        "{{\"source\":{},\"target\":{},\"label\":{}}}",
+        "{{\"source\":{},\"target\":{},\"kind\":{},\"label\":{},\"callsites\":[{}]}}",
         json_string(&edge.source),
         json_string(&edge.target),
-        json_string(&edge.label)
+        json_string(edge_kind_label(&edge.kind)),
+        json_string(&edge.label),
+        edge.callsites
+            .iter()
+            .map(callsite_to_json)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn edge_kind_label(kind: &EdgeKind) -> &'static str {
+    match kind {
+        EdgeKind::Contains => "contains",
+        EdgeKind::Calls => "calls",
+    }
+}
+
+fn callsite_to_json(site: &Callsite) -> String {
+    format!(
+        "{{\"path\":{},\"line\":{},\"col\":{},\"snippet\":{},\"caller\":{}}}",
+        json_string(&site.path),
+        site.line,
+        site.col,
+        json_string(&site.snippet),
+        json_string(&site.caller)
     )
 }
 
 fn json_string(value: &str) -> String {
     let mut out = String::from("\"");
-    for ch in value.chars() {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Escape `</` as `\u003c/` so that `</script>` or `</style>` inside a
+        // JSON string embedded in an HTML <script> block never triggers the
+        // browser's HTML tokeniser and closes the script prematurely.
+        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            out.push_str("\\u003c");
+            i += 1;
+            continue;
+        }
+        // Also escape `<!--` to prevent HTML comment injection.
+        if bytes[i] == b'<' && bytes[i..].starts_with(b"<!--") {
+            out.push_str("\\u003c");
+            i += 1;
+            continue;
+        }
+        let ch = value[i..].chars().next().unwrap();
         match ch {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
@@ -1235,6 +1298,7 @@ fn json_string(value: &str) -> String {
             ch if ch.is_control() => out.push_str(&format!("\\u{:04x}", ch as u32)),
             ch => out.push(ch),
         }
+        i += ch.len_utf8();
     }
     out.push('"');
     out
@@ -1246,132 +1310,6 @@ fn escape_html(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn source_mentions(source: &str, symbol: &str) -> bool {
-    source
-        .split(|ch: char| !is_identifier_char(ch))
-        .any(|part| part == symbol)
-}
-
-fn symbol_after_keywords(line: &str, allowed_prefixes: &[&str], keyword: &str) -> Option<String> {
-    let mut tokens = line.split_whitespace();
-    let mut saw_keyword = false;
-    while let Some(token) = tokens.next() {
-        let clean = token.trim_matches(|ch: char| !is_identifier_char(ch));
-        if clean == keyword {
-            saw_keyword = true;
-            break;
-        }
-        if !allowed_prefixes.contains(&clean) {
-            return None;
-        }
-    }
-    if saw_keyword {
-        tokens.next().and_then(first_identifier)
-    } else {
-        None
-    }
-}
-
-fn symbol_after_any_keyword(line: &str, keywords: &[&str]) -> Option<String> {
-    let line = line.strip_prefix("export ").unwrap_or(line);
-    for keyword in keywords {
-        let Some(index) = line.find(keyword) else {
-            continue;
-        };
-        let before = &line[..index];
-        let after = &line[index + keyword.len()..];
-        let keyword_is_standalone = before
-            .chars()
-            .last()
-            .map_or(true, |ch| !is_identifier_char(ch))
-            && after
-                .chars()
-                .next()
-                .map_or(true, |ch| !is_identifier_char(ch));
-        if keyword_is_standalone {
-            return first_identifier(after.trim_start());
-        }
-    }
-    None
-}
-
-fn capture_js_function(line: &str) -> Option<String> {
-    let line = line.strip_prefix("export ").unwrap_or(line);
-    let line = line.strip_prefix("async ").unwrap_or(line);
-    if let Some(rest) = line.strip_prefix("function ") {
-        return first_identifier(rest);
-    }
-    if line.contains("=>")
-        || line.contains("function")
-        || line.contains("= async (")
-        || line.contains("= (")
-    {
-        return name_before_assignment(line);
-    }
-    None
-}
-
-fn capture_go_function(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("func ")?;
-    let rest = if rest.starts_with('(') {
-        rest.split_once(')').map(|(_, after)| after.trim_start())?
-    } else {
-        rest
-    };
-    first_identifier(rest)
-}
-
-fn capture_java_like_function(line: &str) -> Option<String> {
-    if !line.contains('(')
-        || line.ends_with(';')
-        || symbol_after_any_keyword(line, &["if", "for", "while", "switch"]).is_some()
-    {
-        return None;
-    }
-    name_before_open_paren(line).filter(|name| {
-        !matches!(
-            name.as_str(),
-            "if" | "for" | "while" | "switch" | "catch" | "return"
-        )
-    })
-}
-
-fn first_identifier(value: &str) -> Option<String> {
-    let mut chars = value.chars();
-    let first = chars.next()?;
-    if !is_identifier_start(first) {
-        return None;
-    }
-    let mut name = String::from(first);
-    for ch in chars {
-        if is_identifier_char(ch) {
-            name.push(ch);
-        } else {
-            break;
-        }
-    }
-    Some(name)
-}
-
-fn name_before_assignment(line: &str) -> Option<String> {
-    let left = line.split('=').next()?;
-    let mut parts = left.split_whitespace();
-    let keyword = parts.next()?;
-    if !matches!(keyword, "const" | "let" | "var") {
-        return None;
-    }
-    first_identifier(parts.next()?)
-}
-
-fn name_before_open_paren(line: &str) -> Option<String> {
-    let before_paren = line.split('(').next()?.trim_end();
-    before_paren
-        .split(|ch: char| !is_identifier_char(ch))
-        .filter(|part| !part.is_empty())
-        .last()
-        .map(ToString::to_string)
 }
 
 fn relative_path(root: &Path, path: &Path) -> String {
@@ -1393,51 +1331,10 @@ fn kind_label(kind: &NodeKind) -> &'static str {
     }
 }
 
-fn first_sentence(text: &str) -> String {
-    text.split('.')
-        .next()
-        .map(str::trim)
-        .filter(|sentence| !sentence.is_empty())
-        .unwrap_or(text)
-        .to_string()
-}
-
-fn is_identifier_start(ch: char) -> bool {
-    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
-}
-
-fn is_identifier_char(ch: char) -> bool {
-    is_identifier_start(ch) || ch.is_ascii_digit()
-}
-
-fn is_keyword(name: &str) -> bool {
-    matches!(
-        name,
-        "if" | "for" | "while" | "switch" | "catch" | "return" | "new" | "match" | "fn"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn extracts_rust_docs_functions_and_types() {
-        let patterns = patterns_for("rust").unwrap();
-        let nodes = extract_symbols(
-            "/// Stores graph nodes.\npub struct GraphStore {}\n\n/// Builds the graph.\npub fn build_graph() {}\n",
-            "src/lib.rs",
-            "rust",
-            patterns,
-        );
-
-        assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0].label, "GraphStore");
-        assert_eq!(nodes[0].summary, "Stores graph nodes");
-        assert_eq!(nodes[1].label, "build_graph");
-        assert_eq!(nodes[1].summary, "Builds the graph");
-    }
 
     #[test]
     fn renders_html_with_embedded_graph_json() {
@@ -1449,15 +1346,17 @@ mod tests {
                 kind: NodeKind::Function,
                 path: "src/lib.rs".to_string(),
                 line: 1,
+                end_line: 1,
                 language: "rust".to_string(),
                 doc: "Runs the app.".to_string(),
                 summary: "Runs the app".to_string(),
+                code: "fn run() {}".to_string(),
             }],
             edges: Vec::new(),
             stats: BTreeMap::from([("functions".to_string(), 1)]),
         };
 
-        let html = render_html(&graph);
+        let html = render_html(&graph, false);
 
         assert!(html.contains("Codebase Visualizer"));
         assert!(html.contains("\"label\":\"run\""));
@@ -1484,9 +1383,10 @@ mod tests {
         fs::remove_dir_all(root)?;
 
         assert_eq!(graph.stats.get("files"), Some(&2));
-        assert_eq!(graph.stats.get("functions"), Some(&3));
-        assert_eq!(graph.stats.get("types"), Some(&1));
-        assert!(graph.edges.iter().any(|edge| edge.label == "mentions"));
+        // Rust-only callgraph: we still count file nodes, but only Rust functions/types are indexed.
+        assert_eq!(graph.stats.get("functions"), Some(&2));
+        assert_eq!(graph.stats.get("types"), Some(&0));
+        assert!(graph.edges.iter().any(|edge| edge.label == "calls"));
         Ok(())
     }
 
