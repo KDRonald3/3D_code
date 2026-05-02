@@ -6,6 +6,357 @@ use std::path::{Path, PathBuf};
 
 use tree_sitter::{Node as TsNode, Parser as TsParser};
 
+// ── Regex-based symbol extractor for non-Rust languages ────────────────────
+
+/// A generic symbol found by the line-regex scanner.
+#[derive(Debug, Clone)]
+struct GenericSymbol {
+    kind: SymbolKind,
+    name: String,
+    path: String,
+    start_line: usize,
+    doc: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SymbolKind {
+    Function,
+    Type,
+}
+
+/// Language-specific regex pattern set (all patterns are applied line-by-line).
+struct LangPatterns {
+    func_patterns: &'static [&'static str],
+    type_patterns: &'static [&'static str],
+    doc_prefixes: &'static [&'static str],
+}
+
+fn lang_patterns(language: &str) -> Option<LangPatterns> {
+    match language {
+        "python" => Some(LangPatterns {
+            func_patterns: &[r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)"],
+            type_patterns: &[r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)"],
+            doc_prefixes: &["#"],
+        }),
+        "javascript" | "typescript" => Some(LangPatterns {
+            func_patterns: &[
+                r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+                r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(",
+                r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?\(",
+                r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{",
+            ],
+            type_patterns: &[
+                r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+                r"^\s*(?:export\s+)?(?:type|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+            ],
+            doc_prefixes: &["//", "*"],
+        }),
+        "go" => Some(LangPatterns {
+            func_patterns: &[r"^func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("],
+            type_patterns: &[r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)"],
+            doc_prefixes: &["//"],
+        }),
+        "java" => Some(LangPatterns {
+            func_patterns: &[
+                r"^\s*(?:public|private|protected|static|final|synchronized|abstract|\s)+(?:[A-Za-z_][A-Za-z0-9_<>\[\]]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            ],
+            type_patterns: &[
+                r"^\s*(?:public|private|protected|abstract|final|\s)*(?:class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            ],
+            doc_prefixes: &["//", "*"],
+        }),
+        "c" | "cpp" => Some(LangPatterns {
+            func_patterns: &[
+                r"^(?:[A-Za-z_][A-Za-z0-9_\s\*:&<>]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?:const\s*)?\{",
+            ],
+            type_patterns: &[
+                r"^\s*(?:typedef\s+)?(?:struct|class|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            ],
+            doc_prefixes: &["//", "*"],
+        }),
+        _ => None,
+    }
+}
+
+fn extract_generic_symbols(source: &str, path: &str, language: &str) -> Vec<GenericSymbol> {
+    let Some(patterns) = lang_patterns(language) else {
+        return Vec::new();
+    };
+
+    // Compile all regexes once (using simple prefix-matching + capture, no extern crate).
+    // We use a hand-rolled approach to avoid adding the regex crate.
+    let lines: Vec<&str> = source.lines().collect();
+    let mut symbols = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let line_no = idx + 1;
+
+        // Try function patterns
+        if let Some(name) = match_lang_func(line, language) {
+            if !is_generic_keyword(&name) {
+                let doc = gather_doc_comment(&lines, idx, patterns.doc_prefixes);
+                symbols.push(GenericSymbol {
+                    kind: SymbolKind::Function,
+                    name,
+                    path: path.to_string(),
+                    start_line: line_no,
+                    doc,
+                });
+                continue; // a line can only start one symbol
+            }
+        }
+
+        // Try type patterns
+        if let Some(name) = match_lang_type(line, language) {
+            if !is_generic_keyword(&name) {
+                let doc = gather_doc_comment(&lines, idx, patterns.doc_prefixes);
+                symbols.push(GenericSymbol {
+                    kind: SymbolKind::Type,
+                    name,
+                    path: path.to_string(),
+                    start_line: line_no,
+                    doc,
+                });
+            }
+        }
+    }
+
+    symbols
+}
+
+/// Extract a function name from a line for the given language.
+fn match_lang_func(line: &str, language: &str) -> Option<String> {
+    let t = line.trim_start();
+    match language {
+        "python" => {
+            let inner = t.strip_prefix("async ").map(str::trim_start).unwrap_or(t);
+            inner
+                .strip_prefix("def ")
+                .map(|r| first_ident(r))
+                .filter(|s| !s.is_empty())
+        }
+        "javascript" | "typescript" => {
+            let inner = t.strip_prefix("export ").map(str::trim_start).unwrap_or(t);
+            let inner = inner
+                .strip_prefix("async ")
+                .map(str::trim_start)
+                .unwrap_or(inner);
+            if let Some(rest) = inner.strip_prefix("function ") {
+                let n = first_ident(rest);
+                if !n.is_empty() {
+                    return Some(n);
+                }
+            }
+            for kw in &["const ", "let ", "var "] {
+                if let Some(after_kw) = inner.strip_prefix(kw) {
+                    let name = first_ident(after_kw);
+                    if !name.is_empty() {
+                        let after_name = after_kw[name.len()..].trim_start();
+                        if after_name.starts_with('=') {
+                            let rhs = after_name[1..].trim_start();
+                            let rhs = rhs
+                                .strip_prefix("async")
+                                .map(str::trim_start)
+                                .unwrap_or(rhs);
+                            if rhs.starts_with('(') || rhs.starts_with("function") {
+                                return Some(name);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "go" => {
+            let inner = t.strip_prefix("func ")?;
+            let inner = if inner.starts_with('(') {
+                inner
+                    .split_once(')')
+                    .map(|(_, a)| a.trim_start())
+                    .unwrap_or(inner)
+            } else {
+                inner
+            };
+            let n = first_ident(inner);
+            if n.is_empty() {
+                None
+            } else {
+                Some(n)
+            }
+        }
+        "java" => {
+            if !t.contains('(') {
+                return None;
+            }
+            let before = t.split('(').next()?;
+            let cand: String = before
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .split('.')
+                .last()
+                .unwrap_or("")
+                .to_string();
+            if cand.is_empty() || is_generic_keyword(&cand) {
+                return None;
+            }
+            if cand.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                Some(cand)
+            } else {
+                None
+            }
+        }
+        "c" | "cpp" => {
+            if !t.contains('(') || t.trim_end().ends_with(';') {
+                return None;
+            }
+            if t.trim_end().ends_with(')') {
+                return None;
+            }
+            let before = t.split('(').next()?;
+            let cand: String = before
+                .split_whitespace()
+                .last()
+                .unwrap_or("")
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .last()
+                .unwrap_or("")
+                .to_string();
+            if cand.is_empty() || is_generic_keyword(&cand) {
+                return None;
+            }
+            if cand.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+                Some(cand)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a type/class name from a line for the given language.
+fn match_lang_type(line: &str, language: &str) -> Option<String> {
+    let t = line.trim_start();
+    match language {
+        "python" => t
+            .strip_prefix("class ")
+            .map(|r| first_ident(r))
+            .filter(|s| !s.is_empty()),
+        "javascript" | "typescript" => {
+            let inner = t.strip_prefix("export ").map(str::trim_start).unwrap_or(t);
+            for kw in &["class ", "interface ", "type ", "enum "] {
+                if let Some(rest) = inner.strip_prefix(kw) {
+                    let n = first_ident(rest);
+                    if !n.is_empty() {
+                        return Some(n);
+                    }
+                }
+            }
+            None
+        }
+        "go" => {
+            let inner = t.strip_prefix("type ")?;
+            let n = first_ident(inner);
+            if n.is_empty() {
+                return None;
+            }
+            let after = inner[n.len()..].trim_start();
+            if after.starts_with("struct") || after.starts_with("interface") {
+                Some(n)
+            } else {
+                None
+            }
+        }
+        "java" => {
+            let inner = ["public ", "private ", "protected ", "abstract ", "final "]
+                .iter()
+                .find_map(|pfx| t.strip_prefix(pfx).map(str::trim_start))
+                .unwrap_or(t);
+            for kw in &["class ", "interface ", "enum ", "record "] {
+                if let Some(rest) = inner.strip_prefix(kw) {
+                    let n = first_ident(rest);
+                    if !n.is_empty() {
+                        return Some(n);
+                    }
+                }
+            }
+            None
+        }
+        "c" | "cpp" => {
+            let inner = t.strip_prefix("typedef ").map(str::trim_start).unwrap_or(t);
+            for kw in &["struct ", "class ", "enum ", "union "] {
+                if let Some(rest) = inner.strip_prefix(kw) {
+                    let n = first_ident(rest);
+                    if !n.is_empty() {
+                        return Some(n);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// First identifier characters from the start of `s`.
+fn first_ident(s: &str) -> String {
+    s.chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect()
+}
+
+fn gather_doc_comment(lines: &[&str], decl_idx: usize, prefixes: &[&str]) -> String {
+    let mut docs = Vec::new();
+    let mut i = decl_idx;
+    while i > 0 {
+        i -= 1;
+        let t = lines[i].trim();
+        if t.is_empty() {
+            if docs.is_empty() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        let mut matched = false;
+        for pfx in prefixes {
+            if t.starts_with(pfx) {
+                let cleaned = t
+                    .trim_start_matches(pfx)
+                    .trim_matches('/')
+                    .trim_matches('*')
+                    .trim();
+                docs.push(cleaned.to_string());
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            break;
+        }
+    }
+    docs.reverse();
+    docs.join(" ").trim().to_string()
+}
+
+fn is_generic_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "for"
+            | "while"
+            | "switch"
+            | "return"
+            | "new"
+            | "match"
+            | "catch"
+            | "else"
+            | "try"
+            | "do"
+            | "case"
+    )
+}
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
@@ -199,7 +550,7 @@ fn parse_args() -> Result<Args> {
 
 fn print_help() {
     println!(
-        "codebase-visualizer\n\nUSAGE:\n    codebase_visualizer [INPUT] [--output FILE] [--max-file-bytes BYTES] [--embed-libs]\n\nGenerates a self-contained searchable 3D HTML call graph of Rust functions (plus a types view)."
+        "codebase-visualizer\n\nUSAGE:\n    codebase_visualizer [INPUT] [--output FILE] [--max-file-bytes BYTES] [--embed-libs]\n\nScans Rust (tree-sitter), Python, JavaScript, TypeScript, Go, Java, C, and C++ source files.\nGenerates a self-contained searchable HTML call-graph / types visualization."
     );
 }
 
@@ -243,6 +594,46 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
             rust_functions.extend(defs);
             rust_types.extend(type_defs);
             rust_calls.extend(calls);
+        } else {
+            // Generic regex-based extraction for all other supported languages.
+            for sym in extract_generic_symbols(&source, &relative_path, &language) {
+                let (node_kind_str, kind) = match sym.kind {
+                    SymbolKind::Function => ("fn", NodeKind::Function),
+                    SymbolKind::Type => ("type", NodeKind::Type),
+                };
+                let sym_id = node_id(node_kind_str, &sym.path, sym.start_line, &sym.name);
+                let summary = format!(
+                    "{} {} (line {})",
+                    if kind == NodeKind::Function {
+                        "fn"
+                    } else {
+                        "type"
+                    },
+                    sym.name,
+                    sym.start_line
+                );
+                let node = Node {
+                    id: sym_id.clone(),
+                    label: sym.name.clone(),
+                    kind: kind.clone(),
+                    path: sym.path.clone(),
+                    line: sym.start_line,
+                    end_line: sym.start_line,
+                    language: language.clone(),
+                    doc: sym.doc.clone(),
+                    summary,
+                    code: String::new(),
+                };
+                let file_id = node_id("file", &sym.path, 0, &sym.path);
+                edges.push(Edge {
+                    source: file_id,
+                    target: sym_id,
+                    kind: EdgeKind::Contains,
+                    label: "contains".to_string(),
+                    callsites: Vec::new(),
+                });
+                nodes.push(node);
+            }
         }
     }
 
@@ -302,6 +693,7 @@ fn scan_codebase(root: &Path, max_file_bytes: u64) -> Result<Graph> {
     }
 
     edges.extend(build_rust_call_edges(&nodes, &scanned_files, &rust_calls));
+    edges.extend(build_generic_mention_edges(&nodes, &scanned_files));
 
     let mut stats = BTreeMap::new();
     stats.insert(
@@ -588,6 +980,96 @@ fn rust_callee_name_and_byte(func_node: TsNode, source: &str) -> Option<(String,
         }
         _ => None,
     }
+}
+
+/// For non-Rust files, build lightweight "mentions" edges by scanning source text
+/// for symbol names from the same codebase.
+fn build_generic_mention_edges(nodes: &[Node], files: &[ScannedFile]) -> Vec<Edge> {
+    use std::collections::HashSet;
+
+    // Only non-Rust symbols — Rust has proper call edges already.
+    let symbols: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Type) && n.language != "rust")
+        .collect();
+
+    if symbols.is_empty() {
+        return Vec::new();
+    }
+
+    // Map file path → source text for non-Rust files.
+    let source_map: HashMap<&str, &str> = files
+        .iter()
+        .filter(|f| f.node.language != "rust")
+        .map(|f| (f.node.path.as_str(), f.source.as_str()))
+        .collect();
+
+    // Build a map: symbol name → node id (skip ambiguous names).
+    let mut name_to_id: HashMap<&str, Option<&str>> = HashMap::new();
+    for sym in &symbols {
+        let entry = name_to_id
+            .entry(sym.label.as_str())
+            .or_insert(Some(sym.id.as_str()));
+        if *entry != Some(sym.id.as_str()) {
+            *entry = None; // ambiguous
+        }
+    }
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut edges = Vec::new();
+
+    for sym in &symbols {
+        let Some(src) = source_map.get(sym.path.as_str()) else {
+            continue;
+        };
+        for (name, maybe_id) in &name_to_id {
+            let Some(target_id) = maybe_id else {
+                continue;
+            };
+            if *target_id == sym.id.as_str() {
+                continue;
+            }
+            // Word-boundary search
+            if source_mentions_word(src, name) {
+                let key = (sym.id.clone(), target_id.to_string());
+                if seen.insert(key) {
+                    edges.push(Edge {
+                        source: sym.id.clone(),
+                        target: target_id.to_string(),
+                        kind: EdgeKind::Calls,
+                        label: "mentions".to_string(),
+                        callsites: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+    edges
+}
+
+fn source_mentions_word(source: &str, word: &str) -> bool {
+    let bytes = source.as_bytes();
+    let wbytes = word.as_bytes();
+    let wlen = wbytes.len();
+    if wlen == 0 || wlen > source.len() {
+        return false;
+    }
+    for start in 0..=(source.len() - wlen) {
+        if &bytes[start..start + wlen] == wbytes {
+            let before_ok = start == 0 || {
+                let b = bytes[start - 1];
+                !(b.is_ascii_alphanumeric() || b == b'_')
+            };
+            let after_ok = start + wlen >= source.len() || {
+                let b = bytes[start + wlen];
+                !(b.is_ascii_alphanumeric() || b == b'_')
+            };
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn build_rust_call_edges(nodes: &[Node], files: &[ScannedFile], calls: &[RustCall]) -> Vec<Edge> {
@@ -946,6 +1428,9 @@ input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:
 #back-btn:hover{{border-color:var(--border-hi);color:var(--text);background:#eff6ff}}
 #back-btn.visible{{display:flex}}
 .insp-title{{font-size:12px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em}}
+#btn-open-project{{width:100%;padding:9px 14px;border-radius:10px;border:1.5px dashed rgba(37,99,235,.35);background:rgba(37,99,235,.04);color:var(--accent-fn);font-size:12px;font-weight:600;cursor:pointer;transition:background .15s,border-color .15s;text-align:left}}
+#btn-open-project:hover{{background:rgba(37,99,235,.09);border-color:rgba(37,99,235,.6)}}
+#btn-open-project:disabled{{opacity:.5;cursor:not-allowed}}
 </style>
 </head>
 <body>
@@ -964,6 +1449,11 @@ input[type=range]#link-len::-webkit-slider-thumb{{-webkit-appearance:none;width:
   </div>
   <div class="sidebar-body">
     <div class="stats" id="stats"></div>
+    <!-- Open Project button -->
+    <button id="btn-open-project" title="Open a local codebase folder and visualize it">
+      📂 Open Project…
+    </button>
+    <div id="open-project-status" style="display:none;font-size:11px;color:var(--text-muted)"></div>
     <select id="viewMode">
       <option value="callgraph">Call graph</option>
       <option value="types">Data structures</option>
@@ -1529,6 +2019,247 @@ resizeCanvas();
 searchEl.addEventListener('input',fullRender);
 viewModeEl.addEventListener('change',()=>{{S.selected=null;S.history=[];fullRender();}});
 fullRender();loop();
+
+/* ═══ OPEN PROJECT (client-side multi-language scanner) ══════════════════
+   Uses the File System Access API to let users open any local codebase.
+   Extracts functions and types from Rust, Python, JS/TS, Go, Java, C/C++.
+   Builds the same GRAPH-compatible data structure and re-renders in place. */
+
+const LANG_FOR_EXT = {{
+  rs:'rust', py:'python', js:'javascript', jsx:'javascript',
+  ts:'typescript', tsx:'typescript', go:'go', java:'java',
+  c:'c', h:'c', cc:'cpp', cpp:'cpp', hpp:'cpp'
+}};
+
+const LANG_PATTERNS = {{
+  rust:{{
+    func: [/^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    type: [/^\s*(?:pub\s+)?(?:struct|enum|trait|type|impl)\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    doc: ['///','//!'],
+  }},
+  python:{{
+    func: [/^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    type: [/^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    doc: ['#'],
+  }},
+  javascript:{{
+    func: [
+      /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+      /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(/,
+    ],
+    type: [
+      /^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+      /^\s*(?:export\s+)?(?:type|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+    ],
+    doc: ['//','*'],
+  }},
+  typescript:{{
+    func: [
+      /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+      /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(/,
+    ],
+    type: [
+      /^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+      /^\s*(?:export\s+)?(?:type|interface)\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+    ],
+    doc: ['//','*'],
+  }},
+  go:{{
+    func: [/^func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/],
+    type: [/^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)/],
+    doc: ['//'],
+  }},
+  java:{{
+    func: [/^\s*(?:public|private|protected|static|final|synchronized|abstract|\s)+(?:[A-Za-z_][A-Za-z0-9_<>\[\]]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(/],
+    type: [/^\s*(?:public|private|protected|abstract|final|\s)*(?:class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    doc: ['//','*'],
+  }},
+  c:{{
+    func: [/^[A-Za-z_][A-Za-z0-9_\s\*:&<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?:const\s*)?\{{/],
+    type: [/^\s*(?:typedef\s+)?(?:struct|class|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    doc: ['//','*'],
+  }},
+  cpp:{{
+    func: [/^[A-Za-z_][A-Za-z0-9_\s\*:&<>]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?:const\s*)?\{{/],
+    type: [/^\s*(?:typedef\s+)?(?:struct|class|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)/],
+    doc: ['//','*'],
+  }},
+}};
+
+const IGNORED_DIRS = new Set(['.git','node_modules','target','.venv','venv','dist','build','__pycache__','.next','.nuxt','vendor']);
+const SKIP_KEYWORDS = new Set(['if','for','while','switch','return','new','match','catch','else','try','do','case','class','function','import']);
+const MAX_FILE_BYTES = 500_000;
+
+async function scanDirectory(dirHandle, baseName=''){{
+  const nodes=[];const edges=[];
+  const files=[];
+  async function walk(handle, relPath){{
+    for await(const [name,entry] of handle.entries()){{
+      if(IGNORED_DIRS.has(name))continue;
+      const path=relPath?`${{relPath}}/${{name}}`:name;
+      if(entry.kind==='directory')await walk(entry,path);
+      else if(entry.kind==='file'){{
+        const ext=name.split('.').pop()?.toLowerCase()||'';
+        const lang=LANG_EXT(ext);
+        if(lang)files.push({{handle:entry,path,lang}});
+      }}
+    }}
+  }}
+  await walk(dirHandle,'');
+
+  // Index: symbol name → id (for mention edges)
+  const symIndex=new Map();
+
+  for(const f of files){{
+    let text;
+    try{{
+      const file=await f.handle.getFile();
+      if(file.size>MAX_FILE_BYTES)continue;
+      text=await file.text();
+    }}catch(e){{continue;}}
+
+    const fileId=`file:${{f.path}}:0:${{f.path}}`;
+    nodes.push({{
+      id:fileId,label:f.path,kind:'file',path:f.path,
+      line:1,endLine:text.split('\n').length,language:f.lang,
+      doc:'',summary:`${{text.split('\n').filter(l=>l.trim()).length}} lines`,code:'',
+    }});
+
+    const pats=LANG_PATTERNS[f.lang];
+    if(!pats)continue;
+    const lines=text.split('\n');
+
+    for(let i=0;i<lines.length;i++){{
+      const line=lines[i];
+      let found=false;
+      // Functions
+      for(const re of pats.func){{
+        const m=line.match(re);
+        if(m&&m[1]&&!SKIP_KEYWORDS.has(m[1])){{
+          const doc=gatherDoc(lines,i,pats.doc);
+          const id=`fn:${{f.path}}:${{i+1}}:${{m[1]}}`;
+          nodes.push({{id,label:m[1],kind:'function',path:f.path,line:i+1,endLine:i+1,language:f.lang,doc,summary:`fn ${{m[1]}} (line ${{i+1}})`,code:''}});
+          edges.push({{source:fileId,target:id,kind:'contains',label:'contains',callsites:[]}});
+          registerSym(symIndex,m[1],id);
+          found=true;break;
+        }}
+      }}
+      if(found)continue;
+      // Types
+      for(const re of pats.type){{
+        const m=line.match(re);
+        if(m&&m[1]&&!SKIP_KEYWORDS.has(m[1])){{
+          const doc=gatherDoc(lines,i,pats.doc);
+          const id=`type:${{f.path}}:${{i+1}}:${{m[1]}}`;
+          nodes.push({{id,label:m[1],kind:'type',path:f.path,line:i+1,endLine:i+1,language:f.lang,doc,summary:`type ${{m[1]}} (line ${{i+1}})`,code:''}});
+          edges.push({{source:fileId,target:id,kind:'contains',label:'contains',callsites:[]}});
+          registerSym(symIndex,m[1],id);
+          break;
+        }}
+      }}
+    }}
+  }}
+
+  // Build mention edges among symbols (same heuristic as Rust backend)
+  const syms=nodes.filter(n=>n.kind==='function'||n.kind==='type');
+  const fileTexts=new Map();
+  for(const f of files){{
+    try{{const file=await f.handle.getFile();if(file.size<=MAX_FILE_BYTES)fileTexts.set(f.path,await file.text());}}catch{{}}
+  }}
+  const seen=new Set();
+  for(const sym of syms){{
+    const src=fileTexts.get(sym.path)||'';
+    for(const[name,targetId]of symIndex){{
+      if(targetId===sym.id||!targetId)continue;
+      if(wordInSource(src,name)){{
+        const key=`${{sym.id}}->${{targetId}}`;
+        if(!seen.has(key)){{seen.add(key);edges.push({{source:sym.id,target:targetId,kind:'calls',label:'mentions',callsites:[]}});}}
+      }}
+    }}
+  }}
+
+  const stats={{
+    files:nodes.filter(n=>n.kind==='file').length,
+    functions:nodes.filter(n=>n.kind==='function').length,
+    types:nodes.filter(n=>n.kind==='type').length,
+    calls:edges.filter(e=>e.kind==='calls').length,
+  }};
+  return{{root:baseName,nodes,edges,stats}};
+}}
+
+function LANG_EXT(ext){{return LANG_FOR_EXT[ext]||null;}}
+
+function registerSym(index,name,id){{
+  if(index.has(name)){{index.set(name,null);}}else{{index.set(name,id);}}
+}}
+
+function gatherDoc(lines,idx,prefixes){{
+  const docs=[];let i=idx;
+  while(i>0){{
+    i--;const t=lines[i].trim();
+    if(!t){{if(!docs.length)continue;break;}}
+    let hit=false;
+    for(const p of prefixes){{if(t.startsWith(p)){{docs.push(t.replace(p,'').replace(/^[/*\s]+/,'').trimEnd());hit=true;break;}}}}
+    if(!hit)break;
+  }}
+  return docs.reverse().join(' ').trim();
+}}
+
+function wordInSource(src,word){{
+  const re=new RegExp('(?<![A-Za-z0-9_])'+word.replace(/[.*+?^${{}}()|[\]\\]/g,'\\$&')+'(?![A-Za-z0-9_])');
+  return re.test(src);
+}}
+
+/* Wire Open Project button */
+const openBtn=document.getElementById('btn-open-project');
+const openStatus=document.getElementById('open-project-status');
+
+if(!window.showDirectoryPicker){{
+  openBtn.textContent='📂 Open Project (needs Chrome/Edge 86+)';
+  openBtn.title='Your browser does not support the File System Access API. Use Chrome or Edge 86+.';
+}}
+
+openBtn.addEventListener('click',async()=>{{
+  if(!window.showDirectoryPicker){{
+    alert('The File System Access API is not supported in this browser.\nPlease use Chrome or Edge 86+.');
+    return;
+  }}
+  let dirHandle;
+  try{{
+    dirHandle=await window.showDirectoryPicker({{mode:'read'}});
+  }}catch(e){{
+    if(e.name!=='AbortError')console.error(e);
+    return;
+  }}
+  openBtn.disabled=true;
+  openStatus.style.display='block';
+  openStatus.textContent='Scanning…';
+  try{{
+    const g=await scanDirectory(dirHandle,dirHandle.name);
+    // Swap the live graph data in place and re-render
+    Object.assign(GRAPH,g);
+    S.selected=null;S.history=[];
+    openStatus.textContent=`Loaded ${{g.stats.files}} files, ${{g.stats.functions}} functions, ${{g.stats.types}} types.`;
+    // Refresh stats bar
+    document.getElementById('stats').innerHTML=[
+      ['file','file',g.stats.files,'Files'],
+      ['fn','function',g.stats.functions,'Funcs'],
+      ['type','type',g.stats.types,'Types'],
+      ['calls','calls',g.stats.calls,'Calls'],
+    ].map(([c,_,v,l])=>`<div class="stat ${{c}}"><div class="stat-value">${{v}}</div><div class="stat-label">${{l}}</div></div>`).join('');
+    CAM.tx=0;CAM.ty=0;CAM.angle=0;
+    initSim();renderResults();renderDetails();updateBackBtn();
+    requestAnimationFrame(()=>{{fitAll();
+      let fr=0;function re2(){{fr++;if(fr===60){{fitAll();return;}}requestAnimationFrame(re2);}}
+      requestAnimationFrame(re2);
+    }});
+  }}catch(e){{
+    openStatus.textContent='Error: '+e.message;
+    console.error(e);
+  }}finally{{
+    openBtn.disabled=false;
+  }}
+}});
 </script>
 </body>
 </html>"#
@@ -1723,9 +2454,10 @@ mod tests {
         fs::remove_dir_all(root)?;
 
         assert_eq!(graph.stats.get("files"), Some(&2));
-        // Rust-only callgraph: we still count file nodes, but only Rust functions/types are indexed.
-        assert_eq!(graph.stats.get("functions"), Some(&2));
-        assert_eq!(graph.stats.get("types"), Some(&0));
+        // Rust functions (main, render) + Python function (load_tasks) = 3
+        assert_eq!(graph.stats.get("functions"), Some(&3));
+        // Python class Task = 1 type
+        assert_eq!(graph.stats.get("types"), Some(&1));
         assert!(graph.edges.iter().any(|edge| edge.label == "calls"));
         Ok(())
     }
