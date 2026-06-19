@@ -1,8 +1,26 @@
 [package]
 name = "codebase_visualizer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "Scan a codebase and render an interactive, Figma-style map of its structure."
+license = "MIT"
+
+[lib]
+name = "codebase_visualizer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "codebase_visualizer"
+path = "src/main.rs"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
 
 [dependencies]
-tree-sitter = "0.22"
-tree-sitter-rust = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+
+[profile.release]
+opt-level = 2
