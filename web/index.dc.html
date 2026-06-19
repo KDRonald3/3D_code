@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-track{background:transparent}
+  @keyframes cvdash{to{stroke-dashoffset:-16}}
+  @keyframes cvfade{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+  @keyframes cvspot{from{opacity:0}to{opacity:1}}
+</style>
+</helmet>
+<div ref="{{ setRoot }}" style="{{ rootStyle }}">
+
+  <!-- ░ TOP BAR ░ -->
+  <header style="display:flex;align-items:center;gap:14px;height:44px;flex:none;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--border);z-index:40">
+    <div style="display:flex;align-items:center;gap:9px">
+      <div style="width:22px;height:22px;border-radius:5px;background:var(--sel);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;font-family:'JetBrains Mono',monospace">{}</div>
+      <span style="font-weight:600;font-size:13px;color:var(--text)">{{ repoName }}</span>
+      <span style="color:var(--text3);font-size:13px">/</span>
+      <span style="font-size:13px;color:var(--text2)">Codebase Map</span>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:9px">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text3);padding:4px 9px;border:1px solid var(--border);border-radius:7px">{{ framesInfo }}</span>
+      <input ref="{{ setFolderInput }}" onChange="{{ onFolderPicked }}" type="file" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
+      <button onClick="{{ pickFolder }}" title="Add a folder to visualize" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text2);font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">{{ addLabel }}</button>
+      <button onClick="{{ toggleTheme }}" title="Theme" style="width:30px;height:30px;border:1px solid var(--border);background:var(--panel2);border-radius:8px;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;font-size:14px">{{ themeIcon }}</button>
+      <sc-if value="{{ hasData }}" hint-placeholder-val="{{ false }}"><button onClick="{{ startTour }}" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 14px;border:none;border-radius:8px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">▶ Present walkthrough</button></sc-if>
+    </div>
+  </header>
+
+  <div style="display:flex;flex:1;min-height:0">
+
+    <!-- ░ LEFT — LAYERS ░ -->
+    <aside style="width:236px;flex:none;background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column">
+      <div style="padding:12px 12px 6px">
+        <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:7px">Pages</div>
+        <button onClick="{{ setMap }}" style="{{ pageMapStyle }}"><span style="font-size:12px">◇</span>Map</button>
+        <button onClick="{{ setDiff }}" style="{{ pageDiffStyle }}"><span style="font-size:12px">◈</span>Diff · PR #142</button>
+        <button onClick="{{ openFns }}" style="{{ pageFnStyle }}"><span style="font-size:12px;color:#14ae5c">ƒ</span>Functions<span style="margin-left:auto;font-size:10px;color:var(--text3)">⊟</span></button>
+        <button onClick="{{ openStructs }}" style="{{ pageDsStyle }}"><span style="font-size:12px;color:#9747ff">⬚</span>Data structures<span style="margin-left:auto;font-size:10px;color:var(--text3)">⊟</span></button>
+      </div>
+
+      <div style="height:1px;background:var(--border);margin:6px 0"></div>
+
+      <div data-tour-id="t-layers" style="padding:10px 12px 6px;flex:1">
+        <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Layers</div>
+        <div style="position:relative;margin-bottom:9px">
+          <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:12px">⌕</span>
+          <input value="{{ query }}" onInput="{{ onSearch }}" placeholder="Find a symbol…" style="width:100%;height:30px;padding:0 10px 0 27px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:12px;font-family:Inter;outline:none" />
+        </div>
+        <sc-for list="{{ layerRows }}" as="r" hint-placeholder-count="14">
+          <button onClick="{{ r.onClick }}" style="{{ r.style }}">
+            <span style="width:{{ r.indent }}px;flex:none"></span>
+            <span style="{{ r.iconStyle }}">{{ r.icon }}</span>
+            <span style="flex:1;text-align:left;font-size:12px;color:{{ r.textColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:{{ r.font }}">{{ r.label }}</span>
+            <sc-if value="{{ r.showBadge }}" hint-placeholder-val="{{ false }}"><span style="{{ r.badgeStyle }}">{{ r.badge }}</span></sc-if>
+          </button>
+        </sc-for>
+      </div>
+
+      <div style="height:1px;background:var(--border)"></div>
+      <div style="padding:10px 12px 14px">
+        <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Filter</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <sc-for list="{{ filterChips }}" as="c" hint-placeholder-count="4">
+            <button onClick="{{ c.onClick }}" style="{{ c.style }}"><span style="width:8px;height:8px;border-radius:2px;background:{{ c.color }}"></span>{{ c.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ░ CENTER — CANVAS + BOTTOM PANEL ░ -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <main onPointerDown="{{ onCanvasDown }}" style="{{ canvasStyle }}">
+
+      <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:translate({{ panX }}px,{{ panY }}px) scale({{ zoom }});width:1360px;height:600px">
+
+        <!-- architecture sticky -->
+        <sc-if value="{{ hasData }}" hint-placeholder-val="{{ false }}">
+        <div data-tour-id="t-arch" style="position:absolute;left:22px;top:14px;width:248px;padding:13px 14px 14px;background:var(--sticky);border-radius:3px;box-shadow:0 6px 16px rgba(0,0,0,.14);transform:rotate(-1deg)">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.8px;color:#8a7a1e;text-transform:uppercase;margin-bottom:7px">Architecture · auto</div>
+          <p style="margin:0;font-size:12px;line-height:1.5;color:#3d3719;font-family:Inter">{{ archSummary }}</p>
+        </div>
+        </sc-if>
+
+        <svg width="1360" height="600" style="position:absolute;inset:0;overflow:visible;pointer-events:none">
+          <defs>
+            <marker id="cvar" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--conn)"></path></marker>
+            <marker id="cvarh" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" style="fill:var(--sel)"></path></marker>
+          </defs>
+          <sc-for list="{{ edgeViews }}" as="ed" hint-placeholder-count="14">
+            <path d="{{ ed.d }}" fill="none" marker-end="{{ ed.marker }}" style="{{ ed.style }}"></path>
+          </sc-for>
+        </svg>
+
+        <sc-for list="{{ nodeViews }}" as="n" hint-placeholder-count="14">
+          <div onMouseEnter="{{ n.onEnter }}" onMouseLeave="{{ n.onLeave }}" data-tour-id="{{ n.tourId }}" style="{{ n.wrapStyle }}">
+            <div style="{{ n.labelStyle }}"><span style="opacity:.6">#&nbsp;</span>{{ n.label }}</div>
+            <div onClick="{{ n.onClick }}" onPointerDown="{{ n.onFrameDown }}" style="{{ n.frameStyle }}">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:9px">
+                <span style="{{ n.chipStyle }}">{{ n.kindLabel }}</span>
+                <sc-if value="{{ n.hot }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e5484d;flex:none"></span></sc-if>
+              </div>
+              <div style="height:5px;width:78%;background:var(--skel);border-radius:3px;margin-bottom:6px"></div>
+              <div style="height:5px;width:58%;background:var(--skel);border-radius:3px;margin-bottom:6px"></div>
+              <div style="height:5px;width:68%;background:var(--skel);border-radius:3px"></div>
+            </div>
+            <sc-if value="{{ n.selected }}" hint-placeholder-val="{{ false }}">
+              <div>
+                <span style="position:absolute;left:-4px;top:16px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
+                <span style="position:absolute;right:-4px;top:16px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
+                <span style="position:absolute;left:-4px;bottom:-4px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
+                <span style="position:absolute;right:-4px;bottom:-4px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
+                <span style="position:absolute;left:50%;transform:translateX(-50%);bottom:-23px;background:var(--sel);color:#fff;font-family:'JetBrains Mono',monospace;font-size:9.5px;padding:2px 7px;border-radius:4px;white-space:nowrap">{{ n.locText }}</span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+
+      <!-- empty state: no project loaded -->
+      <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:7;pointer-events:none">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:13px;padding:30px 34px;background:var(--panel);border:1px solid var(--border);border-radius:16px;box-shadow:0 10px 36px var(--shadow);pointer-events:auto;max-width:360px;text-align:center">
+            <div style="width:46px;height:46px;border-radius:11px;background:var(--sel);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:22px;font-family:'JetBrains Mono',monospace">{}</div>
+            <div style="font-weight:600;font-size:15px;color:var(--text)">No project loaded</div>
+            <div style="font-size:12.5px;line-height:1.5;color:var(--text3)">Add a folder and the Rust analyzer maps its files, dependencies, functions and data structures.</div>
+            <button onClick="{{ pickFolder }}" style="display:flex;align-items:center;gap:8px;height:36px;padding:0 18px;border:none;border-radius:9px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:13px;cursor:pointer">{{ addLabel }}</button>
+            <sc-if value="{{ scanError }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:var(--warn);line-height:1.4">{{ scanError }}</div></sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- diff legend -->
+      <sc-if value="{{ isDiff }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;gap:13px;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:7px 13px;box-shadow:0 4px 14px var(--shadow);z-index:6">
+          <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)"><span style="width:9px;height:9px;border-radius:2px;background:#14ae5c"></span>added</span>
+          <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)"><span style="width:9px;height:9px;border-radius:2px;background:#f5a623"></span>changed</span>
+          <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)"><span style="width:9px;height:9px;border-radius:2px;background:#e5484d"></span>removed</span>
+        </div>
+      </sc-if>
+
+      <!-- zoom -->
+      <div style="position:absolute;bottom:16px;right:16px;display:flex;align-items:center;gap:2px;background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:3px;box-shadow:0 4px 14px var(--shadow);z-index:8">
+        <button onClick="{{ zoomOut }}" style="width:26px;height:26px;border:none;background:transparent;color:var(--text2);border-radius:6px;cursor:pointer;font-size:16px">−</button>
+        <button onClick="{{ resetView }}" style="min-width:46px;height:26px;border:none;background:transparent;color:var(--text2);border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px">{{ zoomPct }}</button>
+        <button onClick="{{ zoomIn }}" style="width:26px;height:26px;border:none;background:transparent;color:var(--text2);border-radius:6px;cursor:pointer;font-size:15px">+</button>
+      </div>
+    </main>
+
+    <!-- ░ BOTTOM — FUNCTIONS / DATA STRUCTURES ░ -->
+    <sc-if value="{{ bottomOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ bottomWrapStyle }}">
+        <div onPointerDown="{{ onResizeDown }}" style="height:7px;flex:none;cursor:ns-resize;display:flex;align-items:center;justify-content:center;background:var(--panel);border-top:1px solid var(--border)"><span style="width:32px;height:3px;border-radius:2px;background:var(--border)"></span></div>
+        <div style="flex:none;display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--panel);border-bottom:1px solid var(--border)">
+          <div style="display:flex;gap:3px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px">
+            <button onClick="{{ openFns }}" style="{{ subFnStyle }}">ƒ Functions</button>
+            <button onClick="{{ openStructs }}" style="{{ subDsStyle }}">⬚ Data structures</button>
+          </div>
+          <sc-if value="{{ subMulti }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px">
+              <sc-for list="{{ subModes }}" as="m" hint-placeholder-count="4">
+                <button onClick="{{ m.onClick }}" title="{{ m.title }}" style="{{ m.style }}">{{ m.label }}</button>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ subShowPick }}" hint-placeholder-val="{{ false }}">
+            <select onChange="{{ onPickFile }}" value="{{ subPick }}" style="{{ subPickStyle }}">
+              <sc-for list="{{ subPickOptions }}" as="o" hint-placeholder-count="2"><option value="{{ o.id }}">{{ o.label }}</option></sc-for>
+            </select>
+          </sc-if>
+          <span style="font-size:11px;color:var(--text3);white-space:nowrap">{{ subInfo }}</span>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:2px">
+            <button onClick="{{ subZoomOut }}" style="width:24px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-size:15px">−</button>
+            <button onClick="{{ subZoomReset }}" style="min-width:42px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10.5px">{{ subZoomPct }}</button>
+            <button onClick="{{ subZoomIn }}" style="width:24px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-size:14px">+</button>
+          </div>
+          <button onClick="{{ closeBottom }}" style="width:26px;height:26px;border:none;background:transparent;color:var(--text3);font-size:15px;cursor:pointer;border-radius:6px">✕</button>
+        </div>
+        <div ref="{{ setSubScroll }}" onPointerDown="{{ onSubPanDown }}" style="{{ subCanvasStyle }}">
+          <sc-if value="{{ subEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12.5px;color:var(--text3)">{{ subEmptyText }}</div>
+          </sc-if>
+          <div style="position:relative;width:{{ subScaledW }}px;height:{{ subScaledH }}px">
+          <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:scale({{ subZoom }});width:{{ subW }}px;height:{{ subH }}px;padding:6px">
+            <svg width="{{ subW }}" height="{{ subH }}" style="position:absolute;inset:0;overflow:visible;pointer-events:none">
+              <defs><marker id="cvsub" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--conn)"></path></marker></defs>
+              <sc-for list="{{ subEdges }}" as="e" hint-placeholder-count="4">
+                <path d="{{ e.d }}" fill="none" marker-end="url(#cvsub)" style="{{ e.style }}"></path>
+              </sc-for>
+            </svg>
+            <sc-for list="{{ subNodes }}" as="n" hint-placeholder-count="4">
+              <div onPointerDown="{{ n.onDown }}" style="{{ n.style }}">
+                <div style="display:flex;align-items:center;gap:6px">
+                  <span style="width:8px;height:8px;border-radius:{{ n.dot }};background:{{ n.color }};flex:none"></span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.label }}</span>
+                  <sc-if value="{{ n.isEntry }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-size:9px;color:#f5a623">★</span></sc-if>
+                </div>
+                <div style="font-size:9.5px;color:var(--text3);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sig }}</div>
+              </div>
+            </sc-for>
+          </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+    </div>
+
+    <!-- ░ RIGHT — INSPECTOR ░ -->
+    <aside style="width:316px;flex:none;background:var(--panel);border-left:1px solid var(--border);overflow-y:auto">
+      <div style="padding:13px 15px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="width:9px;height:9px;border-radius:{{ sel.dotRadius }};background:{{ sel.color }};flex:none"></span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:var(--text)">{{ sel.label }}</span>
+          <span style="margin-left:auto;font-size:9.5px;font-weight:600;color:{{ sel.color }};text-transform:uppercase;letter-spacing:.6px;background:{{ sel.chipBg }};padding:3px 7px;border-radius:5px">{{ sel.kind }}</span>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text3);margin-top:6px">{{ sel.path }}</div>
+        <div style="display:flex;gap:5px;margin-top:10px;flex-wrap:wrap">
+          <sc-for list="{{ sel.badges }}" as="b" hint-placeholder-count="2"><span style="{{ b.style }}">{{ b.text }}</span></sc-for>
+        </div>
+      </div>
+
+      <div data-tour-id="t-sum" style="padding:13px 15px;border-bottom:1px solid var(--border)">
+        <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Plain English · AI summary</div>
+        <p style="margin:0;font-size:12.5px;line-height:1.55;color:var(--text)">{{ sel.summary }}</p>
+      </div>
+
+      <div data-tour-id="t-src" style="padding:13px 15px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;margin-bottom:8px">
+          <span style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase">Source</span>
+          <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3)">{{ sel.loc }} lines</span>
+        </div>
+        <pre style="margin:0;background:var(--code);border:1px solid var(--border);border-radius:8px;padding:11px 12px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6"><code>{{ sel.codeEl }}</code></pre>
+      </div>
+
+      <div data-tour-id="t-tests" style="padding:13px 15px;border-bottom:1px solid var(--border)">
+        <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Tests as docs</div>
+        <sc-for list="{{ sel.tests }}" as="t" hint-placeholder-count="2">
+          <div style="display:flex;align-items:center;gap:8px;padding:7px 9px;margin-bottom:5px;background:var(--okbg);border-radius:7px"><span style="color:#14ae5c;font-size:11px">✓</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text)">{{ t }}</span></div>
+        </sc-for>
+        <sc-if value="{{ sel.noTests }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--warnbg);border-radius:7px;font-size:11.5px;color:var(--warn)">⚠ No tests exercise this symbol</div></sc-if>
+      </div>
+
+      <sc-if value="{{ sel.hasRisk }}" hint-placeholder-val="{{ false }}">
+        <div data-tour-id="t-risk" style="padding:13px 15px;border-bottom:1px solid var(--border)">
+          <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--warn);text-transform:uppercase;margin-bottom:8px">⚠ Review flags</div>
+          <sc-for list="{{ sel.risks }}" as="r" hint-placeholder-count="2">
+            <div style="display:flex;gap:8px;padding:8px 9px;margin-bottom:5px;background:var(--warnbg);border-radius:7px"><span style="color:var(--warn);font-size:10px;flex:none;margin-top:1px">▲</span><span style="font-size:11.5px;line-height:1.45;color:var(--text)">{{ r }}</span></div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <div style="padding:13px 15px 28px">
+        <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:9px">Data flow · references</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px">↓ called by</div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px">
+          <sc-for list="{{ sel.callers }}" as="c" hint-placeholder-count="2"><button onClick="{{ c.onClick }}" style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text);background:var(--panel2);border:1px solid var(--border);padding:4px 8px;border-radius:6px;cursor:pointer">{{ c.label }}</button></sc-for>
+          <sc-if value="{{ sel.noCallers }}" hint-placeholder-val="{{ false }}"><span style="font-size:11px;color:var(--text3)">— entry point —</span></sc-if>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px">→ calls / uses</div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px">
+          <sc-for list="{{ sel.callees }}" as="c" hint-placeholder-count="3"><button onClick="{{ c.onClick }}" style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text);background:var(--panel2);border:1px solid var(--border);padding:4px 8px;border-radius:6px;cursor:pointer">{{ c.label }}</button></sc-for>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- floating toolbar — applies to both canvases, fixed at page bottom-centre -->
+  <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:3px;background:var(--toolbar);border-radius:12px;padding:5px;box-shadow:0 6px 22px rgba(0,0,0,.32);z-index:55">
+    <sc-for list="{{ tools }}" as="t" hint-placeholder-count="3">
+      <button onClick="{{ t.onClick }}" title="{{ t.name }}" style="{{ t.style }}">{{ t.glyph }}</button>
+    </sc-for>
+  </div>
+
+  <!-- ░ PRESENT / WALKTHROUGH ░ -->
+  <sc-if value="{{ tourOn }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;z-index:60;pointer-events:none">
+      <div style="{{ spotStyle }}"></div>
+      <div style="position:absolute;left:50%;bottom:30px;transform:translateX(-50%);width:min(600px,90%);background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px 14px;pointer-events:auto;box-shadow:0 22px 60px rgba(0,0,0,.45);animation:cvfade .4s ease">
+        <div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#fff;background:var(--sel);padding:3px 7px;border-radius:5px;font-weight:600">{{ tourNum }} / {{ tourTotal }}</span>
+          <span style="font-weight:600;font-size:14.5px;color:var(--text)">{{ tourTitle }}</span>
+          <button onClick="{{ stopTour }}" style="margin-left:auto;background:none;border:none;color:var(--text3);font-size:17px;cursor:pointer;line-height:1">✕</button>
+        </div>
+        <p style="margin:0 0 12px;font-size:13px;line-height:1.55;color:var(--text2)">{{ tourCaption }}</p>
+        <div style="display:flex;align-items:center;gap:9px">
+          <button onClick="{{ tourPrev }}" style="width:32px;height:32px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);border-radius:8px;cursor:pointer;font-size:14px">‹</button>
+          <button onClick="{{ tourToggle }}" style="display:flex;align-items:center;justify-content:center;gap:6px;width:98px;height:32px;border:none;border-radius:8px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">{{ tourPlayLabel }}</button>
+          <button onClick="{{ tourNext }}" style="width:32px;height:32px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);border-radius:8px;cursor:pointer;font-size:14px">›</button>
+          <div style="flex:1;display:flex;gap:4px;margin-left:6px">
+            <sc-for list="{{ tourDots }}" as="d" hint-placeholder-count="8"><button onClick="{{ d.onClick }}" style="{{ d.style }}"></button></sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1400,&quot;height&quot;:820}}">
+class Component extends DCLogic {
+  state = {
+    selectedId:null, hoverId:null, query:'', view:'map',
+    filters:{ entry:true, file:true, fn:true, struct:true },
+    zoom:0.6, dark:false, userSet:false,
+    panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
+    bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1,
+    subScope:'union', subFilePick:null, subPos:{},
+    selectedSet:[],
+    tourOn:false, tourStep:0, tourPlaying:false, spot:null,
+    model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
+    loading:false, scanError:null,
+  };
+
+  constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
+
+  W=150; H=84;
+  KCOLOR={ entry:'#f5a623', file:'#0d99ff', fn:'#14ae5c', struct:'#9747ff' };
+  KLABEL={ entry:'entry', file:'file', fn:'fn', struct:'type' };
+
+  // ── Live data model (populated by the Rust analyzer via /api/scan) ──
+  // The app opens empty; adding a folder replaces this model.
+  emptyModel(){ return { repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] }; }
+  get NODES(){ return this.state.model.nodes || []; }
+  get EDGES(){ return this.state.model.edges || []; }
+  get DETAIL(){ return this.state.model.detail || {}; }
+  get FOLDERS(){ return this.state.model.folders || []; }
+  get SUB(){ return this.state.model.sub || {}; }
+  get FNX(){ return this.state.model.fnx || []; }
+  get FIELDX(){ return this.state.model.fieldx || []; }
+
+  // Walkthrough steps are built from the loaded model (empty when no project).
+  get TOUR(){
+    const nodes=this.NODES;
+    if(!nodes.length) return [];
+    const entry = nodes.find(n=>n.kind==='entry')||nodes[0];
+    const hasRisk=(n)=>{ const d=this.DETAIL[n.id]; return !!(d&&d.risks&&d.risks.length); };
+    const indeg={}; this.EDGES.forEach(e=>{ indeg[e[1]]=(indeg[e[1]]||0)+1; });
+    const hub = nodes.find(hasRisk) || nodes.slice().sort((a,b)=>(indeg[b.id]||0)-(indeg[a.id]||0))[0] || entry;
+    const risky = nodes.find(hasRisk);
+    const steps=[
+      { target:'t-arch', title:'Start with the architecture', view:'map',
+        cap:'No more guessing where to begin. The tool reads the whole tree and writes a plain-English architecture summary \u2014 the shape of the codebase in one note.' },
+      { target:'t-layers', title:'Orient with layers', view:'map', sel:entry.id,
+        cap:'Every module is a layer, grouped by folder. Entry points are starred, hotspots flagged red, dead code greyed \u2014 so the files that matter aren\u2019t lost among the ones that don\u2019t.' },
+      { target:'t-frame-'+hub.id, title:'Trace the call graph', view:'map', sel:hub.id,
+        cap:'Frames are connected by directional links \u2014 who calls whom, not loose mentions. Selecting a module lights up everything it touches so you can follow data through the pipeline.' },
+      { target:'t-sum', title:'Read code in plain English', view:'map', sel:hub.id,
+        cap:'Every module gets a plain-English summary from its signatures, body and nearby comments \u2014 undocumented or AI-written code becomes skimmable in seconds.' },
+      { target:'t-src', title:'Source, inline', view:'map', sel:hub.id,
+        cap:'The map and the code live in one view. No alt-tabbing to an editor \u2014 click any frame and read the implementation right beside the graph.' },
+      { target:'t-tests', title:'Tests as documentation', view:'map', sel:hub.id,
+        cap:'Each module links to the tests that exercise it. A passing test is often the fastest, truest spec of what code is meant to do.' },
+    ];
+    if(risky) steps.push({ target:'t-risk', title:'Review flags & side effects', view:'map', sel:risky.id,
+        cap:'Hotspots, orphans, IO and unsafe blocks surface where you read the code \u2014 exactly what you need to review unfamiliar code more safely.' });
+    steps.push({ target:'t-layers', title:'Diff a pull request', view:'diff', sel:hub.id,
+        cap:'Switch to the Diff page to see a change\u2019s structural blast radius \u2014 added, changed and removed frames highlighted on the same map.' });
+    return steps;
+  }
+
+  componentDidMount(){
+    try{ this._mql=window.matchMedia('(prefers-color-scheme: dark)');
+      this._onmql=(e)=>{ if(!this.state.userSet) this.setState({dark:e.matches}); };
+      this._mql.addEventListener('change', this._onmql);
+    }catch(e){}
+  }
+  componentWillUnmount(){ clearInterval(this._t); if(this._mql) this._mql.removeEventListener('change', this._onmql); }
+  componentDidUpdate(pp, ps){
+    if(this.state.tourOn && (ps.tourStep!==this.state.tourStep || ps.tourOn!==this.state.tourOn || ps.view!==this.state.view))
+      requestAnimationFrame(()=>this.measureSpot());
+  }
+  measureSpot(){
+    if(!this.root) return;
+    const step=this.TOUR[this.state.tourStep];
+    if(!step){ this.setState({spot:null}); return; }
+    const el=this.root.querySelector('[data-tour-id="'+step.target+'"]');
+    if(!el){ this.setState({spot:null}); return; }
+    const r=el.getBoundingClientRect(), c=this.root.getBoundingClientRect();
+    const spot={ x:r.left-c.left-7, y:r.top-c.top-7, w:r.width+14, h:r.height+14 };
+    if(JSON.stringify(spot)!==JSON.stringify(this.state.spot)) this.setState({spot});
+  }
+
+  setRoot=(el)=>{ this.root=el; };
+  toggleTheme=()=>this.setState(s=>({dark:!s.dark, userSet:true}));
+  select=(id)=>(e)=>this.setState(st=>{
+    if(e&&e.shiftKey){
+      const set=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
+      if(set.has(id)&&set.size>1) set.delete(id); else set.add(id);
+      return { selectedId:id, selectedSet:[...set] };
+    }
+    return { selectedId:id, selectedSet:[id] };
+  });
+  subZoomIn=()=>this.setState(s=>({subZoom:Math.min(2,+(s.subZoom+0.15).toFixed(2))}));
+  subZoomOut=()=>this.setState(s=>({subZoom:Math.max(0.5,+(s.subZoom-0.15).toFixed(2))}));
+  subZoomReset=()=>this.setState({subZoom:1});
+  setSubScope=(m)=>()=>this.setState({subScope:m});
+  onPickFile=(e)=>this.setState({subFilePick:e.target.value});
+  onSubNodeDown=(key)=>(e)=>{
+    // Only the Move tool drags panel cards; in Select/Pan the press falls through to pan the panel.
+    if(this.state.panMode!=='move') return;
+    e.preventDefault(); e.stopPropagation();
+    const base=(this._subPosCache&&this._subPosCache[key])||{x:0,y:0};
+    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1 };
+    window.addEventListener('pointermove', this.onSubNodeMove);
+    window.addEventListener('pointerup', this.onSubNodeUp);
+  };
+  onSubNodeMove=(e)=>{ if(!this._sd) return; const z=this._sd.z; const x=Math.max(0,this._sd.ox+(e.clientX-this._sd.sx)/z); const y=Math.max(0,this._sd.oy+(e.clientY-this._sd.sy)/z); this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x,y}}})); };
+  onSubNodeUp=()=>{ this._sd=null; window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
+  setHover=(id)=>()=>this.setState({hoverId:id});
+  onSearch=(e)=>this.setState({query:e.target.value});
+  setMap=()=>this.setState({view:'map'});
+  setDiff=()=>this.setState({view:'diff'});
+  toggleFilter=(k)=>()=>this.setState(s=>({filters:{...s.filters,[k]:!s.filters[k]}}));
+  zoomIn=()=>this.setState(s=>({zoom:Math.min(1.5,+(s.zoom+0.12).toFixed(2))}));
+  zoomOut=()=>this.setState(s=>({zoom:Math.max(0.45,+(s.zoom-0.12).toFixed(2))}));
+  resetView=()=>this.setState({zoom:0.6, panX:0, panY:0});
+  setPanMode=(m)=>()=>this.setState({panMode:m});
+  onCanvasDown=(e)=>{
+    if(this.state.tourOn) return;
+    const onFrame = e.target.closest && e.target.closest('[data-tour-id^="t-frame-"]');
+    // Select & Move modes: a press on a card is handled by the card itself (select / drag), so don't pan.
+    if((this.state.panMode==='cursor'||this.state.panMode==='move') && onFrame) return;
+    this._pan={ sx:e.clientX, sy:e.clientY, ox:this.state.panX, oy:this.state.panY };
+    this.setState({dragging:true});
+    window.addEventListener('pointermove', this.onCanvasMove);
+    window.addEventListener('pointerup', this.onCanvasUp);
+  };
+  onCanvasMove=(e)=>{ if(!this._pan) return; this.setState({ panX:this._pan.ox+(e.clientX-this._pan.sx), panY:this._pan.oy+(e.clientY-this._pan.sy) }); };
+  onCanvasUp=()=>{ this._pan=null; this.setState({dragging:false}); window.removeEventListener('pointermove',this.onCanvasMove); window.removeEventListener('pointerup',this.onCanvasUp); };
+
+  // main-canvas card move (only in 'move' tool); click still selects
+  selectCard=(id)=>(e)=>{ if(this._justDragged){ this._justDragged=false; return; } this.select(id)(e); };
+  onFrameDown=(id)=>(e)=>{
+    if(this.state.tourOn || this.state.panMode!=='move') return;
+    e.preventDefault(); e.stopPropagation();
+    const base=(this._nodePosCache&&this._nodePosCache[id])||{x:0,y:0};
+    this._nd={ id, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.zoom||1, moved:false };
+    window.addEventListener('pointermove', this.onFrameMove);
+    window.addEventListener('pointerup', this.onFrameUp);
+  };
+  onFrameMove=(e)=>{ if(!this._nd) return; const z=this._nd.z; const dx=(e.clientX-this._nd.sx)/z, dy=(e.clientY-this._nd.sy)/z; if(Math.abs(dx)>2||Math.abs(dy)>2)this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx,y:this._nd.oy+dy}}})); };
+  onFrameUp=()=>{ if(this._nd&&this._nd.moved)this._justDragged=true; this._nd=null; window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
+
+  // algo/ds canvas pan (drag on empty background; nodes stopPropagation so they move instead)
+  setSubScroll=(el)=>{ this._subScroll=el; };
+  onSubPanDown=(e)=>{ const el=this._subScroll; if(!el) return; this._sp={ sx:e.clientX, sy:e.clientY, sl:el.scrollLeft, stp:el.scrollTop }; this.setState({subPanning:true}); window.addEventListener('pointermove', this.onSubPanMove); window.addEventListener('pointerup', this.onSubPanUp); };
+  onSubPanMove=(e)=>{ if(!this._sp||!this._subScroll) return; this._subScroll.scrollLeft=this._sp.sl-(e.clientX-this._sp.sx); this._subScroll.scrollTop=this._sp.stp-(e.clientY-this._sp.sy); };
+  onSubPanUp=()=>{ this._sp=null; this.setState({subPanning:false}); window.removeEventListener('pointermove',this.onSubPanMove); window.removeEventListener('pointerup',this.onSubPanUp); };
+
+  openFns=()=>this.setState({bottomOpen:true, bottomTab:'functions'});
+  openStructs=()=>this.setState({bottomOpen:true, bottomTab:'structs'});
+  closeBottom=()=>this.setState({bottomOpen:false});
+  onResizeDown=(e)=>{
+    e.preventDefault();
+    this._rz={ sy:e.clientY, oh:this.state.bottomH };
+    window.addEventListener('pointermove', this.onResizeMove);
+    window.addEventListener('pointerup', this.onResizeUp);
+  };
+  onResizeMove=(e)=>{ if(!this._rz) return; const h=this._rz.oh-(e.clientY-this._rz.sy); this.setState({ bottomH:Math.max(120,Math.min(560,h)) }); };
+  onResizeUp=()=>{ this._rz=null; window.removeEventListener('pointermove',this.onResizeMove); window.removeEventListener('pointerup',this.onResizeUp); };
+
+  // left→right column layout: arrow = relation; entry node has no incoming edge
+  subLayout(nodes, edges){
+    const NW=156, NH=46, GX=200, GY=66, PADX=18, PADY=16;
+    const inc={}; nodes.forEach(n=>inc[n.id]=0); edges.forEach(([a,b])=>{ if(inc[b]!=null)inc[b]++; });
+    const depth={}; const roots=nodes.filter(n=>inc[n.id]===0).map(n=>n.id);
+    (roots.length?roots:[nodes[0]&&nodes[0].id]).forEach(r=>{ if(r!=null)depth[r]=0; });
+    let changed=true, guard=0;
+    while(changed && guard++<50){ changed=false; edges.forEach(([a,b])=>{ if(depth[a]!=null){ const d=depth[a]+1; if(depth[b]==null||depth[b]<d){ depth[b]=d; changed=true; } } }); }
+    nodes.forEach(n=>{ if(depth[n.id]==null) depth[n.id]=0; });
+    const rowOf={}; const pos={};
+    nodes.forEach(n=>{ const c=depth[n.id]; rowOf[c]=(rowOf[c]||0); pos[n.id]={ x:PADX+c*GX, y:PADY+rowOf[c]*GY }; rowOf[c]++; });
+    const maxCol=Math.max(0,...nodes.map(n=>depth[n.id]));
+    const maxRow=Math.max(1,...Object.values(rowOf));
+    return { pos, NW, NH, w:PADX*2+maxCol*GX+NW, h:PADY*2+(maxRow-1)*GY+NH };
+  }
+
+  // build the function / data-structure graph shown in the bottom panel, honouring scope mode
+  getSubGraph(st, isFns, selFiles, mode){
+    const listOf=(fid)=> isFns ? ((this.SUB[fid]||{}).fns||[]) : ((this.SUB[fid]||{}).structs||[]);
+    const refsOf=(it)=> isFns ? (it.calls||[]) : (it.fields||[]);
+    const X = isFns ? this.FNX : this.FIELDX;
+    const multi = mode!=='single';
+    const mk=(fid,it,bridge)=>({ key:fid+':'+it.id, file:fid, id:it.id, label:it.label,
+      sig: bridge ? (this.fileLabelOf(fid)+' \u00b7 bridge') : (multi ? this.fileLabelOf(fid) : it.sig), bridge:!!bridge });
+    const intra=(fid)=>{ const items=listOf(fid); const ids=new Set(items.map(x=>x.id)); const out=[];
+      items.forEach(it=>refsOf(it).forEach(r=>{ if(ids.has(r)) out.push([fid+':'+it.id, fid+':'+r]); })); return out; };
+
+    if(mode==='single'){
+      const fid=(st.subFilePick && this.SUB[st.subFilePick] && selFiles.indexOf(st.subFilePick)>=0) ? st.subFilePick : (selFiles[0]||st.selectedId);
+      return { nodes:listOf(fid).map(it=>mk(fid,it,false)), edges:intra(fid), pick:fid };
+    }
+
+    const sf=new Set(selFiles);
+    const nodeMap={}; selFiles.forEach(fid=>listOf(fid).forEach(it=>nodeMap[fid+':'+it.id]=mk(fid,it,false)));
+    let edges=[]; selFiles.forEach(fid=>edges.push(...intra(fid)));
+    X.forEach(a=>{ if(sf.has(a[0])&&sf.has(a[2])&&nodeMap[a[0]+':'+a[1]]&&nodeMap[a[2]+':'+a[3]]) edges.push([a[0]+':'+a[1], a[2]+':'+a[3]]); });
+
+    if(mode==='union') return { nodes:Object.values(nodeMap), edges };
+
+    if(mode==='connecting'){
+      const keep=new Set();
+      edges.forEach(e=>{ if(e[0].split(':')[0]!==e[1].split(':')[0]){ keep.add(e[0]); keep.add(e[1]); } });
+      const ed=edges.filter(e=> e[0].split(':')[0]!==e[1].split(':')[0] && keep.has(e[0]) && keep.has(e[1]));
+      return { nodes:Object.values(nodeMap).filter(n=>keep.has(n.key)), edges:ed };
+    }
+
+    // bridge: shortest paths between selected files through the WHOLE graph (intermediates marked as bridges)
+    const all=Object.keys(this.SUB);
+    const g={}; all.forEach(fid=>listOf(fid).forEach(it=>g[fid+':'+it.id]=mk(fid,it,!sf.has(fid))));
+    const adj={}; Object.keys(g).forEach(k=>adj[k]=[]);
+    const link=(a,b)=>{ if(g[a]&&g[b]){ adj[a].push(b); adj[b].push(a); } };
+    all.forEach(fid=>intra(fid).forEach(e=>link(e[0],e[1])));
+    X.forEach(a=>link(a[0]+':'+a[1], a[2]+':'+a[3]));
+    const nodesIn=(fid)=>Object.keys(g).filter(k=>k.slice(0,k.lastIndexOf(':'))===fid || k.split(':')[0]===fid);
+    const onPath=new Set(), pe=new Set();
+    for(let i=0;i<selFiles.length;i++) for(let j=i+1;j<selFiles.length;j++){
+      const srcs=nodesIn(selFiles[i]); const dst=new Set(nodesIn(selFiles[j]));
+      const prev={}; srcs.forEach(s=>prev[s]=null); let q=srcs.slice(), hit=null;
+      while(q.length){ const c=q.shift(); if(dst.has(c)){ hit=c; break; } (adj[c]||[]).forEach(nx=>{ if(!(nx in prev)){ prev[nx]=c; q.push(nx); } }); }
+      if(hit){ let c=hit; while(c!=null){ onPath.add(c); const p=prev[c]; if(p!=null) pe.add(p+'\u0001'+c); c=p; } }
+    }
+    return { nodes:[...onPath].map(k=>g[k]), edges:[...pe].map(s=>s.split('\u0001')) };
+  }
+
+  startTour=()=>{ const s=this.TOUR[0]; if(!s) return; const id=s.sel||this.state.selectedId; this.setState({tourOn:true,tourStep:0,tourPlaying:true,view:s.view,selectedId:id,selectedSet:[id]}); this.play(); requestAnimationFrame(()=>this.measureSpot()); };
+  stopTour=()=>{ clearInterval(this._t); this.setState({tourOn:false,tourPlaying:false}); };
+  play(){ clearInterval(this._t); this._t=setInterval(()=>{ if(this.state.tourStep>=this.TOUR.length-1){clearInterval(this._t);this.setState({tourPlaying:false});} else this.gotoStep(this.state.tourStep+1); },4400); }
+  tourToggle=()=>{ if(this.state.tourPlaying){clearInterval(this._t);this.setState({tourPlaying:false});} else { if(this.state.tourStep>=this.TOUR.length-1)this.gotoStep(0); this.setState({tourPlaying:true}); this.play(); } };
+  tourNext=()=>{ clearInterval(this._t); this.setState({tourPlaying:false}); this.gotoStep(Math.min(this.state.tourStep+1,this.TOUR.length-1)); };
+  tourPrev=()=>{ clearInterval(this._t); this.setState({tourPlaying:false}); this.gotoStep(Math.max(this.state.tourStep-1,0)); };
+  gotoStep(i){ const s=this.TOUR[i]; if(!s) return; this.setState(st=>({tourStep:i, selectedId:s.sel||st.selectedId, selectedSet:s.sel?[s.sel]:st.selectedSet, view:s.view||st.view})); }
+
+  fileLabelOf(fid){ const n=this.NODES.find(x=>x.id===fid); return n?n.label:fid; }
+
+  detail(id){
+    const nodes=this.NODES;
+    if(!nodes.length || id==null){
+      return { id:null, label:'No project', kind:'file', path:'\u2014',
+        summary:'Add a folder to visualize its files, dependencies, functions and data structures.',
+        code:[['// add a folder to begin\n','c']], loc:0, tests:[], callers:[], callees:[] };
+    }
+    const n=nodes.find(x=>x.id===id)||nodes[0]; const d=this.DETAIL[n.id];
+    if(d) return {...n,...d};
+    return {...n, path:n.label, summary:'A '+this.KLABEL[n.kind]+' module ('+n.label+'). Trace how it fits the codebase via the references below.',
+      code:[['// '+n.label+'\n','c']], tests:[],
+      callers:this.EDGES.filter(e=>e[1]===n.id).map(e=>e[0]), callees:this.EDGES.filter(e=>e[0]===n.id).map(e=>e[1]) };
+  }
+  center(n){ return { x:n.x+this.W/2, y:n.y+this.H/2, l:n.x, r:n.x+this.W, t:n.y, b:n.y+this.H }; }
+
+  // ── Add a project: pick a folder, send its source files to the Rust scanner ──
+  setFolderInput=(el)=>{ this.folderInput=el; if(el){ try{ el.setAttribute('webkitdirectory',''); el.setAttribute('directory',''); el.setAttribute('mozdirectory',''); el.multiple=true; }catch(e){} } };
+  pickFolder=()=>{ if(this.state.loading) return; if(this.folderInput) this.folderInput.click(); };
+  onFolderPicked=(e)=>{ const files=[...(e.target.files||[])]; e.target.value=''; if(files.length) this.ingestFiles(files); };
+
+  SRC_EXT=new Set(['rs','py','pyi','js','jsx','mjs','cjs','ts','tsx','mts','cts','go','java','c','h','cpp','cc','cxx','hpp','hh','hxx']);
+  IGNORE_DIR=new Set(['.git','node_modules','target','.venv','venv','dist','build','__pycache__','.next','.nuxt','vendor','.idea','.vscode']);
+
+  async ingestFiles(fileList){
+    this.setState({loading:true, scanError:null});
+    let repoName='project';
+    const first=fileList[0] && (fileList[0].webkitRelativePath||'');
+    if(first && first.includes('/')) repoName=first.split('/')[0];
+    const picked=[];
+    for(const f of fileList){
+      const rel=f.webkitRelativePath||f.name;
+      const parts=rel.split('/');
+      if(parts.some(p=>this.IGNORE_DIR.has(p))) continue;
+      const ext=(rel.split('.').pop()||'').toLowerCase();
+      if(!this.SRC_EXT.has(ext)) continue;
+      if(f.size>500000) continue;
+      picked.push(f);
+    }
+    const MAX=5000;
+    const slice=picked.slice(0,MAX);
+    try{
+      const payload=[];
+      for(const f of slice){
+        let text='';
+        try{ text=await f.text(); }catch(e){ continue; }
+        const rel=f.webkitRelativePath||f.name;
+        const relPath = rel.includes('/') ? rel.split('/').slice(1).join('/') : rel;
+        payload.push({ path: relPath||rel, text });
+      }
+      if(!payload.length){ this.setState({loading:false, scanError:'No source files found in that folder.'}); return; }
+      const res=await fetch('/api/scan',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name:repoName, files:payload }) });
+      if(!res.ok){ const t=await res.text().catch(()=>''); throw new Error('scan failed ('+res.status+') '+t); }
+      const model=await res.json();
+      this.loadModel(model);
+    }catch(err){
+      this.setState({ loading:false, scanError:String((err&&err.message)||err) });
+    }
+  }
+
+  loadModel(model){
+    if(!model || !Array.isArray(model.nodes)) model=this.emptyModel();
+    const nodes=model.nodes||[];
+    const entry = nodes.find(n=>n.kind==='entry') || nodes[0];
+    clearInterval(this._t);
+    this.setState({
+      model, loading:false, scanError:null,
+      selectedId: entry?entry.id:null,
+      selectedSet: entry?[entry.id]:[],
+      view:'map', zoom:0.6, panX:0, panY:0, nodePos:{}, subPos:{},
+      bottomOpen:false, query:'', subFilePick:null,
+      tourOn:false, tourPlaying:false, tourStep:0, spot:null,
+    });
+  }
+
+  tokens(dark){
+    return dark ? {
+      '--bg':'#1e1e1e','--grid':'#2c2c2c','--panel':'#2c2c2c','--panel2':'#383838','--border':'#3d3d3d',
+      '--text':'#ffffff','--text2':'#b8b8b8','--text3':'#7a7a7a','--sel':'#0d99ff','--selbg':'rgba(13,153,255,.16)',
+      '--frame':'#383838','--frameborder':'#4a4a4a','--skel':'#5a5a5a','--toolbar':'#383838','--code':'#1a1a1a',
+      '--shadow':'rgba(0,0,0,.5)','--scroll':'#4a4a4a','--conn':'#5a5a5a','--sticky':'#d9c878',
+      '--okbg':'rgba(20,174,92,.13)','--warn':'#ff8a8a','--warnbg':'rgba(229,72,77,.14)',
+    } : {
+      '--bg':'#f5f5f5','--grid':'#dcdcdc','--panel':'#ffffff','--panel2':'#f3f3f3','--border':'#e6e6e6',
+      '--text':'#1e1e1e','--text2':'#5a5a5a','--text3':'#aaaaaa','--sel':'#0d99ff','--selbg':'#e5f4ff',
+      '--frame':'#ffffff','--frameborder':'#e0e0e0','--skel':'#e8e8e8','--toolbar':'#2c2c2c','--code':'#fafafa',
+      '--shadow':'rgba(0,0,0,.1)','--scroll':'#cfcfcf','--conn':'#c4c4c4','--sticky':'#ffe27a',
+      '--okbg':'rgba(20,174,92,.1)','--warn':'#cf3438','--warnbg':'rgba(229,72,77,.09)',
+    };
+  }
+  codeEl(rows,dark){
+    const C = dark ? {kw:'#c586c0',fn:'#dcdcaa',ty:'#4fc1ff',c:'#6a9955','':'#d4d4d4'}
+                   : {kw:'#a626a4',fn:'#4078f2',ty:'#0184bc',c:'#a0a1a7','':'#383a42'};
+    return React.createElement('span',null,rows.map((r,i)=>React.createElement('span',{key:i,style:{color:C[r[1]]||C['']}},r[0])));
+  }
+
+  renderVals(){
+    const st=this.state, dark=st.dark;
+    const T=this.tokens(dark);
+    const rootStyle={ ...T, position:'relative', width:'100%', height:'100vh', minHeight:'700px', overflow:'hidden',
+      display:'flex', flexDirection:'column', background:'var(--bg)', color:'var(--text)',
+      fontFamily:"Inter, system-ui, sans-serif", fontSize:'13px' };
+
+    const q=st.query.trim().toLowerCase();
+    const isDiff=st.view==='diff';
+    const sel=this.detail(st.selectedId);
+    const selSet=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
+    const focusIds=st.hoverId?new Set([st.hoverId]):selSet;
+    const connected=new Set(); this.EDGES.forEach(e=>{ if(selSet.has(e[0]))connected.add(e[1]); if(selSet.has(e[1]))connected.add(e[0]); });
+
+    const diffColor={added:'#14ae5c',changed:'#f5a623',removed:'#e5484d'};
+    const moveMode=st.panMode==='move';
+    const orphanSet=new Set(this.NODES.filter(n=>n.orphan).map(n=>n.id));
+    this._nodePosCache={};
+
+    const nodeViews=this.NODES.map(n=>{
+      const matchSearch=!q||n.label.toLowerCase().includes(q)||this.KLABEL[n.kind].includes(q);
+      const visible=matchSearch && st.filters[n.kind];
+      const isSel=selSet.has(n.id), isConn=connected.has(n.id);
+      const dim=!visible || (!focusIds.has(n.id) && !isConn && !isSel);
+      const det=this.DETAIL[n.id]; const hot=!!(det&&det.risks);
+      const baseBorder = isDiff && n.diff ? diffColor[n.diff] : (isSel?'var(--sel)':'var(--frameborder)');
+      const ring = isSel ? '0 0 0 1.5px var(--sel),0 4px 16px var(--shadow)' : '0 1px 4px var(--shadow)';
+      const c=this.KCOLOR[n.kind];
+      const ov=st.nodePos[n.id]; const px=ov?ov.x:n.x, py=ov?ov.y:n.y; this._nodePosCache[n.id]={x:px,y:py};
+      return {
+        ...n, tourId:'t-frame-'+n.id, label:n.label, locText:n.loc+' LOC',
+        onClick:this.selectCard(n.id), onFrameDown:this.onFrameDown(n.id), onEnter:this.setHover(n.id), onLeave:this.setHover(null),
+        selected:isSel, hot,
+        kindLabel:this.KLABEL[n.kind],
+        chipStyle:`font-size:9px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:${c};background:${c}1f;padding:2px 6px;border-radius:4px`,
+        wrapStyle:`position:absolute;left:${px}px;top:${py}px;width:${this.W}px;opacity:${dim?0.32:1};transition:opacity .35s;z-index:${isSel?5:2}`,
+        labelStyle:`font-size:11px;font-family:'JetBrains Mono',monospace;margin-bottom:5px;color:${isSel?'var(--sel)':'var(--text2)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis`,
+        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:1.5px solid ${baseBorder};border-radius:5px;box-shadow:${ring};cursor:${moveMode?'grab':'pointer'};touch-action:none;transition:border-color .2s,box-shadow .2s`,
+      };
+    });
+
+    const ctr=(id)=>{ const p=this._nodePosCache[id]||{x:0,y:0}; return {x:p.x+this.W/2, y:p.y+this.H/2, l:p.x, r:p.x+this.W, t:p.y, b:p.y+this.H}; };
+    const edgeViews=this.EDGES.map(e=>{
+      const a=ctr(e[0]), b=ctr(e[1]); const dx=b.x-a.x, dy=b.y-a.y; let d;
+      if(Math.abs(dx)>=Math.abs(dy)){
+        const sx=dx>0?a.r:a.l, sy=a.y, tx=dx>0?b.l:b.r, ty=b.y, mx=(sx+tx)/2;
+        d=`M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`;
+      } else {
+        const sx=a.x, sy=dy>0?a.b:a.t, tx=b.x, ty=dy>0?b.t:b.b, my=(sy+ty)/2;
+        d=`M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
+      }
+      const hot=focusIds.has(e[0])||focusIds.has(e[1]);
+      const dead=orphanSet.has(e[1]);
+      return { d, marker:hot?'url(#cvarh)':'url(#cvar)',
+        style:`stroke:${hot?'var(--sel)':'var(--conn)'};stroke-width:${hot?1.8:1.3};stroke-opacity:${hot?1:0.4};${dead?'stroke-dasharray:5 4;':''}${hot?'stroke-dasharray:5 5;animation:cvdash 1s linear infinite;':''}` };
+    });
+
+    // layers tree
+    const rows=[];
+    this.FOLDERS.forEach(f=>{
+      rows.push({ folder:true, label:f.name, icon:'▸', indent:0, font:'Inter' });
+      (f.files||[]).forEach(id=>{
+        const n=this.NODES.find(x=>x.id===id); if(!n) return; const det=this.DETAIL[id]; const hot=!!(det&&det.risks);
+        const matchSearch=!q||n.label.toLowerCase().includes(q); const visible=matchSearch&&st.filters[n.kind];
+        rows.push({ id, label:n.label, kind:n.kind, icon:'#', indent:14, font:"'JetBrains Mono',monospace",
+          dim:!visible, sel:selSet.has(id), entry:n.kind==='entry', hot, dead:!!n.orphan });
+      });
+      (f.vendor||[]).forEach(v=>rows.push({ vendor:true, label:v, icon:'⬡', indent:14, font:"'JetBrains Mono',monospace" }));
+    });
+    const layerRows=rows.map(r=>{
+      if(r.folder) return { onClick:()=>{}, indent:0, icon:r.icon, label:r.label, font:'Inter', textColor:'var(--text2)',
+        iconStyle:'font-size:9px;color:var(--text3);margin-right:7px;flex:none', showBadge:false,
+        style:'display:flex;align-items:center;width:100%;padding:5px 7px;margin-bottom:1px;background:transparent;border:none;cursor:default;border-radius:6px' };
+      if(r.vendor) return { onClick:()=>{}, indent:r.indent, icon:r.icon, label:r.label, font:r.font, textColor:'var(--text3)',
+        iconStyle:'font-size:10px;color:var(--text3);margin-right:7px;flex:none', showBadge:false,
+        style:'display:flex;align-items:center;width:100%;padding:5px 7px;margin-bottom:1px;background:transparent;border:none;cursor:default;border-radius:6px;opacity:.7' };
+      const badge = r.hot?'!':(r.entry?'★':(r.dead?'∅':''));
+      const badgeCol = r.hot?'#e5484d':(r.entry?'#f5a623':'var(--text3)');
+      return { onClick:this.select(r.id), indent:r.indent, icon:r.icon, label:r.label, font:r.font,
+        textColor: r.dim?'var(--text3)':(r.sel?'var(--text)':'var(--text2)'),
+        iconStyle:`font-size:10px;color:${this.KCOLOR[r.kind]};margin-right:7px;flex:none;${r.dead?'opacity:.5':''}`,
+        showBadge:!!badge, badge, badgeStyle:`font-size:10px;color:${badgeCol};flex:none`,
+        style:`display:flex;align-items:center;gap:0;width:100%;padding:5px 7px;margin-bottom:1px;border:none;cursor:pointer;border-radius:6px;background:${r.sel?'var(--selbg)':'transparent'};opacity:${r.dim?0.45:1}` };
+    });
+
+    const fchips=[['entry','Entry'],['file','Files'],['fn','Fns'],['struct','Types']].map(([k,l])=>({
+      label:l, color:this.KCOLOR[k], onClick:this.toggleFilter(k),
+      style:`display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:11px;font-family:Inter;background:${st.filters[k]?'var(--panel2)':'transparent'};border:1px solid var(--border);color:${st.filters[k]?'var(--text)':'var(--text3)'}` }));
+
+    const tools=[['↖','Select cards','cursor'],['✥','Move cards','move'],['✋','Pan canvas','hand']].map(([g,name,mode])=>{
+      const active=st.panMode===mode;
+      return { glyph:g, name, onClick:this.setPanMode(mode),
+        style:`width:30px;height:30px;border:none;border-radius:8px;cursor:pointer;font-size:14px;background:${active?'var(--sel)':'transparent'};color:${active?'#fff':'#cfcfcf'}` };
+    });
+
+    // inspector
+    const KB={entry:'#f5a62322',file:'#0d99ff22',fn:'#14ae5c22',struct:'#9747ff22'};
+    const badgeRender=(arr)=>(arr||[]).map(b=>({ text:b[0],
+      style:`font-size:9.5px;font-weight:600;letter-spacing:.4px;padding:3px 8px;border-radius:5px;${b[1]==='r'?'color:var(--warn);background:var(--warnbg)':'color:var(--text2);background:var(--panel2);border:1px solid var(--border)'}` }));
+    const selView={ label:sel.label, kind:this.KLABEL[sel.kind], path:sel.path, summary:sel.summary, loc:sel.loc,
+      color:this.KCOLOR[sel.kind], chipBg:KB[sel.kind], dotRadius:sel.kind==='fn'?'50%':'2px',
+      codeEl:this.codeEl(sel.code,dark), badges:badgeRender(sel.badges),
+      tests:sel.tests, noTests:!sel.tests||sel.tests.length===0,
+      hasRisk:!!(sel.risks&&sel.risks.length), risks:sel.risks||[],
+      callers:(sel.callers||[]).map(id=>({label:(this.NODES.find(n=>n.id===id)||{label:id}).label,onClick:this.select(id)})),
+      callees:(sel.callees||[]).map(id=>({label:(this.NODES.find(n=>n.id===id)||{label:id}).label,onClick:this.select(id)})),
+      noCallers:!sel.callers||sel.callers.length===0 };
+
+    const step=this.TOUR[st.tourStep]||{title:'',cap:''}, spot=st.spot;
+    const spotStyle=spot
+      ? `position:absolute;left:${spot.x}px;top:${spot.y}px;width:${spot.w}px;height:${spot.h}px;border-radius:10px;border:2px solid var(--sel);box-shadow:0 0 0 9999px rgba(10,12,16,.6),0 0 22px rgba(13,153,255,.45);transition:all .5s cubic-bezier(.4,0,.2,1);animation:cvspot .4s ease`
+      : `position:absolute;inset:0;background:rgba(10,12,16,.45)`;
+    const tourDots=this.TOUR.map((_,i)=>({ onClick:()=>{clearInterval(this._t);this.setState({tourPlaying:false});this.gotoStep(i);},
+      style:`flex:1;height:4px;border:none;border-radius:3px;cursor:pointer;padding:0;background:${i===st.tourStep?'var(--sel)':i<st.tourStep?'rgba(13,153,255,.5)':'var(--border)'}` }));
+
+    // ── bottom panel: functions / data structures (multi-file aware) ──
+    const isFns=st.bottomTab==='functions';
+    const selFilesAll=[...selSet].filter(id=>this.SUB[id]);
+    const multiSel=selFilesAll.length>1;
+    const subMode=multiSel?st.subScope:'single';
+    const sg=this.getSubGraph(st, isFns, selFilesAll, subMode);
+    const baseColor=isFns?'#14ae5c':'#9747ff';
+    const lay=this.subLayout(sg.nodes.map(n=>({id:n.key})), sg.edges);
+    const subInc={}; sg.nodes.forEach(n=>subInc[n.key]=0); sg.edges.forEach(e=>{ if(subInc[e[1]]!=null)subInc[e[1]]++; });
+    this._subPosCache={};
+    let subW=lay.w, subH=lay.h;
+    const subNodes=sg.nodes.map(n=>{
+      const lp=lay.pos[n.key]||{x:8,y:8};
+      const p=st.subPos[n.key]||lp; this._subPosCache[n.key]=p;
+      subW=Math.max(subW, p.x+lay.NW+18); subH=Math.max(subH, p.y+lay.NH+16);
+      const isEntry=isFns && subInc[n.key]===0;
+      const bd=n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)');
+      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key),
+        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:0 1px 4px var(--shadow);cursor:grab;touch-action:none` };
+    });
+    const posOf=(k)=>this._subPosCache[k]||lay.pos[k]||{x:8,y:8};
+    const subEdges=sg.edges.map(e=>{
+      const pa=posOf(e[0]), pb=posOf(e[1]); const cross=e[0].split(':')[0]!==e[1].split(':')[0];
+      let d;
+      if(pb.x>=pa.x){ const sx=pa.x+lay.NW, sy=pa.y+lay.NH/2, tx=pb.x, ty=pb.y+lay.NH/2, mx=(sx+tx)/2; d=`M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`; }
+      else { const sx=pa.x, sy=pa.y+lay.NH/2, tx=pb.x+lay.NW, ty=pb.y+lay.NH/2, mx=(sx+tx)/2; d=`M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`; }
+      return { d, style:`stroke:${cross?'var(--sel)':'var(--conn)'};stroke-width:1.5;stroke-opacity:${cross?0.95:0.8};${cross?'stroke-dasharray:5 4;':''}` };
+    });
+    const subListLen=sg.nodes.length;
+    const fileLabel=(id)=>(this.NODES.find(n=>n.id===id)||{label:id}).label;
+    const subModeDefs=[['union','All','Every function/type across all selected files'],['single','By file','Show one file (without changing the canvas selection)'],['connecting','Linking','Only symbols that directly link the selected files'],['bridge','Bridges','Paths that connect the files — even through other files']];
+    const subModes=subModeDefs.map(([k,l,t])=>({ label:l, title:t, onClick:this.setSubScope(k),
+      style:`height:24px;padding:0 9px;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-family:Inter;font-weight:500;background:${st.subScope===k?'var(--sel)':'transparent'};color:${st.subScope===k?'#fff':'var(--text2)'}` }));
+    const subPickStyle=`height:26px;padding:0 8px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none;cursor:pointer`;
+    const subInfo = multiSel
+      ? (selFilesAll.length+' files · '+subListLen+(isFns?' fns':' types'))
+      : (fileLabel(selFilesAll[0]||st.selectedId)+' · '+(isFns?'arrow = calls':'arrow = contains'));
+    const subEmptyText = subMode==='connecting' ? ('No direct '+(isFns?'calls':'composition')+' link the selected files')
+      : subMode==='bridge' ? 'No path connects the selected files here'
+      : (isFns?'No functions':'No data structures')+' here';
+
+    const subTabBase="height:24px;padding:0 11px;border:none;border-radius:6px;cursor:pointer;font-size:11.5px;font-family:Inter;font-weight:500;";
+
+    const pageBase="display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;margin-bottom:2px;border:none;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:Inter;";
+    const nodeCount=this.NODES.length;
+    const empty=nodeCount===0;
+    return {
+      repoName: st.model.repoName || 'No project',
+      framesInfo: nodeCount+' frames \u00b7 '+this.EDGES.length+' links',
+      archSummary: st.model.arch || '',
+      empty, hasData:!empty,
+      loading:st.loading, scanError:st.scanError,
+      addLabel: st.loading?'Scanning\u2026':'\uFF0B Add folder',
+      pickFolder:this.pickFolder, setFolderInput:this.setFolderInput, onFolderPicked:this.onFolderPicked,
+      rootStyle, setRoot:this.setRoot, themeIcon:dark?'☀':'☾', toggleTheme:this.toggleTheme, startTour:this.startTour,
+      query:st.query, onSearch:this.onSearch, zoom:st.zoom, zoomPct:Math.round(st.zoom*100)+'%',
+      zoomIn:this.zoomIn, zoomOut:this.zoomOut, resetView:this.resetView,
+      panX:st.panX, panY:st.panY, onCanvasDown:this.onCanvasDown,
+      canvasStyle:`position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.dragging?'grabbing':(st.panMode==='hand'?'grab':'default')}`,
+      setMap:this.setMap, setDiff:this.setDiff, isDiff,
+      pageMapStyle:pageBase+(st.view==='map'?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
+      pageDiffStyle:pageBase+(st.view==='diff'?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
+      pageFnStyle:pageBase+((st.bottomOpen&&isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
+      pageDsStyle:pageBase+((st.bottomOpen&&!isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
+      bottomOpen:st.bottomOpen, openFns:this.openFns, openStructs:this.openStructs, closeBottom:this.closeBottom, onResizeDown:this.onResizeDown,
+      bottomWrapStyle:`flex:none;height:${st.bottomH}px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--panel)`,
+      subFnStyle:subTabBase+(isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
+      subDsStyle:subTabBase+(!isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
+      subScopeLabel:subInfo, subInfo, subModes, subMulti:multiSel, subShowPick:(multiSel&&subMode==='single'), subPick:sg.pick||selFilesAll[0]||st.selectedId, subPickStyle,
+      subPickOptions:selFilesAll.map(id=>({id, label:fileLabel(id)})), onPickFile:this.onPickFile,
+      subNodes, subEdges, subW, subH,
+      setSubScroll:this.setSubScroll, onSubPanDown:this.onSubPanDown,
+      subCanvasStyle:`flex:1;min-height:0;overflow:auto;position:relative;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.subPanning?'grabbing':'grab'}`,
+      subZoom:st.subZoom, subZoomPct:Math.round(st.subZoom*100)+'%', subZoomIn:this.subZoomIn, subZoomOut:this.subZoomOut, subZoomReset:this.subZoomReset,
+      subScaledW:Math.ceil(subW*st.subZoom), subScaledH:Math.ceil(subH*st.subZoom),
+      subEmpty:subListLen===0, subEmptyText,
+      nodeViews, edgeViews, layerRows, filterChips:fchips, tools, sel:selView,
+      tourOn:st.tourOn, spotStyle, tourNum:st.tourStep+1, tourTotal:this.TOUR.length,
+      tourTitle:step.title, tourCaption:step.cap, tourDots, tourPlayLabel:st.tourPlaying?'❚❚ Pause':'▶ Play',
+      stopTour:this.stopTour, tourToggle:this.tourToggle, tourNext:this.tourNext, tourPrev:this.tourPrev,
+    };
+  }
+}
+</script>
+</body>
+</html>
