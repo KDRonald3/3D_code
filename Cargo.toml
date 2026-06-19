@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2021"
 description = "Scan a codebase and render an interactive, Figma-style map of its structure."
 license = "MIT"
+default-run = "server"
 
 [lib]
 name = "codebase_visualizer"
