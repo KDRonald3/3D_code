@@ -318,7 +318,7 @@ class Component extends DCLogic {
     panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
     bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1,
     subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
-    selectedSet:[], selectedSym:null,
+    selectedSet:[], selectedSym:null, collapsed:{},
     tourOn:false, tourStep:0, tourPlaying:false, spot:null,
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
     loading:false, scanError:null,
@@ -428,6 +428,7 @@ class Component extends DCLogic {
   setMap=()=>this.setState({view:'map'});
   setDiff=()=>this.setState({view:'diff'});
   toggleFilter=(k)=>()=>this.setState(s=>({filters:{...s.filters,[k]:!s.filters[k]}}));
+  toggleFolder=(name)=>()=>this.setState(s=>({collapsed:{...s.collapsed,[name]:!s.collapsed[name]}}));
   zoomIn=()=>this.setState(s=>({zoom:Math.min(1.5,+(s.zoom+0.12).toFixed(2))}));
   zoomOut=()=>this.setState(s=>({zoom:Math.max(0.45,+(s.zoom-0.12).toFixed(2))}));
   resetView=()=>this.setState({zoom:0.6, panX:0, panY:0});
@@ -651,7 +652,7 @@ class Component extends DCLogic {
       selectedId: entry?entry.id:null,
       selectedSet: entry?[entry.id]:[], selectedSym:null,
       view:'map', zoom:0.6, panX:0, panY:0, nodePos:{}, subPos:{}, subPanX:0, subPanY:0,
-      bottomOpen:false, query:'', subFilePick:null,
+      bottomOpen:false, query:'', subFilePick:null, collapsed:{},
       tourOn:false, tourPlaying:false, tourStep:0, spot:null,
     });
   }
@@ -736,10 +737,12 @@ class Component extends DCLogic {
         style:`stroke:${hot?'var(--sel)':'var(--conn)'};stroke-width:${hot?1.8:1.3};stroke-opacity:${hot?1:0.4};${dead?'stroke-dasharray:5 4;':''}${hot?'stroke-dasharray:5 5;animation:cvdash 1s linear infinite;':''}` };
     });
 
-    // layers tree
+    // layers tree (folders are collapsible)
     const rows=[];
     this.FOLDERS.forEach(f=>{
-      rows.push({ folder:true, label:f.name, icon:'▸', indent:0, font:'Inter' });
+      const collapsed=!!st.collapsed[f.name];
+      rows.push({ folder:true, folderName:f.name, collapsed, label:f.name, icon:collapsed?'▸':'▾', indent:0, font:'Inter' });
+      if(collapsed) return;
       (f.files||[]).forEach(id=>{
         const n=this.NODES.find(x=>x.id===id); if(!n) return; const det=this.DETAIL[id]; const hot=!!(det&&det.risks);
         const matchSearch=!q||n.label.toLowerCase().includes(q); const visible=matchSearch&&st.filters[n.kind];
@@ -749,9 +752,9 @@ class Component extends DCLogic {
       (f.vendor||[]).forEach(v=>rows.push({ vendor:true, label:v, icon:'⬡', indent:14, font:"'JetBrains Mono',monospace" }));
     });
     const layerRows=rows.map(r=>{
-      if(r.folder) return { onClick:()=>{}, indent:0, icon:r.icon, label:r.label, font:'Inter', textColor:'var(--text2)',
-        iconStyle:'font-size:9px;color:var(--text3);margin-right:7px;flex:none', showBadge:false,
-        style:'display:flex;align-items:center;width:100%;padding:5px 7px;margin-bottom:1px;background:transparent;border:none;cursor:default;border-radius:6px' };
+      if(r.folder) return { onClick:this.toggleFolder(r.folderName), indent:0, icon:r.icon, label:r.label, font:'Inter', textColor:'var(--text2)',
+        iconStyle:'font-size:9px;color:var(--text3);margin-right:7px;flex:none;width:10px;text-align:center', showBadge:false,
+        style:'display:flex;align-items:center;width:100%;padding:5px 7px;margin-bottom:1px;background:transparent;border:none;cursor:pointer;border-radius:6px' };
       if(r.vendor) return { onClick:()=>{}, indent:r.indent, icon:r.icon, label:r.label, font:r.font, textColor:'var(--text3)',
         iconStyle:'font-size:10px;color:var(--text3);margin-right:7px;flex:none', showBadge:false,
         style:'display:flex;align-items:center;width:100%;padding:5px 7px;margin-bottom:1px;background:transparent;border:none;cursor:default;border-radius:6px;opacity:.7' };
