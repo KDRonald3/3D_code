@@ -45,7 +45,7 @@
   <div style="display:flex;flex:1;min-height:0">
 
     <!-- ░ LEFT — LAYERS ░ -->
-    <aside style="width:236px;flex:none;background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column">
+    <aside style="{{ leftAsideStyle }}">
       <div style="padding:12px 12px 6px">
         <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:7px">Pages</div>
         <button onClick="{{ setMap }}" style="{{ pageMapStyle }}"><span style="font-size:12px">◇</span>Map</button>
@@ -82,6 +82,11 @@
         </div>
       </div>
     </aside>
+
+    <!-- left resize / collapse rail -->
+    <div onPointerDown="{{ onLeftResizeDown }}" style="{{ leftRailStyle }}">
+      <button onClick="{{ toggleLeft }}" onPointerDown="{{ stopProp }}" title="Collapse / expand layers" style="{{ leftRailBtnStyle }}">{{ leftChevron }}</button>
+    </div>
 
     <!-- ░ CENTER — CANVAS + BOTTOM PANEL ░ -->
     <div style="flex:1;min-width:0;display:flex;flex-direction:column">
@@ -218,8 +223,13 @@
     </sc-if>
     </div>
 
+    <!-- right resize / collapse rail -->
+    <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}">
+      <button onClick="{{ toggleRight }}" onPointerDown="{{ stopProp }}" title="Collapse / expand inspector" style="{{ rightRailBtnStyle }}">{{ rightChevron }}</button>
+    </div>
+
     <!-- ░ RIGHT — INSPECTOR ░ -->
-    <aside style="width:316px;flex:none;background:var(--panel);border-left:1px solid var(--border);overflow-y:auto">
+    <aside style="{{ rightAsideStyle }}">
       <div style="padding:13px 15px;border-bottom:1px solid var(--border)">
         <div style="display:flex;align-items:center;gap:8px">
           <span style="width:9px;height:9px;border-radius:{{ sel.dotRadius }};background:{{ sel.color }};flex:none"></span>
@@ -322,7 +332,9 @@ class Component extends DCLogic {
     tourOn:false, tourStep:0, tourPlaying:false, spot:null,
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
     loading:false, scanError:null,
+    leftW:236, rightW:316, leftOpen:true, rightOpen:true,
   };
+  LEFT_MIN=180; RIGHT_MIN=240;
 
   constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
 
@@ -429,6 +441,17 @@ class Component extends DCLogic {
   setDiff=()=>this.setState({view:'diff'});
   toggleFilter=(k)=>()=>this.setState(s=>({filters:{...s.filters,[k]:!s.filters[k]}}));
   toggleFolder=(name)=>()=>this.setState(s=>({collapsed:{...s.collapsed,[name]:!s.collapsed[name]}}));
+
+  // ── Resizable / collapsible sidebars (min width, no max) ──
+  stopProp=(e)=>{ e.stopPropagation(); };
+  toggleLeft=()=>this.setState(s=>({leftOpen:!s.leftOpen}));
+  toggleRight=()=>this.setState(s=>({rightOpen:!s.rightOpen}));
+  onLeftResizeDown=(e)=>{ if(!this.state.leftOpen) return; e.preventDefault(); this._lr={ sx:e.clientX, ow:this.state.leftW }; window.addEventListener('pointermove', this.onLeftResizeMove); window.addEventListener('pointerup', this.onLeftResizeUp); };
+  onLeftResizeMove=(e)=>{ if(!this._lr) return; this.setState({ leftW:Math.max(this.LEFT_MIN, this._lr.ow+(e.clientX-this._lr.sx)) }); };
+  onLeftResizeUp=()=>{ this._lr=null; window.removeEventListener('pointermove',this.onLeftResizeMove); window.removeEventListener('pointerup',this.onLeftResizeUp); };
+  onRightResizeDown=(e)=>{ if(!this.state.rightOpen) return; e.preventDefault(); this._rr={ sx:e.clientX, ow:this.state.rightW }; window.addEventListener('pointermove', this.onRightResizeMove); window.addEventListener('pointerup', this.onRightResizeUp); };
+  onRightResizeMove=(e)=>{ if(!this._rr) return; this.setState({ rightW:Math.max(this.RIGHT_MIN, this._rr.ow-(e.clientX-this._rr.sx)) }); };
+  onRightResizeUp=()=>{ this._rr=null; window.removeEventListener('pointermove',this.onRightResizeMove); window.removeEventListener('pointerup',this.onRightResizeUp); };
   zoomIn=()=>this.setState(s=>({zoom:Math.min(1.5,+(s.zoom+0.12).toFixed(2))}));
   zoomOut=()=>this.setState(s=>({zoom:Math.max(0.45,+(s.zoom-0.12).toFixed(2))}));
   resetView=()=>this.setState({zoom:0.6, panX:0, panY:0});
@@ -849,7 +872,20 @@ class Component extends DCLogic {
     const pageBase="display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;margin-bottom:2px;border:none;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:Inter;";
     const nodeCount=this.NODES.length;
     const empty=nodeCount===0;
+    const lw=st.leftOpen?st.leftW:0, rw=st.rightOpen?st.rightW:0;
+    // Pill is always centred on the rail; when a sidebar is collapsed the rail
+    // widens so the expand pill stays comfortably on-screen and clickable.
+    const railBtn="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:46px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--panel2);color:var(--text2);border-radius:8px;cursor:pointer;font-size:14px;line-height:1;padding:0;z-index:30;box-shadow:0 1px 5px var(--shadow)";
+    const railFor=(open)=>`flex:none;width:${open?10:22}px;position:relative;flex-shrink:0;background:transparent;cursor:${open?'ew-resize':'default'}`;
     return {
+      leftAsideStyle:`width:${lw}px;flex:none;background:var(--panel);border-right:1px solid var(--border);overflow-y:${st.leftOpen?'auto':'hidden'};overflow-x:hidden;display:flex;flex-direction:column`,
+      rightAsideStyle:`width:${rw}px;flex:none;background:var(--panel);border-left:1px solid var(--border);overflow-y:${st.rightOpen?'auto':'hidden'};overflow-x:hidden`,
+      leftRailStyle:railFor(st.leftOpen),
+      rightRailStyle:railFor(st.rightOpen),
+      leftRailBtnStyle:railBtn, rightRailBtnStyle:railBtn,
+      leftChevron:st.leftOpen?'‹':'›', rightChevron:st.rightOpen?'›':'‹',
+      onLeftResizeDown:this.onLeftResizeDown, onRightResizeDown:this.onRightResizeDown,
+      toggleLeft:this.toggleLeft, toggleRight:this.toggleRight, stopProp:this.stopProp,
       repoName: st.model.repoName || 'No project',
       framesInfo: nodeCount+' frames \u00b7 '+this.EDGES.length+' links',
       archSummary: st.model.arch || '',
