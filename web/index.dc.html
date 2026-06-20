@@ -44,7 +44,7 @@
     <button onClick="{{ toggleRight }}" title="Toggle inspector panel" style="{{ rightToggleStyle }}">{{ rightToggleIcon }}</button>
   </header>
 
-  <div style="display:flex;flex:1;min-height:0">
+  <div style="display:flex;flex:1;min-height:0;position:relative">
 
     <!-- ░ LEFT — LAYERS ░ -->
     <aside style="{{ leftAsideStyle }}">
@@ -84,9 +84,6 @@
         </div>
       </div>
     </aside>
-
-    <!-- left resize rail (drag to resize) -->
-    <div onPointerDown="{{ onLeftResizeDown }}" style="{{ leftRailStyle }}"></div>
 
     <!-- ░ CENTER — CANVAS + BOTTOM PANEL ░ -->
     <div style="flex:1;min-width:0;display:flex;flex-direction:column">
@@ -227,9 +224,6 @@
     </sc-if>
     </div>
 
-    <!-- right resize rail (drag to resize) -->
-    <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}"></div>
-
     <!-- ░ RIGHT — INSPECTOR ░ -->
     <aside style="{{ rightAsideStyle }}">
       <div style="padding:13px 15px;border-bottom:1px solid var(--border)">
@@ -287,6 +281,12 @@
         </div>
       </div>
     </aside>
+
+    <!-- resize rails — absolute overlays on the panel boundaries (drag to resize);
+         they don't consume layout width, so the center / bottom panel still spans
+         the full gap between the sidebars. -->
+    <div onPointerDown="{{ onLeftResizeDown }}" style="{{ leftRailStyle }}" style-hover="background:rgba(13,153,255,.28)"></div>
+    <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}" style-hover="background:rgba(13,153,255,.28)"></div>
   </div>
 
   <!-- floating toolbar — applies to both canvases, fixed at page bottom-centre -->
@@ -893,14 +893,15 @@ class Component extends DCLogic {
     const nodeCount=this.NODES.length;
     const empty=nodeCount===0;
     const lw=st.leftOpen?st.leftW:0, rw=st.rightOpen?st.rightW:0;
-    // Rails are resize-only now; the collapse/expand controls live in the top bar.
-    const railFor=(open)=>`flex:none;width:${open?10:0}px;position:relative;flex-shrink:0;background:transparent;cursor:${open?'ew-resize':'default'}`;
+    // Rails are drag-to-resize overlays anchored on each sidebar boundary; the
+    // collapse/expand controls live in the top bar.
+    const leftRailStyle=`position:absolute;top:0;bottom:0;left:${lw-5}px;width:11px;cursor:ew-resize;z-index:35;background:transparent;display:${st.leftOpen?'block':'none'}`;
+    const rightRailStyle=`position:absolute;top:0;bottom:0;right:${rw-5}px;width:11px;cursor:ew-resize;z-index:35;background:transparent;display:${st.rightOpen?'block':'none'}`;
     const toggleBtn=(open)=>`width:30px;height:30px;flex:none;border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;background:${open?'var(--sel)':'var(--panel2)'}`;
     return {
       leftAsideStyle:`width:${lw}px;flex:none;background:var(--panel);border-right:1px solid var(--border);overflow-y:${st.leftOpen?'auto':'hidden'};overflow-x:hidden;display:flex;flex-direction:column`,
       rightAsideStyle:`width:${rw}px;flex:none;background:var(--panel);border-left:1px solid var(--border);overflow-y:${st.rightOpen?'auto':'hidden'};overflow-x:hidden`,
-      leftRailStyle:railFor(st.leftOpen),
-      rightRailStyle:railFor(st.rightOpen),
+      leftRailStyle, rightRailStyle,
       onLeftResizeDown:this.onLeftResizeDown, onRightResizeDown:this.onRightResizeDown,
       toggleLeft:this.toggleLeft, toggleRight:this.toggleRight,
       leftToggleStyle:toggleBtn(st.leftOpen), rightToggleStyle:toggleBtn(st.rightOpen),
