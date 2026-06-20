@@ -153,7 +153,7 @@
     </aside>
 
     <!-- ░ CENTER — CANVAS + BOTTOM PANEL ░ -->
-    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative">
     <main onPointerDown="{{ onCanvasDown }}" style="{{ canvasStyle }}">
 
       <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:translate({{ panX }}px,{{ panY }}px) scale({{ zoom }});width:1360px;height:600px">
@@ -221,7 +221,7 @@
     <!-- ░ BOTTOM — FUNCTIONS / DATA STRUCTURES ░ -->
     <sc-if value="{{ bottomOpen }}" hint-placeholder-val="{{ false }}">
       <div style="{{ bottomWrapStyle }}">
-        <div onPointerDown="{{ onResizeDown }}" style="height:7px;flex:none;cursor:ns-resize;display:flex;align-items:center;justify-content:center;background:var(--panel);border-top:1px solid var(--border)"><span style="width:32px;height:3px;border-radius:2px;background:var(--border)"></span></div>
+        <div onPointerDown="{{ onResizeDown }}" style="{{ resizeHandleStyle }}"><span style="width:32px;height:3px;border-radius:2px;background:var(--border)"></span></div>
         <div style="flex:none;display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--panel);border-bottom:1px solid var(--border)">
           <div style="display:flex;gap:3px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px">
             <button onClick="{{ openFns }}" style="{{ subFnStyle }}">ƒ Functions</button>
@@ -433,7 +433,7 @@ class Component extends DCLogic {
   onSubNodeUp=()=>{ if(this._sd&&this._sd.moved)this._justDraggedSub=true; this._sd=null; window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
   setHover=(id)=>()=>this.setState({hoverId:id});
   onSearch=(e)=>this.setState({query:e.target.value});
-  setMap=()=>this.setState({view:'map'});
+  setMap=()=>this.setState({view:'map', subFullView:false});
   setDiff=()=>this.setState({view:'diff'});
   toggleFilter=(k)=>()=>this.setState(s=>({filters:{...s.filters,[k]:!s.filters[k]}}));
   toggleFolder=(name)=>()=>this.setState(s=>({collapsed:{...s.collapsed,[name]:!s.collapsed[name]}}));
@@ -974,16 +974,19 @@ class Component extends DCLogic {
       query:st.query, onSearch:this.onSearch, zoom:st.zoom, zoomPct:Math.round(st.zoom*100)+'%',
       zoomIn:this.zoomIn, zoomOut:this.zoomOut, resetView:this.resetView,
       panX:st.panX, panY:st.panY, onCanvasDown:this.onCanvasDown,
-      canvasStyle:`position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.dragging?'grabbing':(st.panMode==='hand'?'grab':'default')}`,
+      canvasStyle:`position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.dragging?'grabbing':(st.panMode==='hand'?'grab':'default')}${st.subFullView?';display:none':''}`,
       setMap:this.setMap, setDiff:this.setDiff, isDiff,
-      pageMapStyle:pageBase+(st.view==='map'?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
+      pageMapStyle:pageBase+((st.view==='map'&&!st.subFullView)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       pageDiffStyle:pageBase+(st.view==='diff'?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       pageFnStyle:pageBase+((st.bottomOpen&&isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       pageDsStyle:pageBase+((st.bottomOpen&&!isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       bottomOpen:st.bottomOpen, openFns:this.openFns, openStructs:this.openStructs, closeBottom:this.closeBottom, onResizeDown:this.onResizeDown,
-      fullToggle: st.subFullView?this.doCollapseFull:this.doExpandFull, fullIcon: st.subFullView?'\u2750':'\u2922', fullTitle: st.subFullView?'Exit full view':'Full view',
+      fullToggle: st.subFullView?this.doCollapseFull:this.doExpandFull, fullIcon: st.subFullView?'\u2750':'\u2922', fullTitle: st.subFullView?'Dock panel':'Full view',
+      resizeHandleStyle: st.subFullView
+        ? 'display:none'
+        : 'height:7px;flex:none;cursor:ns-resize;display:flex;align-items:center;justify-content:center;background:var(--panel);border-top:1px solid var(--border)',
       bottomWrapStyle: st.subFullView
-        ? `position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;background:var(--panel)`
+        ? `flex:1;min-height:0;display:flex;flex-direction:column;background:var(--panel)`
         : `flex:none;height:${st.bottomH}px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--panel)`,
       subFnStyle:subTabBase+(isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
       subDsStyle:subTabBase+(!isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
