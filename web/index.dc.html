@@ -344,13 +344,6 @@
     <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}" style-hover="background:rgba(13,153,255,.28)"></div>
   </div>
 
-  <!-- floating toolbar — applies to both canvases, fixed at main-view bottom-centre -->
-  <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:3px;background:var(--toolbar);border-radius:12px;padding:5px;box-shadow:0 6px 22px rgba(0,0,0,.32);z-index:55">
-    <sc-for list="{{ tools }}" as="t" hint-placeholder-count="3">
-      <button onClick="{{ t.onClick }}" title="{{ t.name }}" style="{{ t.style }}">{{ t.glyph }}</button>
-    </sc-for>
-  </div>
-
   </div>
   </sc-if>
 
@@ -362,7 +355,7 @@ class Component extends DCLogic {
     selectedId:null, hoverId:null, query:'', view:'map',
     filters:{ entry:true, file:true, fn:true, struct:true },
     zoom:0.6, dark:false, userSet:false,
-    panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
+    panX:0, panY:0, dragging:false, draggingCard:null, draggingSub:null, nodePos:{},
     bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1, subFullView:false,
     subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
     selectedSet:[], selectedSym:null, subHover:null, collapsed:{},
@@ -373,6 +366,7 @@ class Component extends DCLogic {
     projectMeta:{name:'',language:''}, recentProjects:[], githubUrl:'', versionWarn:null,
   };
   LEFT_MIN=180; RIGHT_MIN=240;
+  LP_MS=320; LP_MOVE=5;  // long-press threshold (ms) and move tolerance (px)
 
   constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
 
@@ -419,18 +413,28 @@ class Component extends DCLogic {
   subZoomReset=()=>this.setState({subZoom:1, subPanX:0, subPanY:0});
   setSubScope=(m)=>()=>this.setState({subScope:m});
   onPickFile=(e)=>this.setState({subFilePick:e.target.value});
-  // Bottom-panel card move — mirrors the main canvas: only the Move tool drags a
-  // card; it follows the cursor freely (no clamping) in canvas (pre-scale) space.
+  // Bottom-panel node — unified pointer: a quick click selects, a long-press then
+  // drag moves the node, and a drag before the long-press pans the panel.
   onSubNodeDown=(key)=>(e)=>{
-    if(this.state.tourOn || this.state.panMode!=='move') return;
-    e.preventDefault(); e.stopPropagation();
+    e.stopPropagation();
     const base=(this._subPosCache&&this._subPosCache[key])||{x:0,y:0};
-    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1, moved:false };
+    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1, pox:this.state.subPanX, poy:this.state.subPanY, mode:'pending', moved:false };
+    clearTimeout(this._sLp);
+    this._sLp=setTimeout(()=>{ if(this._sd&&this._sd.mode==='pending'){ this._sd.mode='node'; this.setState({selectedSym:key, draggingSub:key}); } }, this.LP_MS);
     window.addEventListener('pointermove', this.onSubNodeMove);
     window.addEventListener('pointerup', this.onSubNodeUp);
   };
-  onSubNodeMove=(e)=>{ if(!this._sd) return; const z=this._sd.z; const dx=(e.clientX-this._sd.sx)/z, dy=(e.clientY-this._sd.sy)/z; if(Math.abs(dx)>2||Math.abs(dy)>2)this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx,y:this._sd.oy+dy}}})); };
-  onSubNodeUp=()=>{ if(this._sd&&this._sd.moved)this._justDraggedSub=true; this._sd=null; window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
+  onSubNodeMove=(e)=>{
+    if(!this._sd) return;
+    const dx=e.clientX-this._sd.sx, dy=e.clientY-this._sd.sy;
+    if(this._sd.mode==='pending'){
+      if(Math.abs(dx)>this.LP_MOVE||Math.abs(dy)>this.LP_MOVE){ clearTimeout(this._sLp); this._sd.mode='pan'; this._sd.sx=e.clientX; this._sd.sy=e.clientY; this._sd.pox=this.state.subPanX; this._sd.poy=this.state.subPanY; this.setState({subPanning:true}); }
+      return;
+    }
+    if(this._sd.mode==='pan'){ this.setState({ subPanX:this._sd.pox+(e.clientX-this._sd.sx), subPanY:this._sd.poy+(e.clientY-this._sd.sy) }); return; }
+    if(this._sd.mode==='node'){ const z=this._sd.z; this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx/z,y:this._sd.oy+dy/z}}})); }
+  };
+  onSubNodeUp=()=>{ clearTimeout(this._sLp); if(this._sd&&(this._sd.mode==='node'||this._sd.mode==='pan'))this._justDraggedSub=true; this._sd=null; this.setState({subPanning:false, draggingSub:null}); window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
   setHover=(id)=>()=>this.setState({hoverId:id});
   onSearch=(e)=>this.setState({query:e.target.value});
   setMap=()=>this.setState({view:'map', subFullView:false});
@@ -459,12 +463,12 @@ class Component extends DCLogic {
   zoomIn=()=>this.setState(s=>({zoom:Math.min(1.5,+(s.zoom+0.12).toFixed(2))}));
   zoomOut=()=>this.setState(s=>({zoom:Math.max(0.45,+(s.zoom-0.12).toFixed(2))}));
   resetView=()=>this.setState({zoom:0.6, panX:0, panY:0});
-  setPanMode=(m)=>()=>this.setState({panMode:m});
+  // ── Unified canvas cursor ──
+  // click = select · drag empty space = pan the whole canvas · long-press a card
+  // then drag = move that card. No tool modes.
   onCanvasDown=(e)=>{
-    if(this.state.tourOn) return;
     const onFrame = e.target.closest && e.target.closest('[data-tour-id^="t-frame-"]');
-    // Select & Move modes: a press on a card is handled by the card itself (select / drag), so don't pan.
-    if((this.state.panMode==='cursor'||this.state.panMode==='move') && onFrame) return;
+    if(onFrame) return; // the frame handles its own pointer
     this._pan={ sx:e.clientX, sy:e.clientY, ox:this.state.panX, oy:this.state.panY };
     this.setState({dragging:true});
     window.addEventListener('pointermove', this.onCanvasMove);
@@ -473,26 +477,32 @@ class Component extends DCLogic {
   onCanvasMove=(e)=>{ if(!this._pan) return; this.setState({ panX:this._pan.ox+(e.clientX-this._pan.sx), panY:this._pan.oy+(e.clientY-this._pan.sy) }); };
   onCanvasUp=()=>{ this._pan=null; this.setState({dragging:false}); window.removeEventListener('pointermove',this.onCanvasMove); window.removeEventListener('pointerup',this.onCanvasUp); };
 
-  // main-canvas card move (only in 'move' tool); click still selects
   selectCard=(id)=>(e)=>{ if(this._justDragged){ this._justDragged=false; return; } this.select(id)(e); };
   onFrameDown=(id)=>(e)=>{
-    if(this.state.tourOn || this.state.panMode!=='move') return;
-    e.preventDefault(); e.stopPropagation();
+    e.stopPropagation();
     const base=(this._nodePosCache&&this._nodePosCache[id])||{x:0,y:0};
-    this._nd={ id, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.zoom||1, moved:false };
+    this._nd={ id, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.zoom||1, pox:this.state.panX, poy:this.state.panY, mode:'pending', moved:false };
+    clearTimeout(this._lp);
+    this._lp=setTimeout(()=>{ if(this._nd&&this._nd.mode==='pending'){ this._nd.mode='card'; this.setState({draggingCard:id, selectedId:id, selectedSet:[id], selectedSym:null}); } }, this.LP_MS);
     window.addEventListener('pointermove', this.onFrameMove);
     window.addEventListener('pointerup', this.onFrameUp);
   };
-  onFrameMove=(e)=>{ if(!this._nd) return; const z=this._nd.z; const dx=(e.clientX-this._nd.sx)/z, dy=(e.clientY-this._nd.sy)/z; if(Math.abs(dx)>2||Math.abs(dy)>2)this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx,y:this._nd.oy+dy}}})); };
-  onFrameUp=()=>{ if(this._nd&&this._nd.moved)this._justDragged=true; this._nd=null; window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
+  onFrameMove=(e)=>{
+    if(!this._nd) return;
+    const dx=e.clientX-this._nd.sx, dy=e.clientY-this._nd.sy;
+    if(this._nd.mode==='pending'){
+      if(Math.abs(dx)>this.LP_MOVE||Math.abs(dy)>this.LP_MOVE){ clearTimeout(this._lp); this._nd.mode='pan'; this._nd.sx=e.clientX; this._nd.sy=e.clientY; this._nd.pox=this.state.panX; this._nd.poy=this.state.panY; this.setState({dragging:true}); }
+      return;
+    }
+    if(this._nd.mode==='pan'){ this.setState({ panX:this._nd.pox+(e.clientX-this._nd.sx), panY:this._nd.poy+(e.clientY-this._nd.sy) }); return; }
+    if(this._nd.mode==='card'){ const z=this._nd.z; this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx/z,y:this._nd.oy+dy/z}}})); }
+  };
+  onFrameUp=()=>{ clearTimeout(this._lp); if(this._nd&&(this._nd.mode==='card'||this._nd.mode==='pan'))this._justDragged=true; this._nd=null; this.setState({dragging:false, draggingCard:null}); window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
 
-  // functions / data-structures canvas pan — mirrors the main canvas: a press on a
-  // card in Select/Move is handled by the card (no pan); empty drag (any tool) pans
-  // via a transform translate so cards can sit anywhere, including negative space.
+  // func/ds empty-background pan (nodes handle their own pointer)
   onSubPanDown=(e)=>{
-    if(this.state.tourOn) return;
     const onNode = e.target.closest && e.target.closest('[data-sub-node]');
-    if((this.state.panMode==='cursor'||this.state.panMode==='move') && onNode) return;
+    if(onNode) return;
     this._sp={ sx:e.clientX, sy:e.clientY, ox:this.state.subPanX, oy:this.state.subPanY };
     this.setState({subPanning:true});
     window.addEventListener('pointermove', this.onSubPanMove);
@@ -779,7 +789,6 @@ class Component extends DCLogic {
     const connected=new Set(); this.EDGES.forEach(e=>{ if(selSet.has(e[0]))connected.add(e[1]); if(selSet.has(e[1]))connected.add(e[0]); });
 
     const diffColor={added:'#14ae5c',changed:'#f5a623',removed:'#e5484d'};
-    const moveMode=st.panMode==='move';
     const orphanSet=new Set(this.NODES.filter(n=>n.orphan).map(n=>n.id));
     this._nodePosCache={};
 
@@ -800,7 +809,7 @@ class Component extends DCLogic {
         chipStyle:`font-size:9px;font-weight:500;letter-spacing:.3px;text-transform:uppercase;color:${c};background:transparent;padding:0;border-radius:0;display:flex;align-items:center;gap:4px`,
         wrapStyle:`position:absolute;left:${px}px;top:${py}px;width:${this.W}px;opacity:${dim?0.32:1};transition:opacity .35s;z-index:${isSel?5:2}`,
         labelStyle:`font-size:10.5px;font-family:Inter,sans-serif;margin-bottom:4px;color:${isSel?'var(--sel)':'var(--text3)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.1px`,
-        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:${isSel?'2px':'1px'} solid ${baseBorder};border-radius:3px;box-shadow:0 1px 3px var(--shadow);cursor:${moveMode?'grab':'pointer'};touch-action:none;transition:border-color .15s`,
+        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:${isSel?'2px':'1px'} solid ${baseBorder};border-radius:3px;box-shadow:${st.draggingCard===n.id?'0 6px 18px var(--shadow)':'0 1px 3px var(--shadow)'};cursor:${st.draggingCard===n.id?'grabbing':'pointer'};touch-action:none;transition:border-color .15s,box-shadow .15s`,
       };
     });
 
@@ -854,12 +863,6 @@ class Component extends DCLogic {
       label:l, color:this.KCOLOR[k], onClick:this.toggleFilter(k),
       style:`display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:11px;font-family:Inter;background:${st.filters[k]?'var(--panel2)':'transparent'};border:1px solid var(--border);color:${st.filters[k]?'var(--text)':'var(--text3)'}` }));
 
-    const tools=[['↖','Select cards','cursor'],['✥','Move cards','move'],['✋','Pan canvas','hand']].map(([g,name,mode])=>{
-      const active=st.panMode===mode;
-      return { glyph:g, name, onClick:this.setPanMode(mode),
-        style:`width:30px;height:30px;border:none;border-radius:8px;cursor:pointer;font-size:14px;background:${active?'var(--sel)':'transparent'};color:${active?'#fff':'#cfcfcf'}` };
-    });
-
     // inspector
     const KB={entry:'#e8922a22',file:'#3b82f622',fn:'#16a35c22',struct:'#7c5be022'};
     const badgeRender=(arr)=>(arr||[]).map(b=>({ text:b[0],
@@ -897,7 +900,7 @@ class Component extends DCLogic {
       const bd=isSel?'var(--sel)':(n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)'));
       const ring=isSel?'0 0 0 1.5px var(--sel),0 4px 14px var(--shadow)':'0 1px 4px var(--shadow)';
       return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key), onClick:this.onSubNodeClick(n.key), onEnter:this.setSubHover(n.key), onLeave:this.setSubHover(null),
-        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:${ring};cursor:${st.panMode==='move'?'grab':'pointer'};touch-action:none` };
+        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:${ring};cursor:${st.draggingSub===n.key?'grabbing':'pointer'};touch-action:none` };
     });
     // Edge highlighting mirrors the main canvas: edges touching the hovered/
     // selected node flow blue (animated dashes); the rest dim.
@@ -974,7 +977,7 @@ class Component extends DCLogic {
       query:st.query, onSearch:this.onSearch, zoom:st.zoom, zoomPct:Math.round(st.zoom*100)+'%',
       zoomIn:this.zoomIn, zoomOut:this.zoomOut, resetView:this.resetView,
       panX:st.panX, panY:st.panY, onCanvasDown:this.onCanvasDown,
-      canvasStyle:`position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.dragging?'grabbing':(st.panMode==='hand'?'grab':'default')}${st.subFullView?';display:none':''}`,
+      canvasStyle:`position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.dragging?'grabbing':'grab'}${st.subFullView?';display:none':''}`,
       setMap:this.setMap, setDiff:this.setDiff, isDiff,
       pageMapStyle:pageBase+((st.view==='map'&&!st.subFullView)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       pageDiffStyle:pageBase+(st.view==='diff'?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
@@ -994,10 +997,10 @@ class Component extends DCLogic {
       subPickOptions:selFilesAll.map(id=>({id, label:fileLabel(id)})), onPickFile:this.onPickFile,
       subNodes, subEdges, subW, subH, subPanX:st.subPanX, subPanY:st.subPanY,
       onSubPanDown:this.onSubPanDown,
-      subCanvasStyle:`flex:1;min-height:0;overflow:hidden;position:relative;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.subPanning?'grabbing':(st.panMode==='hand'?'grab':'default')}`,
+      subCanvasStyle:`flex:1;min-height:0;overflow:hidden;position:relative;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.subPanning?'grabbing':'grab'}`,
       subZoom:st.subZoom, subZoomPct:Math.round(st.subZoom*100)+'%', subZoomIn:this.subZoomIn, subZoomOut:this.subZoomOut, subZoomReset:this.subZoomReset,
       subEmpty:subListLen===0, subEmptyText,
-      nodeViews, edgeViews, layerRows, filterChips:fchips, tools, sel:selView,
+      nodeViews, edgeViews, layerRows, filterChips:fchips, sel:selView,
     };
   }
 }
