@@ -25,24 +25,91 @@
 </helmet>
 <div ref="{{ setRoot }}" style="{{ rootStyle }}">
 
+  <!-- hidden inputs (always present so refs exist) -->
+  <input ref="{{ setFolderInput }}" onChange="{{ onFolderPicked }}" type="file" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
+  <input ref="{{ setJsonInput }}" onChange="{{ onFileInput }}" type="file" accept=".json,application/json" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
+
   <!-- ░ TOP BAR ░ -->
   <header style="display:flex;align-items:center;gap:14px;height:44px;flex:none;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--border);z-index:40">
-    <button onClick="{{ toggleLeft }}" title="Toggle layers panel" style="{{ leftToggleStyle }}">{{ leftToggleIcon }}</button>
+    <sc-if value="{{ isLoaded }}" hint-placeholder-val="{{ true }}"><button onClick="{{ toggleLeft }}" title="Toggle layers panel" style="{{ leftToggleStyle }}">{{ leftToggleIcon }}</button></sc-if>
     <div style="display:flex;align-items:center;gap:9px">
       <div style="width:22px;height:22px;border-radius:5px;background:var(--sel);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;font-family:'JetBrains Mono',monospace">{}</div>
-      <span style="font-weight:600;font-size:13px;color:var(--text)">{{ repoName }}</span>
-      <span style="color:var(--text3);font-size:13px">/</span>
-      <span style="font-size:13px;color:var(--text2)">Codebase Map</span>
+      <span style="font-weight:600;font-size:13px;color:var(--text)">{{ projectName }}</span>
+      <sc-if value="{{ isLoaded }}" hint-placeholder-val="{{ true }}">
+        <span style="color:var(--text3);font-size:13px">/</span>
+        <span style="font-size:13px;color:var(--text2)">Codebase Map</span>
+      </sc-if>
     </div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:9px">
-      <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text3);padding:4px 9px;border:1px solid var(--border);border-radius:7px">{{ framesInfo }}</span>
-      <input ref="{{ setFolderInput }}" onChange="{{ onFolderPicked }}" type="file" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
-      <button onClick="{{ pickFolder }}" title="Add a folder to visualize" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text2);font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">{{ addLabel }}</button>
+      <sc-if value="{{ isLoaded }}" hint-placeholder-val="{{ true }}">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text3);padding:4px 9px;border:1px solid var(--border);border-radius:7px">{{ frameStats }}</span>
+        <button onClick="{{ switchProject }}" style="height:30px;padding:0 11px;border:1px solid var(--border);background:var(--panel2);border-radius:8px;cursor:pointer;font-family:Inter;font-size:12px;color:var(--text2)">Switch project</button>
+      </sc-if>
       <button onClick="{{ toggleTheme }}" title="Theme" style="width:30px;height:30px;border:1px solid var(--border);background:var(--panel2);border-radius:8px;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;font-size:14px">{{ themeIcon }}</button>
-      <sc-if value="{{ hasData }}" hint-placeholder-val="{{ false }}"><button onClick="{{ startTour }}" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 14px;border:none;border-radius:8px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">▶ Present walkthrough</button></sc-if>
     </div>
-    <button onClick="{{ toggleRight }}" title="Toggle inspector panel" style="{{ rightToggleStyle }}">{{ rightToggleIcon }}</button>
+    <sc-if value="{{ isLoaded }}" hint-placeholder-val="{{ true }}"><button onClick="{{ toggleRight }}" title="Toggle inspector panel" style="{{ rightToggleStyle }}">{{ rightToggleIcon }}</button></sc-if>
   </header>
+
+  <!-- ░ IMPORT SCREEN ░ -->
+  <sc-if value="{{ isImport }}" hint-placeholder-val="{{ false }}">
+    <div onDrop="{{ onFileDrop }}" onDragOver="{{ onDragOver }}" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;overflow-y:auto;background:var(--bg)">
+      <div style="font-size:22px;font-weight:700;color:var(--text);margin-bottom:6px;letter-spacing:-.4px">Open a codebase</div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:32px">Pick a folder to scan, or load a scanner-output <span style="font-family:'JetBrains Mono',monospace">.json</span> file.</div>
+      <div style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:480px">
+        <button onClick="{{ onFolderPick }}" style="display:flex;align-items:flex-start;gap:14px;padding:16px 18px;background:var(--panel);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:left">
+          <span style="font-size:22px;margin-top:1px">📁</span>
+          <div><div style="font-weight:600;font-size:13.5px;color:var(--text);margin-bottom:3px">Open local folder</div><div style="font-size:12px;color:var(--text3)">Scanned by the Rust analyzer (Rust, Python, JS, TS, Go, Java, C/C++)</div></div>
+        </button>
+        <button onClick="{{ openFilePicker }}" style="display:flex;align-items:flex-start;gap:14px;padding:16px 18px;background:var(--panel);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:left">
+          <span style="font-size:22px;margin-top:1px">📄</span>
+          <div><div style="font-weight:600;font-size:13.5px;color:var(--text);margin-bottom:3px">Open scanner output (.json)</div><div style="font-size:12px;color:var(--text3)">Drop a file anywhere, or click to browse</div></div>
+        </button>
+      </div>
+      <sc-if value="{{ importError }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:16px;display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--warnbg);border:1px solid var(--warn);border-radius:9px;max-width:480px;width:100%">
+          <span style="color:var(--warn);font-size:13px">⚠</span>
+          <span style="font-size:12.5px;color:var(--warn);font-family:'JetBrains Mono',monospace;flex:1">{{ importError }}</span>
+          <button onClick="{{ clearError }}" style="border:none;background:transparent;color:var(--warn);cursor:pointer;font-size:14px">✕</button>
+        </div>
+      </sc-if>
+      <sc-if value="{{ hasRecent }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:32px;width:100%;max-width:480px">
+          <div style="font-size:10px;font-weight:600;letter-spacing:.6px;color:var(--text3);text-transform:uppercase;margin-bottom:10px">Recent</div>
+          <div style="display:flex;flex-wrap:wrap;gap:7px">
+            <sc-for list="{{ recentRows }}" as="r" hint-placeholder-count="3">
+              <button onClick="{{ r.onClick }}" style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;cursor:pointer">
+                <span style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace">{{ r.lang }}</span>
+                <span style="font-size:12.5px;color:var(--text);font-weight:500">{{ r.name }}</span>
+                <span style="font-size:10.5px;color:var(--text3)">{{ r.time }}</span>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ░ SCANNING PROGRESS ░ -->
+  <sc-if value="{{ isScanning }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:48px;background:var(--bg)">
+      <div style="font-size:16px;font-weight:600;color:var(--text)">Scanning {{ scanName }}…</div>
+      <div style="width:100%;max-width:420px;height:6px;background:var(--panel2);border-radius:4px;overflow:hidden">
+        <div style="{{ scanBarStyle }}"></div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text3)">{{ scanLabel }}</div>
+    </div>
+  </sc-if>
+
+  <!-- ░ MAIN VIEW ░ -->
+  <sc-if value="{{ isLoaded }}" hint-placeholder-val="{{ true }}">
+  <div style="{{ mainViewStyle }}">
+  <sc-if value="{{ versionWarn }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:none;display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--warnbg);border-bottom:1px solid var(--warn)">
+      <span style="color:var(--warn);font-size:12px">⚠</span>
+      <span style="font-size:12px;color:var(--warn);flex:1">{{ versionWarn }}</span>
+      <button onClick="{{ dismissVersion }}" style="border:none;background:transparent;color:var(--warn);cursor:pointer;font-size:13px">✕</button>
+    </div>
+  </sc-if>
 
   <div style="display:flex;flex:1;min-height:0;position:relative">
 
@@ -93,9 +160,9 @@
 
         <!-- architecture sticky -->
         <sc-if value="{{ hasData }}" hint-placeholder-val="{{ false }}">
-        <div data-tour-id="t-arch" style="position:absolute;left:22px;top:14px;width:248px;padding:13px 14px 14px;background:var(--sticky);border-radius:3px;box-shadow:0 6px 16px rgba(0,0,0,.14);transform:rotate(-1deg)">
-          <div style="font-size:10px;font-weight:700;letter-spacing:.8px;color:#8a7a1e;text-transform:uppercase;margin-bottom:7px">Architecture · auto</div>
-          <p style="margin:0;font-size:12px;line-height:1.5;color:#3d3719;font-family:Inter">{{ archSummary }}</p>
+        <div data-tour-id="t-arch" style="position:absolute;left:22px;top:14px;width:228px;padding:12px 13px 13px;background:var(--sticky);border-radius:2px;box-shadow:0 2px 8px rgba(0,0,0,.18);transform:rotate(-1deg)">
+          <div style="font-size:9.5px;font-weight:700;letter-spacing:.9px;color:var(--stickytxt);opacity:.6;text-transform:uppercase;margin-bottom:6px">Architecture · auto</div>
+          <p style="margin:0;font-size:11.5px;line-height:1.5;color:var(--stickytxt);font-family:Inter;opacity:.9">{{ archSummary }}</p>
         </div>
         </sc-if>
 
@@ -111,11 +178,11 @@
 
         <sc-for list="{{ nodeViews }}" as="n" hint-placeholder-count="14">
           <div onMouseEnter="{{ n.onEnter }}" onMouseLeave="{{ n.onLeave }}" data-tour-id="{{ n.tourId }}" style="{{ n.wrapStyle }}">
-            <div style="{{ n.labelStyle }}"><span style="opacity:.6">#&nbsp;</span>{{ n.label }}</div>
+            <div style="{{ n.labelStyle }}">{{ n.label }}</div>
             <div onClick="{{ n.onClick }}" onPointerDown="{{ n.onFrameDown }}" style="{{ n.frameStyle }}">
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:9px">
-                <span style="{{ n.chipStyle }}">{{ n.kindLabel }}</span>
-                <sc-if value="{{ n.hot }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;width:8px;height:8px;border-radius:50%;background:#e5484d;flex:none"></span></sc-if>
+                <span style="{{ n.chipStyle }}"><span style="width:6px;height:6px;border-radius:1px;background:{{ n.color }};flex:none;display:inline-block"></span>{{ n.kindLabel }}</span>
+                <sc-if value="{{ n.hot }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-size:9px;color:var(--warn);opacity:.8;flex:none;font-weight:600;letter-spacing:-.2px">!</span></sc-if>
               </div>
               <div style="height:5px;width:78%;background:var(--skel);border-radius:3px;margin-bottom:6px"></div>
               <div style="height:5px;width:58%;background:var(--skel);border-radius:3px;margin-bottom:6px"></div>
@@ -123,29 +190,16 @@
             </div>
             <sc-if value="{{ n.selected }}" hint-placeholder-val="{{ false }}">
               <div>
-                <span style="position:absolute;left:-4px;top:16px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
-                <span style="position:absolute;right:-4px;top:16px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
-                <span style="position:absolute;left:-4px;bottom:-4px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
-                <span style="position:absolute;right:-4px;bottom:-4px;width:7px;height:7px;background:var(--panel);border:1.5px solid var(--sel);border-radius:1px"></span>
-                <span style="position:absolute;left:50%;transform:translateX(-50%);bottom:-23px;background:var(--sel);color:#fff;font-family:'JetBrains Mono',monospace;font-size:9.5px;padding:2px 7px;border-radius:4px;white-space:nowrap">{{ n.locText }}</span>
+                <span style="position:absolute;left:-4px;top:-4px;width:7px;height:7px;background:var(--frame);border:1.5px solid var(--sel);border-radius:0"></span>
+                <span style="position:absolute;right:-4px;top:-4px;width:7px;height:7px;background:var(--frame);border:1.5px solid var(--sel);border-radius:0"></span>
+                <span style="position:absolute;left:-4px;bottom:-4px;width:7px;height:7px;background:var(--frame);border:1.5px solid var(--sel);border-radius:0"></span>
+                <span style="position:absolute;right:-4px;bottom:-4px;width:7px;height:7px;background:var(--frame);border:1.5px solid var(--sel);border-radius:0"></span>
+                <span style="position:absolute;left:50%;transform:translateX(-50%);bottom:-22px;background:var(--sel);color:#fff;font-family:'JetBrains Mono',monospace;font-size:9px;padding:2px 6px;border-radius:2px;white-space:nowrap;letter-spacing:.2px">{{ n.locText }}</span>
               </div>
             </sc-if>
           </div>
         </sc-for>
       </div>
-
-      <!-- empty state: no project loaded -->
-      <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
-        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:7;pointer-events:none">
-          <div style="display:flex;flex-direction:column;align-items:center;gap:13px;padding:30px 34px;background:var(--panel);border:1px solid var(--border);border-radius:16px;box-shadow:0 10px 36px var(--shadow);pointer-events:auto;max-width:360px;text-align:center">
-            <div style="width:46px;height:46px;border-radius:11px;background:var(--sel);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:22px;font-family:'JetBrains Mono',monospace">{}</div>
-            <div style="font-weight:600;font-size:15px;color:var(--text)">No project loaded</div>
-            <div style="font-size:12.5px;line-height:1.5;color:var(--text3)">Add a folder and the Rust analyzer maps its files, dependencies, functions and data structures.</div>
-            <button onClick="{{ pickFolder }}" style="display:flex;align-items:center;gap:8px;height:36px;padding:0 18px;border:none;border-radius:9px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:13px;cursor:pointer">{{ addLabel }}</button>
-            <sc-if value="{{ scanError }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:var(--warn);line-height:1.4">{{ scanError }}</div></sc-if>
-          </div>
-        </div>
-      </sc-if>
 
       <!-- diff legend -->
       <sc-if value="{{ isDiff }}" hint-placeholder-val="{{ false }}">
@@ -191,6 +245,7 @@
             <button onClick="{{ subZoomReset }}" style="min-width:42px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10.5px">{{ subZoomPct }}</button>
             <button onClick="{{ subZoomIn }}" style="width:24px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-size:14px">+</button>
           </div>
+          <button onClick="{{ fullToggle }}" title="{{ fullTitle }}" style="width:26px;height:26px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);font-size:13px;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center">{{ fullIcon }}</button>
           <button onClick="{{ closeBottom }}" style="width:26px;height:26px;border:none;background:transparent;color:var(--text3);font-size:15px;cursor:pointer;border-radius:6px">✕</button>
         </div>
         <div onPointerDown="{{ onSubPanDown }}" style="{{ subCanvasStyle }}">
@@ -289,34 +344,14 @@
     <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}" style-hover="background:rgba(13,153,255,.28)"></div>
   </div>
 
-  <!-- floating toolbar — applies to both canvases, fixed at page bottom-centre -->
+  <!-- floating toolbar — applies to both canvases, fixed at main-view bottom-centre -->
   <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:3px;background:var(--toolbar);border-radius:12px;padding:5px;box-shadow:0 6px 22px rgba(0,0,0,.32);z-index:55">
     <sc-for list="{{ tools }}" as="t" hint-placeholder-count="3">
       <button onClick="{{ t.onClick }}" title="{{ t.name }}" style="{{ t.style }}">{{ t.glyph }}</button>
     </sc-for>
   </div>
 
-  <!-- ░ PRESENT / WALKTHROUGH ░ -->
-  <sc-if value="{{ tourOn }}" hint-placeholder-val="{{ false }}">
-    <div style="position:absolute;inset:0;z-index:60;pointer-events:none">
-      <div style="{{ spotStyle }}"></div>
-      <div style="position:absolute;left:50%;bottom:30px;transform:translateX(-50%);width:min(600px,90%);background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px 14px;pointer-events:auto;box-shadow:0 22px 60px rgba(0,0,0,.45);animation:cvfade .4s ease">
-        <div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
-          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#fff;background:var(--sel);padding:3px 7px;border-radius:5px;font-weight:600">{{ tourNum }} / {{ tourTotal }}</span>
-          <span style="font-weight:600;font-size:14.5px;color:var(--text)">{{ tourTitle }}</span>
-          <button onClick="{{ stopTour }}" style="margin-left:auto;background:none;border:none;color:var(--text3);font-size:17px;cursor:pointer;line-height:1">✕</button>
-        </div>
-        <p style="margin:0 0 12px;font-size:13px;line-height:1.55;color:var(--text2)">{{ tourCaption }}</p>
-        <div style="display:flex;align-items:center;gap:9px">
-          <button onClick="{{ tourPrev }}" style="width:32px;height:32px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);border-radius:8px;cursor:pointer;font-size:14px">‹</button>
-          <button onClick="{{ tourToggle }}" style="display:flex;align-items:center;justify-content:center;gap:6px;width:98px;height:32px;border:none;border-radius:8px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">{{ tourPlayLabel }}</button>
-          <button onClick="{{ tourNext }}" style="width:32px;height:32px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);border-radius:8px;cursor:pointer;font-size:14px">›</button>
-          <div style="flex:1;display:flex;gap:4px;margin-left:6px">
-            <sc-for list="{{ tourDots }}" as="d" hint-placeholder-count="8"><button onClick="{{ d.onClick }}" style="{{ d.style }}"></button></sc-for>
-          </div>
-        </div>
-      </div>
-    </div>
+  </div>
   </sc-if>
 
 </div>
@@ -328,20 +363,21 @@ class Component extends DCLogic {
     filters:{ entry:true, file:true, fn:true, struct:true },
     zoom:0.6, dark:false, userSet:false,
     panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
-    bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1,
+    bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1, subFullView:false,
     subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
     selectedSet:[], selectedSym:null, subHover:null, collapsed:{},
-    tourOn:false, tourStep:0, tourPlaying:false, spot:null,
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
     loading:false, scanError:null,
     leftW:236, rightW:316, leftOpen:true, rightOpen:true,
+    appState:'import', importError:null, scanProgress:{current:0,total:0,file:''},
+    projectMeta:{name:'',language:''}, recentProjects:[], githubUrl:'', versionWarn:null,
   };
   LEFT_MIN=180; RIGHT_MIN=240;
 
   constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
 
   W=150; H=84;
-  KCOLOR={ entry:'#f5a623', file:'#0d99ff', fn:'#14ae5c', struct:'#9747ff' };
+  KCOLOR={ entry:'#e8922a', file:'#3b82f6', fn:'#16a35c', struct:'#7c5be0' };
   KLABEL={ entry:'entry', file:'file', fn:'fn', struct:'type' };
 
   // ── Live data model (populated by the Rust analyzer via /api/scan) ──
@@ -355,57 +391,14 @@ class Component extends DCLogic {
   get FNX(){ return this.state.model.fnx || []; }
   get FIELDX(){ return this.state.model.fieldx || []; }
 
-  // Walkthrough steps are built from the loaded model (empty when no project).
-  get TOUR(){
-    const nodes=this.NODES;
-    if(!nodes.length) return [];
-    const entry = nodes.find(n=>n.kind==='entry')||nodes[0];
-    const hasRisk=(n)=>{ const d=this.DETAIL[n.id]; return !!(d&&d.risks&&d.risks.length); };
-    const indeg={}; this.EDGES.forEach(e=>{ indeg[e[1]]=(indeg[e[1]]||0)+1; });
-    const hub = nodes.find(hasRisk) || nodes.slice().sort((a,b)=>(indeg[b.id]||0)-(indeg[a.id]||0))[0] || entry;
-    const risky = nodes.find(hasRisk);
-    const steps=[
-      { target:'t-arch', title:'Start with the architecture', view:'map',
-        cap:'No more guessing where to begin. The tool reads the whole tree and writes a plain-English architecture summary \u2014 the shape of the codebase in one note.' },
-      { target:'t-layers', title:'Orient with layers', view:'map', sel:entry.id,
-        cap:'Every module is a layer, grouped by folder. Entry points are starred, hotspots flagged red, dead code greyed \u2014 so the files that matter aren\u2019t lost among the ones that don\u2019t.' },
-      { target:'t-frame-'+hub.id, title:'Trace the call graph', view:'map', sel:hub.id,
-        cap:'Frames are connected by directional links \u2014 who calls whom, not loose mentions. Selecting a module lights up everything it touches so you can follow data through the pipeline.' },
-      { target:'t-sum', title:'Read code in plain English', view:'map', sel:hub.id,
-        cap:'Every module gets a plain-English summary from its signatures, body and nearby comments \u2014 undocumented or AI-written code becomes skimmable in seconds.' },
-      { target:'t-src', title:'Source, inline', view:'map', sel:hub.id,
-        cap:'The map and the code live in one view. No alt-tabbing to an editor \u2014 click any frame and read the implementation right beside the graph.' },
-      { target:'t-tests', title:'Tests as documentation', view:'map', sel:hub.id,
-        cap:'Each module links to the tests that exercise it. A passing test is often the fastest, truest spec of what code is meant to do.' },
-    ];
-    if(risky) steps.push({ target:'t-risk', title:'Review flags & side effects', view:'map', sel:risky.id,
-        cap:'Hotspots, orphans, IO and unsafe blocks surface where you read the code \u2014 exactly what you need to review unfamiliar code more safely.' });
-    steps.push({ target:'t-layers', title:'Diff a pull request', view:'diff', sel:hub.id,
-        cap:'Switch to the Diff page to see a change\u2019s structural blast radius \u2014 added, changed and removed frames highlighted on the same map.' });
-    return steps;
-  }
-
   componentDidMount(){
     try{ this._mql=window.matchMedia('(prefers-color-scheme: dark)');
       this._onmql=(e)=>{ if(!this.state.userSet) this.setState({dark:e.matches}); };
       this._mql.addEventListener('change', this._onmql);
     }catch(e){}
+    this._loadRecent();
   }
-  componentWillUnmount(){ clearInterval(this._t); if(this._mql) this._mql.removeEventListener('change', this._onmql); }
-  componentDidUpdate(pp, ps){
-    if(this.state.tourOn && (ps.tourStep!==this.state.tourStep || ps.tourOn!==this.state.tourOn || ps.view!==this.state.view))
-      requestAnimationFrame(()=>this.measureSpot());
-  }
-  measureSpot(){
-    if(!this.root) return;
-    const step=this.TOUR[this.state.tourStep];
-    if(!step){ this.setState({spot:null}); return; }
-    const el=this.root.querySelector('[data-tour-id="'+step.target+'"]');
-    if(!el){ this.setState({spot:null}); return; }
-    const r=el.getBoundingClientRect(), c=this.root.getBoundingClientRect();
-    const spot={ x:r.left-c.left-7, y:r.top-c.top-7, w:r.width+14, h:r.height+14 };
-    if(JSON.stringify(spot)!==JSON.stringify(this.state.spot)) this.setState({spot});
-  }
+  componentWillUnmount(){ if(this._mql) this._mql.removeEventListener('change', this._onmql); }
 
   setRoot=(el)=>{ this.root=el; };
   toggleTheme=()=>this.setState(s=>({dark:!s.dark, userSet:true}));
@@ -510,14 +503,16 @@ class Component extends DCLogic {
 
   openFns=()=>this.setState({bottomOpen:true, bottomTab:'functions', selectedSym:null});
   openStructs=()=>this.setState({bottomOpen:true, bottomTab:'structs', selectedSym:null});
-  closeBottom=()=>this.setState({bottomOpen:false, selectedSym:null});
+  closeBottom=()=>this.setState({bottomOpen:false, subFullView:false, selectedSym:null});
+  doExpandFull=()=>this.setState({subFullView:true});
+  doCollapseFull=()=>this.setState({subFullView:false});
   onResizeDown=(e)=>{
     e.preventDefault();
     this._rz={ sy:e.clientY, oh:this.state.bottomH };
     window.addEventListener('pointermove', this.onResizeMove);
     window.addEventListener('pointerup', this.onResizeUp);
   };
-  onResizeMove=(e)=>{ if(!this._rz) return; const h=this._rz.oh-(e.clientY-this._rz.sy); this.setState({ bottomH:Math.max(120,Math.min(560,h)) }); };
+  onResizeMove=(e)=>{ if(!this._rz) return; const viewH=(this.root?this.root.offsetHeight:900); const h=this._rz.oh-(e.clientY-this._rz.sy); if(h>viewH*0.72){ this.setState({subFullView:true}); return; } if(this.state.subFullView) this.setState({subFullView:false}); this.setState({ bottomH:Math.max(120,Math.min(Math.round(viewH*0.7),h)) }); };
   onResizeUp=()=>{ this._rz=null; window.removeEventListener('pointermove',this.onResizeMove); window.removeEventListener('pointerup',this.onResizeUp); };
 
   // left→right column layout: arrow = relation; entry node has no incoming edge
@@ -584,14 +579,6 @@ class Component extends DCLogic {
     return { nodes:[...onPath].map(k=>g[k]), edges:[...pe].map(s=>s.split('\u0001')) };
   }
 
-  startTour=()=>{ const s=this.TOUR[0]; if(!s) return; const id=s.sel||this.state.selectedId; this.setState({tourOn:true,tourStep:0,tourPlaying:true,view:s.view,selectedId:id,selectedSet:[id],selectedSym:null}); this.play(); requestAnimationFrame(()=>this.measureSpot()); };
-  stopTour=()=>{ clearInterval(this._t); this.setState({tourOn:false,tourPlaying:false}); };
-  play(){ clearInterval(this._t); this._t=setInterval(()=>{ if(this.state.tourStep>=this.TOUR.length-1){clearInterval(this._t);this.setState({tourPlaying:false});} else this.gotoStep(this.state.tourStep+1); },4400); }
-  tourToggle=()=>{ if(this.state.tourPlaying){clearInterval(this._t);this.setState({tourPlaying:false});} else { if(this.state.tourStep>=this.TOUR.length-1)this.gotoStep(0); this.setState({tourPlaying:true}); this.play(); } };
-  tourNext=()=>{ clearInterval(this._t); this.setState({tourPlaying:false}); this.gotoStep(Math.min(this.state.tourStep+1,this.TOUR.length-1)); };
-  tourPrev=()=>{ clearInterval(this._t); this.setState({tourPlaying:false}); this.gotoStep(Math.max(this.state.tourStep-1,0)); };
-  gotoStep(i){ const s=this.TOUR[i]; if(!s) return; this.setState(st=>({tourStep:i, selectedId:s.sel||st.selectedId, selectedSet:s.sel?[s.sel]:st.selectedSet, view:s.view||st.view})); }
-
   fileLabelOf(fid){ const n=this.NODES.find(x=>x.id===fid); return n?n.label:fid; }
   filePathOf(fid){ const d=this.DETAIL[fid]; return d?d.path:this.fileLabelOf(fid); }
 
@@ -632,16 +619,34 @@ class Component extends DCLogic {
   }
   center(n){ return { x:n.x+this.W/2, y:n.y+this.H/2, l:n.x, r:n.x+this.W, t:n.y, b:n.y+this.H }; }
 
-  // ── Add a project: pick a folder, send its source files to the Rust scanner ──
+  // ── Project import flow ──
+  // Two input paths (per current architecture): a scanner-output .json file, and
+  // a local folder scanned by the Rust server at /api/scan.
   setFolderInput=(el)=>{ this.folderInput=el; if(el){ try{ el.setAttribute('webkitdirectory',''); el.setAttribute('directory',''); el.setAttribute('mozdirectory',''); el.multiple=true; }catch(e){} } };
-  pickFolder=()=>{ if(this.state.loading) return; if(this.folderInput) this.folderInput.click(); };
+  setJsonInput=(el)=>{ this.jsonInput=el; };
+  onFolderPick=()=>{ if(this.folderInput) this.folderInput.click(); };
   onFolderPicked=(e)=>{ const files=[...(e.target.files||[])]; e.target.value=''; if(files.length) this.ingestFiles(files); };
+  openFilePicker=()=>{ if(this.jsonInput) this.jsonInput.click(); };
+  onFileInput=(e)=>{ const f=(e.target.files||[])[0]; e.target.value=''; if(f) this._readJsonFile(f); };
+  onDragOver=(e)=>{ e.preventDefault(); };
+  onFileDrop=(e)=>{ e.preventDefault(); const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) this._readJsonFile(f); };
+  clearError=()=>this.setState({importError:null});
+  dismissVersion=()=>this.setState({versionWarn:null});
+  switchProject=()=>this.setState({appState:'import', importError:null});
+  onGitHubUrlChange=(e)=>this.setState({githubUrl:e.target.value});
+
+  _readJsonFile(file){
+    this.setState({importError:null});
+    const r=new FileReader();
+    r.onload=()=>{ let model; try{ model=JSON.parse(r.result); }catch(err){ this.setState({appState:'import', importError:'Invalid JSON: '+((err&&err.message)||err)}); return; } this.loadModel(model,{addRecent:true}); };
+    r.onerror=()=>this.setState({appState:'import', importError:'Could not read file.'});
+    r.readAsText(file);
+  }
 
   SRC_EXT=new Set(['rs','py','pyi','js','jsx','mjs','cjs','ts','tsx','mts','cts','go','java','c','h','cpp','cc','cxx','hpp','hh','hxx']);
   IGNORE_DIR=new Set(['.git','node_modules','target','.venv','venv','dist','build','__pycache__','.next','.nuxt','vendor','.idea','.vscode']);
 
   async ingestFiles(fileList){
-    this.setState({loading:true, scanError:null});
     let repoName='project';
     const first=fileList[0] && (fileList[0].webkitRelativePath||'');
     if(first && first.includes('/')) repoName=first.split('/')[0];
@@ -655,55 +660,100 @@ class Component extends DCLogic {
       if(f.size>500000) continue;
       picked.push(f);
     }
-    const MAX=5000;
-    const slice=picked.slice(0,MAX);
+    if(!picked.length){ this.setState({appState:'import', importError:'No source files found in that folder.'}); return; }
+    const MAX=5000; const slice=picked.slice(0,MAX);
+    this.setState({appState:'scanning', importError:null, scanProgress:{current:0,total:slice.length,file:'',name:repoName}});
     try{
       const payload=[];
-      for(const f of slice){
-        let text='';
-        try{ text=await f.text(); }catch(e){ continue; }
+      for(let i=0;i<slice.length;i++){
+        const f=slice[i];
+        let text=''; try{ text=await f.text(); }catch(e){ continue; }
         const rel=f.webkitRelativePath||f.name;
         const relPath = rel.includes('/') ? rel.split('/').slice(1).join('/') : rel;
         payload.push({ path: relPath||rel, text });
+        if(i%8===0||i===slice.length-1) this.setState({scanProgress:{current:i+1,total:slice.length,file:relPath||rel,name:repoName}});
       }
-      if(!payload.length){ this.setState({loading:false, scanError:'No source files found in that folder.'}); return; }
+      if(!payload.length){ this.setState({appState:'import', importError:'No readable source files in that folder.'}); return; }
       const res=await fetch('/api/scan',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name:repoName, files:payload }) });
       if(!res.ok){ const t=await res.text().catch(()=>''); throw new Error('scan failed ('+res.status+') '+t); }
       const model=await res.json();
-      this.loadModel(model);
+      this.loadModel(model,{name:repoName, addRecent:true});
     }catch(err){
-      this.setState({ loading:false, scanError:String((err&&err.message)||err) });
+      this.setState({ appState:'import', importError:String((err&&err.message)||err) });
     }
   }
 
-  loadModel(model){
-    if(!model || !Array.isArray(model.nodes)) model=this.emptyModel();
+  // Validate a loaded payload (edges/fnx/fieldx reference real ids; has an entry).
+  validateModel(model){
+    if(!model||typeof model!=='object') return 'Not a valid scanner output object.';
+    if(!Array.isArray(model.nodes)||!model.nodes.length) return 'Scanner output has no nodes.';
+    const ids=new Set(model.nodes.map(n=>n&&n.id));
+    if(Array.isArray(model.edges)) for(let i=0;i<model.edges.length;i++){ const e=model.edges[i]||[]; if(!ids.has(e[0])) return 'edges['+i+']: unknown node id "'+e[0]+'"'; if(!ids.has(e[1])) return 'edges['+i+']: unknown node id "'+e[1]+'"'; }
+    const sub=model.sub||{};
+    const checkX=(arr,nm)=>{ if(Array.isArray(arr)) for(let i=0;i<arr.length;i++){ const x=arr[i]||[]; if(!sub[x[0]]) return nm+'['+i+']: unknown file id "'+x[0]+'"'; if(!sub[x[2]]) return nm+'['+i+']: unknown file id "'+x[2]+'"'; } return null; };
+    let er=checkX(model.fnx,'fnx'); if(er) return er; er=checkX(model.fieldx,'fieldx'); if(er) return er;
+    if(!model.nodes.some(n=>n&&n.kind==='entry')) return 'No entry-point node (kind:"entry") in scanner output.';
+    return null;
+  }
+
+  loadModel(model, opts){
+    opts=opts||{};
+    const err=this.validateModel(model);
+    if(err){ this.setState({ appState:'import', importError:err }); return; }
     const nodes=model.nodes||[];
-    const entry = nodes.find(n=>n.kind==='entry') || nodes[0];
-    clearInterval(this._t);
+    const entry=nodes.find(n=>n.kind==='entry')||nodes[0];
+    const name=opts.name||model.repoName||(model.meta&&model.meta.name)||'project';
+    const lang=opts.language||model.language||(model.meta&&model.meta.language)||'';
+    const versionWarn = ('version' in model)
+      ? (String(model.version)!=='1' ? 'Scanner output version "'+model.version+'" — some fields may not display correctly.' : null)
+      : 'Scanner output version unknown — some fields may not display correctly.';
     this.setState({
-      model, loading:false, scanError:null,
+      model, appState:'loaded', importError:null, scanError:null, versionWarn,
+      projectMeta:{ name, language:lang },
       selectedId: entry?entry.id:null,
       selectedSet: entry?[entry.id]:[], selectedSym:null,
       view:'map', zoom:0.6, panX:0, panY:0, nodePos:{}, subPos:{}, subPanX:0, subPanY:0,
-      bottomOpen:false, query:'', subFilePick:null, collapsed:{},
-      tourOn:false, tourPlaying:false, tourStep:0, spot:null,
+      bottomOpen:false, subFullView:false, query:'', subFilePick:null, collapsed:{},
     });
+    if(opts.addRecent!==false) this._pushRecent(name, lang, model);
   }
+
+  // ── Recent projects (localStorage) ──
+  _recentKey='cv_recent';
+  _loadRecent(){ try{ const raw=localStorage.getItem(this._recentKey); if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)) this.setState({recentProjects:arr}); } }catch(e){} }
+  _pushRecent(name, lang, model){
+    try{
+      let list=[]; try{ const raw=localStorage.getItem(this._recentKey); if(raw) list=JSON.parse(raw)||[]; }catch(e){ list=[]; }
+      list=list.filter(r=>r&&r.name!==name);
+      const key='cv_proj_'+name;
+      try{ localStorage.setItem(key, JSON.stringify(model)); }catch(e){}
+      list.unshift({ name, lang:lang||'', ts:Date.now(), key });
+      list=list.slice(0,5);
+      localStorage.setItem(this._recentKey, JSON.stringify(list));
+      this.setState({recentProjects:list});
+    }catch(e){}
+  }
+  loadRecent=(r)=>()=>{
+    try{ const raw=localStorage.getItem(r.key); if(!raw){ this.setState({importError:'Saved project data was cleared.'}); return; } const model=JSON.parse(raw); this.loadModel(model,{name:r.name,language:r.lang,addRecent:false}); }
+    catch(e){ this.setState({importError:'Could not load saved project.'}); }
+  };
+  relTime(ts){ if(!ts) return ''; const s=Math.max(0,Math.round((Date.now()-ts)/1000)); if(s<60) return 'just now'; const m=Math.round(s/60); if(m<60) return m+'m ago'; const h=Math.round(m/60); if(h<24) return h+'h ago'; const d=Math.round(h/24); return d+'d ago'; }
 
   tokens(dark){
     return dark ? {
-      '--bg':'#1e1e1e','--grid':'#2c2c2c','--panel':'#2c2c2c','--panel2':'#383838','--border':'#3d3d3d',
-      '--text':'#ffffff','--text2':'#b8b8b8','--text3':'#7a7a7a','--sel':'#0d99ff','--selbg':'rgba(13,153,255,.16)',
-      '--frame':'#383838','--frameborder':'#4a4a4a','--skel':'#5a5a5a','--toolbar':'#383838','--code':'#1a1a1a',
-      '--shadow':'rgba(0,0,0,.5)','--scroll':'#4a4a4a','--conn':'#5a5a5a','--sticky':'#d9c878',
-      '--okbg':'rgba(20,174,92,.13)','--warn':'#ff8a8a','--warnbg':'rgba(229,72,77,.14)',
+      '--bg':'#1e1e1e','--grid':'#272727','--panel':'#252525','--panel2':'#313131','--border':'#3a3a3a',
+      '--text':'#e2e2e2','--text2':'#949494','--text3':'#5e5e5e','--sel':'#6366f1','--selbg':'rgba(99,102,241,.18)',
+      '--frame':'#2e2e2e','--frameborder':'#484848','--skel':'#404040','--toolbar':'#1a1a1a','--code':'#161616',
+      '--shadow':'rgba(0,0,0,.5)','--scroll':'#444444','--conn':'#424242',
+      '--sticky':'#c9b84a','--stickytxt':'#2a2208',
+      '--okbg':'rgba(22,163,92,.12)','--warn':'#f87171','--warnbg':'rgba(248,113,113,.12)',
     } : {
-      '--bg':'#f5f5f5','--grid':'#dcdcdc','--panel':'#ffffff','--panel2':'#f3f3f3','--border':'#e6e6e6',
-      '--text':'#1e1e1e','--text2':'#5a5a5a','--text3':'#aaaaaa','--sel':'#0d99ff','--selbg':'#e5f4ff',
-      '--frame':'#ffffff','--frameborder':'#e0e0e0','--skel':'#e8e8e8','--toolbar':'#2c2c2c','--code':'#fafafa',
-      '--shadow':'rgba(0,0,0,.1)','--scroll':'#cfcfcf','--conn':'#c4c4c4','--sticky':'#ffe27a',
-      '--okbg':'rgba(20,174,92,.1)','--warn':'#cf3438','--warnbg':'rgba(229,72,77,.09)',
+      '--bg':'#f2f0eb','--grid':'#e3e0d9','--panel':'#faf9f7','--panel2':'#eceae4','--border':'#dedad2',
+      '--text':'#1a1917','--text2':'#6b6860','--text3':'#a8a49d','--sel':'#6366f1','--selbg':'rgba(99,102,241,.1)',
+      '--frame':'#fdfcfb','--frameborder':'#ccc9c1','--skel':'#e8e5de','--toolbar':'#28261f','--code':'#f7f5f0',
+      '--shadow':'rgba(0,0,0,.07)','--scroll':'#cac7bf','--conn':'#bdbab2',
+      '--sticky':'#f5d84a','--stickytxt':'#3d2e00',
+      '--okbg':'rgba(22,163,92,.09)','--warn':'#c53030','--warnbg':'rgba(197,48,48,.08)',
     };
   }
   codeEl(rows,dark){
@@ -740,18 +790,17 @@ class Component extends DCLogic {
       const dim=!visible || (!focusIds.has(n.id) && !isConn && !isSel);
       const det=this.DETAIL[n.id]; const hot=!!(det&&det.risks);
       const baseBorder = isDiff && n.diff ? diffColor[n.diff] : (isSel?'var(--sel)':'var(--frameborder)');
-      const ring = isSel ? '0 0 0 1.5px var(--sel),0 4px 16px var(--shadow)' : '0 1px 4px var(--shadow)';
       const c=this.KCOLOR[n.kind];
       const ov=st.nodePos[n.id]; const px=ov?ov.x:n.x, py=ov?ov.y:n.y; this._nodePosCache[n.id]={x:px,y:py};
       return {
-        ...n, tourId:'t-frame-'+n.id, label:n.label, locText:n.loc+' LOC',
+        ...n, tourId:'t-frame-'+n.id, label:n.label, locText:n.loc+' LOC', color:c,
         onClick:this.selectCard(n.id), onFrameDown:this.onFrameDown(n.id), onEnter:this.setHover(n.id), onLeave:this.setHover(null),
         selected:isSel, hot,
         kindLabel:this.KLABEL[n.kind],
-        chipStyle:`font-size:9px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:${c};background:${c}1f;padding:2px 6px;border-radius:4px`,
+        chipStyle:`font-size:9px;font-weight:500;letter-spacing:.3px;text-transform:uppercase;color:${c};background:transparent;padding:0;border-radius:0;display:flex;align-items:center;gap:4px`,
         wrapStyle:`position:absolute;left:${px}px;top:${py}px;width:${this.W}px;opacity:${dim?0.32:1};transition:opacity .35s;z-index:${isSel?5:2}`,
-        labelStyle:`font-size:11px;font-family:'JetBrains Mono',monospace;margin-bottom:5px;color:${isSel?'var(--sel)':'var(--text2)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis`,
-        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:1.5px solid ${baseBorder};border-radius:5px;box-shadow:${ring};cursor:${moveMode?'grab':'pointer'};touch-action:none;transition:border-color .2s,box-shadow .2s`,
+        labelStyle:`font-size:10.5px;font-family:Inter,sans-serif;margin-bottom:4px;color:${isSel?'var(--sel)':'var(--text3)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.1px`,
+        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:${isSel?'2px':'1px'} solid ${baseBorder};border-radius:3px;box-shadow:0 1px 3px var(--shadow);cursor:${moveMode?'grab':'pointer'};touch-action:none;transition:border-color .15s`,
       };
     });
 
@@ -812,7 +861,7 @@ class Component extends DCLogic {
     });
 
     // inspector
-    const KB={entry:'#f5a62322',file:'#0d99ff22',fn:'#14ae5c22',struct:'#9747ff22'};
+    const KB={entry:'#e8922a22',file:'#3b82f622',fn:'#16a35c22',struct:'#7c5be022'};
     const badgeRender=(arr)=>(arr||[]).map(b=>({ text:b[0],
       style:`font-size:9.5px;font-weight:600;letter-spacing:.4px;padding:3px 8px;border-radius:5px;${b[1]==='r'?'color:var(--warn);background:var(--warnbg)':'color:var(--text2);background:var(--panel2);border:1px solid var(--border)'}` }));
     const mkRef = symSel
@@ -827,20 +876,13 @@ class Component extends DCLogic {
       callees:(sel.callees||[]).map(mkRef),
       noCallers:!sel.callers||sel.callers.length===0 };
 
-    const step=this.TOUR[st.tourStep]||{title:'',cap:''}, spot=st.spot;
-    const spotStyle=spot
-      ? `position:absolute;left:${spot.x}px;top:${spot.y}px;width:${spot.w}px;height:${spot.h}px;border-radius:10px;border:2px solid var(--sel);box-shadow:0 0 0 9999px rgba(10,12,16,.6),0 0 22px rgba(13,153,255,.45);transition:all .5s cubic-bezier(.4,0,.2,1);animation:cvspot .4s ease`
-      : `position:absolute;inset:0;background:rgba(10,12,16,.45)`;
-    const tourDots=this.TOUR.map((_,i)=>({ onClick:()=>{clearInterval(this._t);this.setState({tourPlaying:false});this.gotoStep(i);},
-      style:`flex:1;height:4px;border:none;border-radius:3px;cursor:pointer;padding:0;background:${i===st.tourStep?'var(--sel)':i<st.tourStep?'rgba(13,153,255,.5)':'var(--border)'}` }));
-
     // ── bottom panel: functions / data structures (multi-file aware) ──
     const isFns=st.bottomTab==='functions';
     const selFilesAll=[...selSet].filter(id=>this.SUB[id]);
     const multiSel=selFilesAll.length>1;
     const subMode=multiSel?st.subScope:'single';
     const sg=this.getSubGraph(st, isFns, selFilesAll, subMode);
-    const baseColor=isFns?'#14ae5c':'#9747ff';
+    const baseColor=isFns?this.KCOLOR.fn:this.KCOLOR.struct;
     const lay=this.subLayout(sg.nodes.map(n=>({id:n.key})), sg.edges);
     const subInc={}; sg.nodes.forEach(n=>subInc[n.key]=0); sg.edges.forEach(e=>{ if(subInc[e[1]]!=null)subInc[e[1]]++; });
     this._subPosCache={};
@@ -891,14 +933,33 @@ class Component extends DCLogic {
 
     const pageBase="display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;margin-bottom:2px;border:none;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:Inter;";
     const nodeCount=this.NODES.length;
-    const empty=nodeCount===0;
+    const isLoaded=st.appState==='loaded';
     const lw=st.leftOpen?st.leftW:0, rw=st.rightOpen?st.rightW:0;
     // Rails are drag-to-resize overlays anchored on each sidebar boundary; the
     // collapse/expand controls live in the top bar.
     const leftRailStyle=`position:absolute;top:0;bottom:0;left:${lw-5}px;width:11px;cursor:ew-resize;z-index:35;background:transparent;display:${st.leftOpen?'block':'none'}`;
     const rightRailStyle=`position:absolute;top:0;bottom:0;right:${rw-5}px;width:11px;cursor:ew-resize;z-index:35;background:transparent;display:${st.rightOpen?'block':'none'}`;
     const toggleBtn=(open)=>`width:30px;height:30px;flex:none;border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;background:${open?'var(--sel)':'var(--panel2)'}`;
+    const sp=st.scanProgress||{current:0,total:0,file:''};
+    const pct=sp.total?Math.round(sp.current/sp.total*100):0;
+    const recentRows=(st.recentProjects||[]).map(r=>({ name:r.name, lang:(r.lang||'').toLowerCase()||'?', time:this.relTime(r.ts||0), onClick:this.loadRecent(r) }));
     return {
+      // ── app state / import flow ──
+      isImport: st.appState==='import', isScanning: st.appState==='scanning', isLoaded,
+      projectName: isLoaded ? (st.projectMeta.name||'project') : 'Codebase Visualizer',
+      frameStats: nodeCount+' frames \u00b7 '+this.EDGES.length+' links',
+      switchProject:this.switchProject,
+      importError:st.importError, clearError:this.clearError,
+      versionWarn: isLoaded ? st.versionWarn : null, dismissVersion:this.dismissVersion,
+      scanName: sp.name||'project',
+      scanLabel: sp.total ? (sp.current+' / '+sp.total+' files'+(sp.file?(' \u2014 '+sp.file):'')) : 'Reading files\u2026',
+      scanBarStyle:`height:100%;width:${pct}%;background:var(--sel);border-radius:4px;transition:width .15s`,
+      hasRecent:!!(st.recentProjects&&st.recentProjects.length), recentRows,
+      setJsonInput:this.setJsonInput, openFilePicker:this.openFilePicker, onFileInput:this.onFileInput,
+      onFileDrop:this.onFileDrop, onDragOver:this.onDragOver, onFolderPick:this.onFolderPick,
+      githubUrl:st.githubUrl, onGitHubUrlChange:this.onGitHubUrlChange,
+      subFullView:st.subFullView, doExpandFull:this.doExpandFull, doCollapseFull:this.doCollapseFull,
+      mainViewStyle:'flex:1;min-height:0;display:flex;flex-direction:column;position:relative',
       leftAsideStyle:`width:${lw}px;flex:none;background:var(--panel);border-right:1px solid var(--border);overflow-y:${st.leftOpen?'auto':'hidden'};overflow-x:hidden;display:flex;flex-direction:column`,
       rightAsideStyle:`width:${rw}px;flex:none;background:var(--panel);border-left:1px solid var(--border);overflow-y:${st.rightOpen?'auto':'hidden'};overflow-x:hidden`,
       leftRailStyle, rightRailStyle,
@@ -906,14 +967,10 @@ class Component extends DCLogic {
       toggleLeft:this.toggleLeft, toggleRight:this.toggleRight,
       leftToggleStyle:toggleBtn(st.leftOpen), rightToggleStyle:toggleBtn(st.rightOpen),
       leftToggleIcon:this.panelIcon('left', st.leftOpen), rightToggleIcon:this.panelIcon('right', st.rightOpen),
-      repoName: st.model.repoName || 'No project',
-      framesInfo: nodeCount+' frames \u00b7 '+this.EDGES.length+' links',
       archSummary: st.model.arch || '',
-      empty, hasData:!empty,
-      loading:st.loading, scanError:st.scanError,
-      addLabel: st.loading?'Scanning\u2026':'\uFF0B Add folder',
-      pickFolder:this.pickFolder, setFolderInput:this.setFolderInput, onFolderPicked:this.onFolderPicked,
-      rootStyle, setRoot:this.setRoot, themeIcon:dark?'☀':'☾', toggleTheme:this.toggleTheme, startTour:this.startTour,
+      hasData: nodeCount>0,
+      setFolderInput:this.setFolderInput, onFolderPicked:this.onFolderPicked,
+      rootStyle, setRoot:this.setRoot, themeIcon:dark?'☀':'☾', toggleTheme:this.toggleTheme,
       query:st.query, onSearch:this.onSearch, zoom:st.zoom, zoomPct:Math.round(st.zoom*100)+'%',
       zoomIn:this.zoomIn, zoomOut:this.zoomOut, resetView:this.resetView,
       panX:st.panX, panY:st.panY, onCanvasDown:this.onCanvasDown,
@@ -924,7 +981,10 @@ class Component extends DCLogic {
       pageFnStyle:pageBase+((st.bottomOpen&&isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       pageDsStyle:pageBase+((st.bottomOpen&&!isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       bottomOpen:st.bottomOpen, openFns:this.openFns, openStructs:this.openStructs, closeBottom:this.closeBottom, onResizeDown:this.onResizeDown,
-      bottomWrapStyle:`flex:none;height:${st.bottomH}px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--panel)`,
+      fullToggle: st.subFullView?this.doCollapseFull:this.doExpandFull, fullIcon: st.subFullView?'\u2750':'\u2922', fullTitle: st.subFullView?'Exit full view':'Full view',
+      bottomWrapStyle: st.subFullView
+        ? `position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;background:var(--panel)`
+        : `flex:none;height:${st.bottomH}px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--panel)`,
       subFnStyle:subTabBase+(isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
       subDsStyle:subTabBase+(!isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
       subScopeLabel:subInfo, subInfo, subModes, subMulti:multiSel, subShowPick:(multiSel&&subMode==='single'), subPick:sg.pick||selFilesAll[0]||st.selectedId, subPickStyle,
@@ -935,9 +995,6 @@ class Component extends DCLogic {
       subZoom:st.subZoom, subZoomPct:Math.round(st.subZoom*100)+'%', subZoomIn:this.subZoomIn, subZoomOut:this.subZoomOut, subZoomReset:this.subZoomReset,
       subEmpty:subListLen===0, subEmptyText,
       nodeViews, edgeViews, layerRows, filterChips:fchips, tools, sel:selView,
-      tourOn:st.tourOn, spotStyle, tourNum:st.tourStep+1, tourTotal:this.TOUR.length,
-      tourTitle:step.title, tourCaption:step.cap, tourDots, tourPlayLabel:st.tourPlaying?'❚❚ Pause':'▶ Play',
-      stopTour:this.stopTour, tourToggle:this.tourToggle, tourNext:this.tourNext, tourPrev:this.tourPrev,
     };
   }
 }
