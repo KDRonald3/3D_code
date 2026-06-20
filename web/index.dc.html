@@ -27,6 +27,7 @@
 
   <!-- ░ TOP BAR ░ -->
   <header style="display:flex;align-items:center;gap:14px;height:44px;flex:none;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--border);z-index:40">
+    <button onClick="{{ toggleLeft }}" title="Toggle layers panel" style="{{ leftToggleStyle }}">{{ leftToggleIcon }}</button>
     <div style="display:flex;align-items:center;gap:9px">
       <div style="width:22px;height:22px;border-radius:5px;background:var(--sel);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;font-family:'JetBrains Mono',monospace">{}</div>
       <span style="font-weight:600;font-size:13px;color:var(--text)">{{ repoName }}</span>
@@ -40,6 +41,7 @@
       <button onClick="{{ toggleTheme }}" title="Theme" style="width:30px;height:30px;border:1px solid var(--border);background:var(--panel2);border-radius:8px;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;font-size:14px">{{ themeIcon }}</button>
       <sc-if value="{{ hasData }}" hint-placeholder-val="{{ false }}"><button onClick="{{ startTour }}" style="display:flex;align-items:center;gap:7px;height:30px;padding:0 14px;border:none;border-radius:8px;background:var(--sel);color:#fff;font-family:Inter;font-weight:600;font-size:12.5px;cursor:pointer">▶ Present walkthrough</button></sc-if>
     </div>
+    <button onClick="{{ toggleRight }}" title="Toggle inspector panel" style="{{ rightToggleStyle }}">{{ rightToggleIcon }}</button>
   </header>
 
   <div style="display:flex;flex:1;min-height:0">
@@ -83,10 +85,8 @@
       </div>
     </aside>
 
-    <!-- left resize / collapse rail -->
-    <div onPointerDown="{{ onLeftResizeDown }}" style="{{ leftRailStyle }}">
-      <button onClick="{{ toggleLeft }}" onPointerDown="{{ stopProp }}" title="Collapse / expand layers" style="{{ leftRailBtnStyle }}">{{ leftChevron }}</button>
-    </div>
+    <!-- left resize rail (drag to resize) -->
+    <div onPointerDown="{{ onLeftResizeDown }}" style="{{ leftRailStyle }}"></div>
 
     <!-- ░ CENTER — CANVAS + BOTTOM PANEL ░ -->
     <div style="flex:1;min-width:0;display:flex;flex-direction:column">
@@ -227,10 +227,8 @@
     </sc-if>
     </div>
 
-    <!-- right resize / collapse rail -->
-    <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}">
-      <button onClick="{{ toggleRight }}" onPointerDown="{{ stopProp }}" title="Collapse / expand inspector" style="{{ rightRailBtnStyle }}">{{ rightChevron }}</button>
-    </div>
+    <!-- right resize rail (drag to resize) -->
+    <div onPointerDown="{{ onRightResizeDown }}" style="{{ rightRailStyle }}"></div>
 
     <!-- ░ RIGHT — INSPECTOR ░ -->
     <aside style="{{ rightAsideStyle }}">
@@ -451,6 +449,14 @@ class Component extends DCLogic {
   stopProp=(e)=>{ e.stopPropagation(); };
   toggleLeft=()=>this.setState(s=>({leftOpen:!s.leftOpen}));
   toggleRight=()=>this.setState(s=>({rightOpen:!s.rightOpen}));
+  // Fixed top-bar panel-toggle icon (a panel rectangle with a side divider).
+  panelIcon(side, active){
+    const R=React.createElement; const col=active?'#fff':'var(--text2)';
+    const lx=side==='left'?5.8:10.2;
+    return R('svg',{width:15,height:15,viewBox:'0 0 16 16',fill:'none',style:{display:'block'}},
+      R('rect',{key:'r',x:1.6,y:2.6,width:12.8,height:10.8,rx:2.4,stroke:col,strokeWidth:1.5}),
+      R('line',{key:'l',x1:lx,y1:2.6,x2:lx,y2:13.4,stroke:col,strokeWidth:1.5}));
+  }
   onLeftResizeDown=(e)=>{ if(!this.state.leftOpen) return; e.preventDefault(); this._lr={ sx:e.clientX, ow:this.state.leftW }; window.addEventListener('pointermove', this.onLeftResizeMove); window.addEventListener('pointerup', this.onLeftResizeUp); };
   onLeftResizeMove=(e)=>{ if(!this._lr) return; this.setState({ leftW:Math.max(this.LEFT_MIN, this._lr.ow+(e.clientX-this._lr.sx)) }); };
   onLeftResizeUp=()=>{ this._lr=null; window.removeEventListener('pointermove',this.onLeftResizeMove); window.removeEventListener('pointerup',this.onLeftResizeUp); };
@@ -887,19 +893,18 @@ class Component extends DCLogic {
     const nodeCount=this.NODES.length;
     const empty=nodeCount===0;
     const lw=st.leftOpen?st.leftW:0, rw=st.rightOpen?st.rightW:0;
-    // Pill is always centred on the rail; when a sidebar is collapsed the rail
-    // widens so the expand pill stays comfortably on-screen and clickable.
-    const railBtn="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:46px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--panel2);color:var(--text2);border-radius:8px;cursor:pointer;font-size:14px;line-height:1;padding:0;z-index:30;box-shadow:0 1px 5px var(--shadow)";
-    const railFor=(open)=>`flex:none;width:${open?10:22}px;position:relative;flex-shrink:0;background:transparent;cursor:${open?'ew-resize':'default'}`;
+    // Rails are resize-only now; the collapse/expand controls live in the top bar.
+    const railFor=(open)=>`flex:none;width:${open?10:0}px;position:relative;flex-shrink:0;background:transparent;cursor:${open?'ew-resize':'default'}`;
+    const toggleBtn=(open)=>`width:30px;height:30px;flex:none;border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;background:${open?'var(--sel)':'var(--panel2)'}`;
     return {
       leftAsideStyle:`width:${lw}px;flex:none;background:var(--panel);border-right:1px solid var(--border);overflow-y:${st.leftOpen?'auto':'hidden'};overflow-x:hidden;display:flex;flex-direction:column`,
       rightAsideStyle:`width:${rw}px;flex:none;background:var(--panel);border-left:1px solid var(--border);overflow-y:${st.rightOpen?'auto':'hidden'};overflow-x:hidden`,
       leftRailStyle:railFor(st.leftOpen),
       rightRailStyle:railFor(st.rightOpen),
-      leftRailBtnStyle:railBtn, rightRailBtnStyle:railBtn,
-      leftChevron:st.leftOpen?'‹':'›', rightChevron:st.rightOpen?'›':'‹',
       onLeftResizeDown:this.onLeftResizeDown, onRightResizeDown:this.onRightResizeDown,
-      toggleLeft:this.toggleLeft, toggleRight:this.toggleRight, stopProp:this.stopProp,
+      toggleLeft:this.toggleLeft, toggleRight:this.toggleRight,
+      leftToggleStyle:toggleBtn(st.leftOpen), rightToggleStyle:toggleBtn(st.rightOpen),
+      leftToggleIcon:this.panelIcon('left', st.leftOpen), rightToggleIcon:this.panelIcon('right', st.rightOpen),
       repoName: st.model.repoName || 'No project',
       framesInfo: nodeCount+' frames \u00b7 '+this.EDGES.length+' links',
       archSummary: st.model.arch || '',
