@@ -190,12 +190,11 @@
           </div>
           <button onClick="{{ closeBottom }}" style="width:26px;height:26px;border:none;background:transparent;color:var(--text3);font-size:15px;cursor:pointer;border-radius:6px">✕</button>
         </div>
-        <div ref="{{ setSubScroll }}" onPointerDown="{{ onSubPanDown }}" style="{{ subCanvasStyle }}">
+        <div onPointerDown="{{ onSubPanDown }}" style="{{ subCanvasStyle }}">
           <sc-if value="{{ subEmpty }}" hint-placeholder-val="{{ false }}">
             <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12.5px;color:var(--text3)">{{ subEmptyText }}</div>
           </sc-if>
-          <div style="position:relative;width:{{ subScaledW }}px;height:{{ subScaledH }}px">
-          <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:scale({{ subZoom }});width:{{ subW }}px;height:{{ subH }}px;padding:6px">
+          <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:translate({{ subPanX }}px,{{ subPanY }}px) scale({{ subZoom }});width:{{ subW }}px;height:{{ subH }}px;padding:6px">
             <svg width="{{ subW }}" height="{{ subH }}" style="position:absolute;inset:0;overflow:visible;pointer-events:none">
               <defs><marker id="cvsub" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--conn)"></path></marker></defs>
               <sc-for list="{{ subEdges }}" as="e" hint-placeholder-count="4">
@@ -203,7 +202,7 @@
               </sc-for>
             </svg>
             <sc-for list="{{ subNodes }}" as="n" hint-placeholder-count="4">
-              <div onPointerDown="{{ n.onDown }}" style="{{ n.style }}">
+              <div data-sub-node="{{ n.key }}" onPointerDown="{{ n.onDown }}" style="{{ n.style }}">
                 <div style="display:flex;align-items:center;gap:6px">
                   <span style="width:8px;height:8px;border-radius:{{ n.dot }};background:{{ n.color }};flex:none"></span>
                   <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.label }}</span>
@@ -212,7 +211,6 @@
                 <div style="font-size:9.5px;color:var(--text3);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.sig }}</div>
               </div>
             </sc-for>
-          </div>
           </div>
         </div>
       </div>
@@ -318,7 +316,7 @@ class Component extends DCLogic {
     zoom:0.6, dark:false, userSet:false,
     panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
     bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1,
-    subScope:'union', subFilePick:null, subPos:{},
+    subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
     selectedSet:[],
     tourOn:false, tourStep:0, tourPlaying:false, spot:null,
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
@@ -406,19 +404,20 @@ class Component extends DCLogic {
   });
   subZoomIn=()=>this.setState(s=>({subZoom:Math.min(2,+(s.subZoom+0.15).toFixed(2))}));
   subZoomOut=()=>this.setState(s=>({subZoom:Math.max(0.5,+(s.subZoom-0.15).toFixed(2))}));
-  subZoomReset=()=>this.setState({subZoom:1});
+  subZoomReset=()=>this.setState({subZoom:1, subPanX:0, subPanY:0});
   setSubScope=(m)=>()=>this.setState({subScope:m});
   onPickFile=(e)=>this.setState({subFilePick:e.target.value});
+  // Bottom-panel card move — mirrors the main canvas: only the Move tool drags a
+  // card; it follows the cursor freely (no clamping) in canvas (pre-scale) space.
   onSubNodeDown=(key)=>(e)=>{
-    // Only the Move tool drags panel cards; in Select/Pan the press falls through to pan the panel.
-    if(this.state.panMode!=='move') return;
+    if(this.state.tourOn || this.state.panMode!=='move') return;
     e.preventDefault(); e.stopPropagation();
     const base=(this._subPosCache&&this._subPosCache[key])||{x:0,y:0};
     this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1 };
     window.addEventListener('pointermove', this.onSubNodeMove);
     window.addEventListener('pointerup', this.onSubNodeUp);
   };
-  onSubNodeMove=(e)=>{ if(!this._sd) return; const z=this._sd.z; const x=Math.max(0,this._sd.ox+(e.clientX-this._sd.sx)/z); const y=Math.max(0,this._sd.oy+(e.clientY-this._sd.sy)/z); this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x,y}}})); };
+  onSubNodeMove=(e)=>{ if(!this._sd) return; const z=this._sd.z; const x=this._sd.ox+(e.clientX-this._sd.sx)/z, y=this._sd.oy+(e.clientY-this._sd.sy)/z; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x,y}}})); };
   onSubNodeUp=()=>{ this._sd=null; window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
   setHover=(id)=>()=>this.setState({hoverId:id});
   onSearch=(e)=>this.setState({query:e.target.value});
@@ -455,10 +454,19 @@ class Component extends DCLogic {
   onFrameMove=(e)=>{ if(!this._nd) return; const z=this._nd.z; const dx=(e.clientX-this._nd.sx)/z, dy=(e.clientY-this._nd.sy)/z; if(Math.abs(dx)>2||Math.abs(dy)>2)this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx,y:this._nd.oy+dy}}})); };
   onFrameUp=()=>{ if(this._nd&&this._nd.moved)this._justDragged=true; this._nd=null; window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
 
-  // algo/ds canvas pan (drag on empty background; nodes stopPropagation so they move instead)
-  setSubScroll=(el)=>{ this._subScroll=el; };
-  onSubPanDown=(e)=>{ const el=this._subScroll; if(!el) return; this._sp={ sx:e.clientX, sy:e.clientY, sl:el.scrollLeft, stp:el.scrollTop }; this.setState({subPanning:true}); window.addEventListener('pointermove', this.onSubPanMove); window.addEventListener('pointerup', this.onSubPanUp); };
-  onSubPanMove=(e)=>{ if(!this._sp||!this._subScroll) return; this._subScroll.scrollLeft=this._sp.sl-(e.clientX-this._sp.sx); this._subScroll.scrollTop=this._sp.stp-(e.clientY-this._sp.sy); };
+  // functions / data-structures canvas pan — mirrors the main canvas: a press on a
+  // card in Select/Move is handled by the card (no pan); empty drag (any tool) pans
+  // via a transform translate so cards can sit anywhere, including negative space.
+  onSubPanDown=(e)=>{
+    if(this.state.tourOn) return;
+    const onNode = e.target.closest && e.target.closest('[data-sub-node]');
+    if((this.state.panMode==='cursor'||this.state.panMode==='move') && onNode) return;
+    this._sp={ sx:e.clientX, sy:e.clientY, ox:this.state.subPanX, oy:this.state.subPanY };
+    this.setState({subPanning:true});
+    window.addEventListener('pointermove', this.onSubPanMove);
+    window.addEventListener('pointerup', this.onSubPanUp);
+  };
+  onSubPanMove=(e)=>{ if(!this._sp) return; this.setState({ subPanX:this._sp.ox+(e.clientX-this._sp.sx), subPanY:this._sp.oy+(e.clientY-this._sp.sy) }); };
   onSubPanUp=()=>{ this._sp=null; this.setState({subPanning:false}); window.removeEventListener('pointermove',this.onSubPanMove); window.removeEventListener('pointerup',this.onSubPanUp); };
 
   openFns=()=>this.setState({bottomOpen:true, bottomTab:'functions'});
@@ -615,7 +623,7 @@ class Component extends DCLogic {
       model, loading:false, scanError:null,
       selectedId: entry?entry.id:null,
       selectedSet: entry?[entry.id]:[],
-      view:'map', zoom:0.6, panX:0, panY:0, nodePos:{}, subPos:{},
+      view:'map', zoom:0.6, panX:0, panY:0, nodePos:{}, subPos:{}, subPanX:0, subPanY:0,
       bottomOpen:false, query:'', subFilePick:null,
       tourOn:false, tourPlaying:false, tourStep:0, spot:null,
     });
@@ -775,7 +783,7 @@ class Component extends DCLogic {
       const isEntry=isFns && subInc[n.key]===0;
       const bd=n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)');
       return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key),
-        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:0 1px 4px var(--shadow);cursor:grab;touch-action:none` };
+        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:0 1px 4px var(--shadow);cursor:${st.panMode==='move'?'grab':'default'};touch-action:none` };
     });
     const posOf=(k)=>this._subPosCache[k]||lay.pos[k]||{x:8,y:8};
     const subEdges=sg.edges.map(e=>{
@@ -827,11 +835,10 @@ class Component extends DCLogic {
       subDsStyle:subTabBase+(!isFns?'background:var(--sel);color:#fff':'background:transparent;color:var(--text2)'),
       subScopeLabel:subInfo, subInfo, subModes, subMulti:multiSel, subShowPick:(multiSel&&subMode==='single'), subPick:sg.pick||selFilesAll[0]||st.selectedId, subPickStyle,
       subPickOptions:selFilesAll.map(id=>({id, label:fileLabel(id)})), onPickFile:this.onPickFile,
-      subNodes, subEdges, subW, subH,
-      setSubScroll:this.setSubScroll, onSubPanDown:this.onSubPanDown,
-      subCanvasStyle:`flex:1;min-height:0;overflow:auto;position:relative;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.subPanning?'grabbing':'grab'}`,
+      subNodes, subEdges, subW, subH, subPanX:st.subPanX, subPanY:st.subPanY,
+      onSubPanDown:this.onSubPanDown,
+      subCanvasStyle:`flex:1;min-height:0;overflow:hidden;position:relative;background:var(--bg);background-image:radial-gradient(var(--grid) 1.2px, transparent 1.2px);background-size:22px 22px;cursor:${st.subPanning?'grabbing':(st.panMode==='hand'?'grab':'default')}`,
       subZoom:st.subZoom, subZoomPct:Math.round(st.subZoom*100)+'%', subZoomIn:this.subZoomIn, subZoomOut:this.subZoomOut, subZoomReset:this.subZoomReset,
-      subScaledW:Math.ceil(subW*st.subZoom), subScaledH:Math.ceil(subH*st.subZoom),
       subEmpty:subListLen===0, subEmptyText,
       nodeViews, edgeViews, layerRows, filterChips:fchips, tools, sel:selView,
       tourOn:st.tourOn, spotStyle, tourNum:st.tourStep+1, tourTotal:this.TOUR.length,
