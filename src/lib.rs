@@ -488,7 +488,7 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
                     label: f.name.clone(),
                     sig: if f.sig.is_empty() { "()".into() } else { f.sig.clone() },
                     calls,
-                    code: info.lang.snippet_at(&info.text, f.line),
+                    code: info.lang.snippet_at(&info.text, f.line, 4000),
                     loc: f.body.lines().count().max(1),
                     doc: f.doc.clone(),
                 }
@@ -515,7 +515,7 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
                     label: t.name.clone(),
                     sig: t.sig.clone(),
                     fields,
-                    code: info.lang.snippet_at(&info.text, t.line),
+                    code: info.lang.snippet_at(&info.text, t.line, 4000),
                     loc: t.body.lines().count().max(1),
                     doc: t.doc.clone(),
                 }

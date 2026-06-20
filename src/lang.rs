@@ -655,12 +655,14 @@ impl Lang {
         } else {
             1
         };
-        self.snippet_at(&info.text, start)
+        // A representative file snippet stays short.
+        self.snippet_at(&info.text, start, 18)
     }
 
-    /// A highlighted source snippet starting at `start_line` (1-based) — used for
-    /// a single function or data structure.
-    pub fn snippet_at(self, text: &str, start_line: usize) -> Vec<(String, String)> {
+    /// A highlighted source snippet starting at `start_line` (1-based), spanning
+    /// at most `max_lines`. For a single function or data structure pass a large
+    /// `max_lines` so the *whole* symbol body is shown, not a truncated preview.
+    pub fn snippet_at(self, text: &str, start_line: usize, max_lines: usize) -> Vec<(String, String)> {
         let lines: Vec<&str> = text.lines().collect();
         if lines.is_empty() || start_line == 0 {
             return vec![("// no source\n".into(), "c".into())];
@@ -668,22 +670,76 @@ impl Lang {
         let start = (start_line - 1).min(lines.len() - 1);
         let mut snippet_lines: Vec<&str> = Vec::new();
         if self.brace_based() {
+            // Brace matcher that ignores braces inside strings, char literals
+            // (and Rust lifetimes) and comments, so `format!("{}")` etc. don't
+            // throw off the depth count.
             let mut depth: i32 = 0;
             let mut started = false;
+            let mut in_block = false; // inside /* ... */ (may span lines)
             for line in &lines[start..] {
                 snippet_lines.push(line);
-                for ch in line.chars() {
-                    if ch == '{' {
+                let ch: Vec<char> = line.chars().collect();
+                let n = ch.len();
+                let mut in_str: Option<char> = None;
+                let mut i = 0;
+                while i < n {
+                    let c = ch[i];
+                    if in_block {
+                        if c == '*' && i + 1 < n && ch[i + 1] == '/' {
+                            in_block = false;
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(q) = in_str {
+                        if c == '\\' {
+                            i += 2;
+                            continue;
+                        }
+                        if c == q {
+                            in_str = None;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if c == '/' && i + 1 < n && ch[i + 1] == '/' {
+                        break; // rest of line is a comment
+                    }
+                    if c == '/' && i + 1 < n && ch[i + 1] == '*' {
+                        in_block = true;
+                        i += 2;
+                        continue;
+                    }
+                    if c == '"' || c == '`' {
+                        in_str = Some(c);
+                        i += 1;
+                        continue;
+                    }
+                    if c == '\'' {
+                        // Rust: distinguish a char literal from a lifetime/label.
+                        let is_char_lit = self != Lang::Rust
+                            || (i + 2 < n && ch[i + 2] == '\'')
+                            || (i + 1 < n && ch[i + 1] == '\\');
+                        if is_char_lit {
+                            in_str = Some('\'');
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if c == '{' {
                         depth += 1;
                         started = true;
-                    } else if ch == '}' {
+                    } else if c == '}' {
                         depth -= 1;
                     }
+                    i += 1;
                 }
                 if started && depth <= 0 {
                     break;
                 }
-                if snippet_lines.len() >= 18 {
+                if snippet_lines.len() >= max_lines {
                     break;
                 }
             }
@@ -695,7 +751,7 @@ impl Lang {
                     break;
                 }
                 snippet_lines.push(line);
-                if snippet_lines.len() >= 18 {
+                if snippet_lines.len() >= max_lines {
                     break;
                 }
             }
