@@ -30,8 +30,10 @@ pub struct InputFile {
 
 #[derive(Debug, Serialize)]
 pub struct Model {
+    pub version: &'static str,
     #[serde(rename = "repoName")]
     pub repo_name: String,
+    pub language: String,
     pub arch: String,
     pub nodes: Vec<NodeOut>,
     pub edges: Vec<[String; 2]>,
@@ -531,8 +533,21 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
     // ── Architecture summary ──
     let arch = make_arch(repo_name, &infos, &edges, &indeg);
 
+    // Dominant language (by file count) for the project meta.
+    let mut lang_counts: HashMap<&str, usize> = HashMap::new();
+    for info in &infos {
+        *lang_counts.entry(info.lang.name()).or_insert(0) += 1;
+    }
+    let language = lang_counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .map(|(n, _)| n.to_lowercase())
+        .unwrap_or_default();
+
     Model {
+        version: "1",
         repo_name: repo_name.to_string(),
+        language,
         arch,
         nodes,
         edges,
