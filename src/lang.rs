@@ -637,10 +637,9 @@ impl Lang {
         }
     }
 
-    /// A representative source snippet, returned as highlighted token spans.
+    /// A representative source snippet (for a whole file), highlighted.
     pub fn snippet(self, info: &FileInfo) -> Vec<(String, String)> {
-        let lines: Vec<&str> = info.text.lines().collect();
-        if lines.is_empty() {
+        if info.text.lines().next().is_none() {
             return vec![("// empty file\n".into(), "c".into())];
         }
         let start = if let Some(f) = info
@@ -650,13 +649,23 @@ impl Lang {
             .or_else(|| info.funcs.iter().find(|f| f.is_pub))
             .or_else(|| info.funcs.first())
         {
-            f.line.saturating_sub(1)
+            f.line
         } else if let Some(t) = info.types.first() {
-            t.line.saturating_sub(1)
+            t.line
         } else {
-            0
+            1
         };
-        // collect lines from start, brace/indent aware, capped
+        self.snippet_at(&info.text, start)
+    }
+
+    /// A highlighted source snippet starting at `start_line` (1-based) — used for
+    /// a single function or data structure.
+    pub fn snippet_at(self, text: &str, start_line: usize) -> Vec<(String, String)> {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.is_empty() || start_line == 0 {
+            return vec![("// no source\n".into(), "c".into())];
+        }
+        let start = (start_line - 1).min(lines.len() - 1);
         let mut snippet_lines: Vec<&str> = Vec::new();
         if self.brace_based() {
             let mut depth: i32 = 0;
@@ -674,7 +683,7 @@ impl Lang {
                 if started && depth <= 0 {
                     break;
                 }
-                if snippet_lines.len() >= 16 {
+                if snippet_lines.len() >= 18 {
                     break;
                 }
             }
@@ -686,17 +695,15 @@ impl Lang {
                     break;
                 }
                 snippet_lines.push(line);
-                if snippet_lines.len() >= 16 {
+                if snippet_lines.len() >= 18 {
                     break;
                 }
             }
         }
-        // trim trailing blanks
         while snippet_lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
             snippet_lines.pop();
         }
-        let text = snippet_lines.join("\n");
-        highlight(&text, self)
+        highlight(&snippet_lines.join("\n"), self)
     }
 }
 

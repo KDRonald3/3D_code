@@ -203,7 +203,7 @@
               </sc-for>
             </svg>
             <sc-for list="{{ subNodes }}" as="n" hint-placeholder-count="4">
-              <div data-sub-node="{{ n.key }}" onPointerDown="{{ n.onDown }}" style="{{ n.style }}">
+              <div data-sub-node="{{ n.key }}" onClick="{{ n.onClick }}" onPointerDown="{{ n.onDown }}" style="{{ n.style }}">
                 <div style="display:flex;align-items:center;gap:6px">
                   <span style="width:8px;height:8px;border-radius:{{ n.dot }};background:{{ n.color }};flex:none"></span>
                   <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.label }}</span>
@@ -318,7 +318,7 @@ class Component extends DCLogic {
     panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
     bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1,
     subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
-    selectedSet:[],
+    selectedSet:[], selectedSym:null,
     tourOn:false, tourStep:0, tourPlaying:false, spot:null,
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
     loading:false, scanError:null,
@@ -399,10 +399,13 @@ class Component extends DCLogic {
     if(e&&e.shiftKey){
       const set=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
       if(set.has(id)&&set.size>1) set.delete(id); else set.add(id);
-      return { selectedId:id, selectedSet:[...set] };
+      return { selectedId:id, selectedSet:[...set], selectedSym:null };
     }
-    return { selectedId:id, selectedSet:[id] };
+    return { selectedId:id, selectedSet:[id], selectedSym:null };
   });
+  // select a function / data-structure node in the bottom panel (Inspector shows its source)
+  selectSym=(key)=>()=>this.setState({selectedSym:key});
+  onSubNodeClick=(key)=>(e)=>{ if(this._justDraggedSub){ this._justDraggedSub=false; return; } this.setState({selectedSym:key}); };
   subZoomIn=()=>this.setState(s=>({subZoom:Math.min(2,+(s.subZoom+0.15).toFixed(2))}));
   subZoomOut=()=>this.setState(s=>({subZoom:Math.max(0.5,+(s.subZoom-0.15).toFixed(2))}));
   subZoomReset=()=>this.setState({subZoom:1, subPanX:0, subPanY:0});
@@ -414,12 +417,12 @@ class Component extends DCLogic {
     if(this.state.tourOn || this.state.panMode!=='move') return;
     e.preventDefault(); e.stopPropagation();
     const base=(this._subPosCache&&this._subPosCache[key])||{x:0,y:0};
-    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1 };
+    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1, moved:false };
     window.addEventListener('pointermove', this.onSubNodeMove);
     window.addEventListener('pointerup', this.onSubNodeUp);
   };
-  onSubNodeMove=(e)=>{ if(!this._sd) return; const z=this._sd.z; const x=this._sd.ox+(e.clientX-this._sd.sx)/z, y=this._sd.oy+(e.clientY-this._sd.sy)/z; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x,y}}})); };
-  onSubNodeUp=()=>{ this._sd=null; window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
+  onSubNodeMove=(e)=>{ if(!this._sd) return; const z=this._sd.z; const dx=(e.clientX-this._sd.sx)/z, dy=(e.clientY-this._sd.sy)/z; if(Math.abs(dx)>2||Math.abs(dy)>2)this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx,y:this._sd.oy+dy}}})); };
+  onSubNodeUp=()=>{ if(this._sd&&this._sd.moved)this._justDraggedSub=true; this._sd=null; window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
   setHover=(id)=>()=>this.setState({hoverId:id});
   onSearch=(e)=>this.setState({query:e.target.value});
   setMap=()=>this.setState({view:'map'});
@@ -470,9 +473,9 @@ class Component extends DCLogic {
   onSubPanMove=(e)=>{ if(!this._sp) return; this.setState({ subPanX:this._sp.ox+(e.clientX-this._sp.sx), subPanY:this._sp.oy+(e.clientY-this._sp.sy) }); };
   onSubPanUp=()=>{ this._sp=null; this.setState({subPanning:false}); window.removeEventListener('pointermove',this.onSubPanMove); window.removeEventListener('pointerup',this.onSubPanUp); };
 
-  openFns=()=>this.setState({bottomOpen:true, bottomTab:'functions'});
-  openStructs=()=>this.setState({bottomOpen:true, bottomTab:'structs'});
-  closeBottom=()=>this.setState({bottomOpen:false});
+  openFns=()=>this.setState({bottomOpen:true, bottomTab:'functions', selectedSym:null});
+  openStructs=()=>this.setState({bottomOpen:true, bottomTab:'structs', selectedSym:null});
+  closeBottom=()=>this.setState({bottomOpen:false, selectedSym:null});
   onResizeDown=(e)=>{
     e.preventDefault();
     this._rz={ sy:e.clientY, oh:this.state.bottomH };
@@ -546,7 +549,7 @@ class Component extends DCLogic {
     return { nodes:[...onPath].map(k=>g[k]), edges:[...pe].map(s=>s.split('\u0001')) };
   }
 
-  startTour=()=>{ const s=this.TOUR[0]; if(!s) return; const id=s.sel||this.state.selectedId; this.setState({tourOn:true,tourStep:0,tourPlaying:true,view:s.view,selectedId:id,selectedSet:[id]}); this.play(); requestAnimationFrame(()=>this.measureSpot()); };
+  startTour=()=>{ const s=this.TOUR[0]; if(!s) return; const id=s.sel||this.state.selectedId; this.setState({tourOn:true,tourStep:0,tourPlaying:true,view:s.view,selectedId:id,selectedSet:[id],selectedSym:null}); this.play(); requestAnimationFrame(()=>this.measureSpot()); };
   stopTour=()=>{ clearInterval(this._t); this.setState({tourOn:false,tourPlaying:false}); };
   play(){ clearInterval(this._t); this._t=setInterval(()=>{ if(this.state.tourStep>=this.TOUR.length-1){clearInterval(this._t);this.setState({tourPlaying:false});} else this.gotoStep(this.state.tourStep+1); },4400); }
   tourToggle=()=>{ if(this.state.tourPlaying){clearInterval(this._t);this.setState({tourPlaying:false});} else { if(this.state.tourStep>=this.TOUR.length-1)this.gotoStep(0); this.setState({tourPlaying:true}); this.play(); } };
@@ -555,6 +558,29 @@ class Component extends DCLogic {
   gotoStep(i){ const s=this.TOUR[i]; if(!s) return; this.setState(st=>({tourStep:i, selectedId:s.sel||st.selectedId, selectedSet:s.sel?[s.sel]:st.selectedSet, view:s.view||st.view})); }
 
   fileLabelOf(fid){ const n=this.NODES.find(x=>x.id===fid); return n?n.label:fid; }
+  filePathOf(fid){ const d=this.DETAIL[fid]; return d?d.path:this.fileLabelOf(fid); }
+
+  // Inspector detail for a selected function / data-structure node ('file:id').
+  symDetail(key){
+    if(!key) return null;
+    const i=key.indexOf(':'); if(i<0) return null;
+    const file=key.slice(0,i), id=key.slice(i+1);
+    const sub=this.SUB[file]; if(!sub) return null;
+    const isFn=(sub.fns||[]).some(f=>f.id===id);
+    const arr=(isFn?sub.fns:sub.structs)||[];
+    const it=arr.find(x=>x.id===id); if(!it) return null;
+    const fileLabel=this.fileLabelOf(file);
+    const refs=isFn?(it.calls||[]):(it.fields||[]);
+    const usedBy=arr.filter(x=>(isFn?(x.calls||[]):(x.fields||[])).includes(id)).map(x=>x.id);
+    const summary = it.doc ? it.doc
+      : (isFn ? ('Function '+it.label+it.sig+' defined in '+fileLabel+'.'+(refs.length?(' Calls '+refs.length+' local '+(refs.length>1?'functions':'function')+'.'):' A leaf function.'))
+              : ('Data structure '+it.label+' ('+it.sig+') defined in '+fileLabel+'.'+(refs.length?(' Composes '+refs.length+' local '+(refs.length>1?'types':'type')+'.'):'')));
+    return { id:null, sym:true, symFile:file, label:it.label, kind:isFn?'fn':'struct',
+      path:this.filePathOf(file), summary, loc:it.loc||0,
+      code:(it.code&&it.code.length)?it.code:[['// no source\n','c']],
+      tests:[], callers:usedBy, callees:refs };
+  }
+  symLabelOf(file,id){ const sub=this.SUB[file]||{}; const it=(sub.fns||[]).concat(sub.structs||[]).find(x=>x.id===id); return it?it.label:id; }
 
   detail(id){
     const nodes=this.NODES;
@@ -623,7 +649,7 @@ class Component extends DCLogic {
     this.setState({
       model, loading:false, scanError:null,
       selectedId: entry?entry.id:null,
-      selectedSet: entry?[entry.id]:[],
+      selectedSet: entry?[entry.id]:[], selectedSym:null,
       view:'map', zoom:0.6, panX:0, panY:0, nodePos:{}, subPos:{}, subPanX:0, subPanY:0,
       bottomOpen:false, query:'', subFilePick:null,
       tourOn:false, tourPlaying:false, tourStep:0, spot:null,
@@ -661,7 +687,8 @@ class Component extends DCLogic {
 
     const q=st.query.trim().toLowerCase();
     const isDiff=st.view==='diff';
-    const sel=this.detail(st.selectedId);
+    const symSel = st.selectedSym ? this.symDetail(st.selectedSym) : null;
+    const sel = symSel || this.detail(st.selectedId);
     const selSet=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
     const focusIds=st.hoverId?new Set([st.hoverId]):selSet;
     const connected=new Set(); this.EDGES.forEach(e=>{ if(selSet.has(e[0]))connected.add(e[1]); if(selSet.has(e[1]))connected.add(e[0]); });
@@ -751,13 +778,16 @@ class Component extends DCLogic {
     const KB={entry:'#f5a62322',file:'#0d99ff22',fn:'#14ae5c22',struct:'#9747ff22'};
     const badgeRender=(arr)=>(arr||[]).map(b=>({ text:b[0],
       style:`font-size:9.5px;font-weight:600;letter-spacing:.4px;padding:3px 8px;border-radius:5px;${b[1]==='r'?'color:var(--warn);background:var(--warnbg)':'color:var(--text2);background:var(--panel2);border:1px solid var(--border)'}` }));
+    const mkRef = symSel
+      ? (id)=>({ label:this.symLabelOf(symSel.symFile, id), onClick:this.selectSym(symSel.symFile+':'+id) })
+      : (id)=>({ label:(this.NODES.find(n=>n.id===id)||{label:id}).label, onClick:this.select(id) });
     const selView={ label:sel.label, kind:this.KLABEL[sel.kind], path:sel.path, summary:sel.summary, loc:sel.loc,
       color:this.KCOLOR[sel.kind], chipBg:KB[sel.kind], dotRadius:sel.kind==='fn'?'50%':'2px',
       codeEl:this.codeEl(sel.code,dark), badges:badgeRender(sel.badges),
       tests:sel.tests, noTests:!sel.tests||sel.tests.length===0,
       hasRisk:!!(sel.risks&&sel.risks.length), risks:sel.risks||[],
-      callers:(sel.callers||[]).map(id=>({label:(this.NODES.find(n=>n.id===id)||{label:id}).label,onClick:this.select(id)})),
-      callees:(sel.callees||[]).map(id=>({label:(this.NODES.find(n=>n.id===id)||{label:id}).label,onClick:this.select(id)})),
+      callers:(sel.callers||[]).map(mkRef),
+      callees:(sel.callees||[]).map(mkRef),
       noCallers:!sel.callers||sel.callers.length===0 };
 
     const step=this.TOUR[st.tourStep]||{title:'',cap:''}, spot=st.spot;
@@ -778,14 +808,17 @@ class Component extends DCLogic {
     const subInc={}; sg.nodes.forEach(n=>subInc[n.key]=0); sg.edges.forEach(e=>{ if(subInc[e[1]]!=null)subInc[e[1]]++; });
     this._subPosCache={};
     let subW=lay.w, subH=lay.h;
+    const selSym=st.selectedSym;
     const subNodes=sg.nodes.map(n=>{
       const lp=lay.pos[n.key]||{x:8,y:8};
       const p=st.subPos[n.key]||lp; this._subPosCache[n.key]=p;
       subW=Math.max(subW, p.x+lay.NW+18); subH=Math.max(subH, p.y+lay.NH+16);
       const isEntry=isFns && subInc[n.key]===0;
-      const bd=n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)');
-      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key),
-        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:0 1px 4px var(--shadow);cursor:${st.panMode==='move'?'grab':'default'};touch-action:none` };
+      const isSel=n.key===selSym;
+      const bd=isSel?'var(--sel)':(n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)'));
+      const ring=isSel?'0 0 0 1.5px var(--sel),0 4px 14px var(--shadow)':'0 1px 4px var(--shadow)';
+      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key), onClick:this.onSubNodeClick(n.key),
+        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:${ring};cursor:${st.panMode==='move'?'grab':'pointer'};touch-action:none` };
     });
     const posOf=(k)=>this._subPosCache[k]||lay.pos[k]||{x:8,y:8};
     const subEdges=sg.edges.map(e=>{

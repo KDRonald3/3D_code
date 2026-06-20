@@ -91,6 +91,10 @@ pub struct FnOut {
     pub label: String,
     pub sig: String,
     pub calls: Vec<String>,
+    pub code: Vec<(String, String)>,
+    pub loc: usize,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub doc: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,6 +103,10 @@ pub struct StructOut {
     pub label: String,
     pub sig: String,
     pub fields: Vec<String>,
+    pub code: Vec<(String, String)>,
+    pub loc: usize,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub doc: String,
 }
 
 // ── Internal working types ─────────────────────────────────────────────────
@@ -480,6 +488,9 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
                     label: f.name.clone(),
                     sig: if f.sig.is_empty() { "()".into() } else { f.sig.clone() },
                     calls,
+                    code: info.lang.snippet_at(&info.text, f.line),
+                    loc: f.body.lines().count().max(1),
+                    doc: f.doc.clone(),
                 }
             })
             .collect();
@@ -504,6 +515,9 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
                     label: t.name.clone(),
                     sig: t.sig.clone(),
                     fields,
+                    code: info.lang.snippet_at(&info.text, t.line),
+                    loc: t.body.lines().count().max(1),
+                    doc: t.doc.clone(),
                 }
             })
             .collect();
