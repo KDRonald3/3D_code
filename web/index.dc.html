@@ -202,13 +202,17 @@
           </sc-if>
           <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:translate({{ subPanX }}px,{{ subPanY }}px) scale({{ subZoom }});width:{{ subW }}px;height:{{ subH }}px;padding:6px">
             <svg width="{{ subW }}" height="{{ subH }}" style="position:absolute;inset:0;overflow:visible;pointer-events:none">
-              <defs><marker id="cvsub" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--conn)"></path></marker></defs>
+              <defs>
+                <marker id="cvsub" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--conn)"></path></marker>
+                <marker id="cvsubb" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--sel)"></path></marker>
+                <marker id="cvsubh" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" style="fill:var(--sel)"></path></marker>
+              </defs>
               <sc-for list="{{ subEdges }}" as="e" hint-placeholder-count="4">
-                <path d="{{ e.d }}" fill="none" marker-end="url(#cvsub)" style="{{ e.style }}"></path>
+                <path d="{{ e.d }}" fill="none" marker-end="{{ e.marker }}" style="{{ e.style }}"></path>
               </sc-for>
             </svg>
             <sc-for list="{{ subNodes }}" as="n" hint-placeholder-count="4">
-              <div data-sub-node="{{ n.key }}" onClick="{{ n.onClick }}" onPointerDown="{{ n.onDown }}" style="{{ n.style }}">
+              <div data-sub-node="{{ n.key }}" onClick="{{ n.onClick }}" onPointerDown="{{ n.onDown }}" onMouseEnter="{{ n.onEnter }}" onMouseLeave="{{ n.onLeave }}" style="{{ n.style }}">
                 <div style="display:flex;align-items:center;gap:6px">
                   <span style="width:8px;height:8px;border-radius:{{ n.dot }};background:{{ n.color }};flex:none"></span>
                   <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.label }}</span>
@@ -328,7 +332,7 @@ class Component extends DCLogic {
     panX:0, panY:0, panMode:'cursor', dragging:false, nodePos:{},
     bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1,
     subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
-    selectedSet:[], selectedSym:null, collapsed:{},
+    selectedSet:[], selectedSym:null, subHover:null, collapsed:{},
     tourOn:false, tourStep:0, tourPlaying:false, spot:null,
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
     loading:false, scanError:null,
@@ -418,6 +422,7 @@ class Component extends DCLogic {
   // select a function / data-structure node in the bottom panel (Inspector shows its source)
   selectSym=(key)=>()=>this.setState({selectedSym:key});
   onSubNodeClick=(key)=>(e)=>{ if(this._justDraggedSub){ this._justDraggedSub=false; return; } this.setState({selectedSym:key}); };
+  setSubHover=(key)=>()=>this.setState({subHover:key});
   subZoomIn=()=>this.setState(s=>({subZoom:Math.min(2,+(s.subZoom+0.15).toFixed(2))}));
   subZoomOut=()=>this.setState(s=>({subZoom:Math.max(0.5,+(s.subZoom-0.15).toFixed(2))}));
   subZoomReset=()=>this.setState({subZoom:1, subPanX:0, subPanY:0});
@@ -843,16 +848,25 @@ class Component extends DCLogic {
       const isSel=n.key===selSym;
       const bd=isSel?'var(--sel)':(n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)'));
       const ring=isSel?'0 0 0 1.5px var(--sel),0 4px 14px var(--shadow)':'0 1px 4px var(--shadow)';
-      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key), onClick:this.onSubNodeClick(n.key),
+      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key), onClick:this.onSubNodeClick(n.key), onEnter:this.setSubHover(n.key), onLeave:this.setSubHover(null),
         style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:${ring};cursor:${st.panMode==='move'?'grab':'pointer'};touch-action:none` };
     });
+    // Edge highlighting mirrors the main canvas: edges touching the hovered/
+    // selected node flow blue (animated dashes); the rest dim.
+    const subFocus = st.subHover ? new Set([st.subHover]) : (selSym ? new Set([selSym]) : null);
     const posOf=(k)=>this._subPosCache[k]||lay.pos[k]||{x:8,y:8};
     const subEdges=sg.edges.map(e=>{
       const pa=posOf(e[0]), pb=posOf(e[1]); const cross=e[0].split(':')[0]!==e[1].split(':')[0];
       let d;
       if(pb.x>=pa.x){ const sx=pa.x+lay.NW, sy=pa.y+lay.NH/2, tx=pb.x, ty=pb.y+lay.NH/2, mx=(sx+tx)/2; d=`M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`; }
       else { const sx=pa.x, sy=pa.y+lay.NH/2, tx=pb.x+lay.NW, ty=pb.y+lay.NH/2, mx=(sx+tx)/2; d=`M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`; }
-      return { d, style:`stroke:${cross?'var(--sel)':'var(--conn)'};stroke-width:1.5;stroke-opacity:${cross?0.95:0.8};${cross?'stroke-dasharray:5 4;':''}` };
+      const hot = !!subFocus && (subFocus.has(e[0])||subFocus.has(e[1]));
+      const dim = !!subFocus && !hot;
+      if(hot){
+        return { d, marker:'url(#cvsubh)', style:`stroke:var(--sel);stroke-width:1.9;stroke-opacity:1;stroke-dasharray:5 5;animation:cvdash 1s linear infinite` };
+      }
+      return { d, marker:cross?'url(#cvsubb)':'url(#cvsub)',
+        style:`stroke:${cross?'var(--sel)':'var(--conn)'};stroke-width:1.5;stroke-opacity:${dim?0.25:(cross?0.95:0.8)};${cross?'stroke-dasharray:5 4;':''}` };
     });
     const subListLen=sg.nodes.length;
     const fileLabel=(id)=>(this.NODES.find(n=>n.id===id)||{label:id}).label;
