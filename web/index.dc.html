@@ -617,14 +617,38 @@ class Component extends DCLogic {
   // Finish the divider drag.
   onResizeUp=()=>{ this._rz=null; window.removeEventListener('pointermove',this.onResizeMove); window.removeEventListener('pointerup',this.onResizeUp); };
 
-  // left→right column layout: arrow = relation; entry node has no incoming edge
+  // left→right column layout: arrow = relation; entry node has no incoming edge.
+  // Cyclic call graphs (e.g. mutually-recursive functions, as in support.js) make a
+  // naive longest-path layering diverge — depths grow each pass and fling nodes
+  // thousands of px to the right, drawing "infinitely long" links. So we first strip
+  // back edges (detected via DFS) and layer over the resulting DAG, which converges.
   subLayout(nodes, edges){
     const NW=156, NH=46, GX=200, GY=66, PADX=18, PADY=16;
-    const inc={}; nodes.forEach(n=>inc[n.id]=0); edges.forEach(([a,b])=>{ if(inc[b]!=null)inc[b]++; });
+    const known=new Set(nodes.map(n=>n.id));
+    const adj={}; nodes.forEach(n=>adj[n.id]=[]);
+    edges.forEach(([a,b])=>{ if(known.has(a)&&known.has(b)) adj[a].push(b); });
+    // Iterative DFS: an edge to a node still on the stack (GRAY) is a back edge.
+    const color={}; nodes.forEach(n=>color[n.id]=0); // 0 white · 1 gray · 2 black
+    const back=new Set();
+    nodes.forEach(n=>{
+      if(color[n.id]!==0) return;
+      color[n.id]=1; const stack=[[n.id,0]];
+      while(stack.length){
+        const top=stack[stack.length-1], u=top[0];
+        if(top[1]<adj[u].length){
+          const v=adj[u][top[1]++];
+          if(color[v]===1) back.add(u+'\u0001'+v);
+          else if(color[v]===0){ color[v]=1; stack.push([v,0]); }
+        } else { color[u]=2; stack.pop(); }
+      }
+    });
+    const dag=edges.filter(([a,b])=>known.has(a)&&known.has(b)&&!back.has(a+'\u0001'+b));
+    const inc={}; nodes.forEach(n=>inc[n.id]=0); dag.forEach(([a,b])=>{ inc[b]++; });
     const depth={}; const roots=nodes.filter(n=>inc[n.id]===0).map(n=>n.id);
     (roots.length?roots:[nodes[0]&&nodes[0].id]).forEach(r=>{ if(r!=null)depth[r]=0; });
-    let changed=true, guard=0;
-    while(changed && guard++<50){ changed=false; edges.forEach(([a,b])=>{ if(depth[a]!=null){ const d=depth[a]+1; if(depth[b]==null||depth[b]<d){ depth[b]=d; changed=true; } } }); }
+    // The DAG's longest path is bounded by the node count, so this converges.
+    let changed=true, guard=0; const cap=nodes.length+1;
+    while(changed && guard++<cap){ changed=false; dag.forEach(([a,b])=>{ if(depth[a]!=null){ const d=depth[a]+1; if(depth[b]==null||depth[b]<d){ depth[b]=d; changed=true; } } }); }
     nodes.forEach(n=>{ if(depth[n.id]==null) depth[n.id]=0; });
     const rowOf={}; const pos={};
     nodes.forEach(n=>{ const c=depth[n.id]; rowOf[c]=(rowOf[c]||0); pos[n.id]={ x:PADX+c*GX, y:PADY+rowOf[c]*GY }; rowOf[c]++; });
