@@ -202,7 +202,7 @@
         <sc-for list="{{ nodeViews }}" as="n" hint-placeholder-count="14">
           <div onMouseEnter="{{ n.onEnter }}" onMouseLeave="{{ n.onLeave }}" data-tour-id="{{ n.tourId }}" style="{{ n.wrapStyle }}">
             <div style="{{ n.labelStyle }}">{{ n.label }}</div>
-            <div onClick="{{ n.onClick }}" onDoubleClick="{{ n.onDblClick }}" onPointerDown="{{ n.onFrameDown }}" style="{{ n.frameStyle }}">
+            <div onClick="{{ n.onClick }}" onPointerDown="{{ n.onFrameDown }}" style="{{ n.frameStyle }}">
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:9px">
                 <span style="{{ n.chipStyle }}"><span style="width:6px;height:6px;border-radius:1px;background:{{ n.color }};flex:none;display:inline-block"></span>{{ n.kindLabel }}</span>
                 <sc-if value="{{ n.hot }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-size:9px;color:var(--warn);opacity:.8;flex:none;font-weight:600;letter-spacing:-.2px">!</span></sc-if>
@@ -289,7 +289,7 @@
               </sc-for>
             </svg>
             <sc-for list="{{ subNodes }}" as="n" hint-placeholder-count="4">
-              <div data-sub-node="{{ n.key }}" onClick="{{ n.onClick }}" onDoubleClick="{{ n.onDblClick }}" onPointerDown="{{ n.onDown }}" onMouseEnter="{{ n.onEnter }}" onMouseLeave="{{ n.onLeave }}" style="{{ n.style }}">
+              <div data-sub-node="{{ n.key }}" onClick="{{ n.onClick }}" onPointerDown="{{ n.onDown }}" onMouseEnter="{{ n.onEnter }}" onMouseLeave="{{ n.onLeave }}" style="{{ n.style }}">
                 <div style="display:flex;align-items:center;gap:6px">
                   <span style="width:8px;height:8px;border-radius:{{ n.dot }};background:{{ n.color }};flex:none"></span>
                   <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.label }}</span>
@@ -383,7 +383,7 @@ class Component extends DCLogic {
     panX:0, panY:0, dragging:false, draggingCard:null, draggingSub:null, nodePos:{},
     bottomOpen:false, bottomTab:'functions', bottomH:248, subZoom:1, subFullView:false,
     subScope:'union', subFilePick:null, subPos:{}, subPanX:0, subPanY:0,
-    selectedSet:[], selectedSym:null, subHover:null, collapsed:{}, armedCard:null, armedSub:null,
+    selectedSet:[], selectedSym:null, subHover:null, collapsed:{},
     model:{ repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] },
     loading:false, scanError:null,
     leftW:236, rightW:316, leftOpen:true, rightOpen:true,
@@ -391,7 +391,7 @@ class Component extends DCLogic {
     projectMeta:{name:'',language:''}, recentProjects:[], githubUrl:'', versionWarn:null,
   };
   LEFT_MIN=180; RIGHT_MIN=240;
-  LP_MS=320; DRAG_MOVE=5;  // long-press threshold (ms) and drag/pan move tolerance (px)
+  DRAG_MOVE=5;  // pointer move tolerance (px) before a press becomes a drag
 
   constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
 
@@ -432,19 +432,19 @@ class Component extends DCLogic {
   setRoot=(el)=>{ this.root=el; };
   // Toggle light/dark and pin it so the media query stops overriding.
   toggleTheme=()=>this.setState(s=>({dark:!s.dark, userSet:true}));
-  // Select a file node; shift-click multi-selects; clears symbol selection and any armed card.
+  // Select a file node; shift-click multi-selects; clears symbol selection.
   select=(id)=>(e)=>this.setState(st=>{
     if(e&&e.shiftKey){
       const set=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
       if(set.has(id)&&set.size>1) set.delete(id); else set.add(id);
-      return { selectedId:id, selectedSet:[...set], selectedSym:null, armedCard:null };
+      return { selectedId:id, selectedSet:[...set], selectedSym:null };
     }
-    return { selectedId:id, selectedSet:[id], selectedSym:null, armedCard:null };
+    return { selectedId:id, selectedSet:[id], selectedSym:null };
   });
   // select a function / data-structure node in the bottom panel (Inspector shows its source)
   selectSym=(key)=>()=>this.setState({selectedSym:key});
   // Click a bottom-panel node -> select its symbol (suppressed right after a drag).
-  onSubNodeClick=(key)=>(e)=>{ if(this._justDraggedSub){ this._justDraggedSub=false; return; } this.setState({selectedSym:key, armedSub:null}); };
+  onSubNodeClick=(key)=>(e)=>{ if(this._justDraggedSub){ this._justDraggedSub=false; return; } this.setState({selectedSym:key}); };
   // Track the hovered bottom-panel node (drives edge highlighting).
   setSubHover=(key)=>()=>this.setState({subHover:key});
   // Zoom the bottom panel in (cap 2x).
@@ -457,32 +457,28 @@ class Component extends DCLogic {
   setSubScope=(m)=>()=>this.setState({subScope:m});
   // Choose which selected file the 'By file' mode shows.
   onPickFile=(e)=>this.setState({subFilePick:e.target.value});
-  // Bottom-panel node — a plain drag pans the panel; a long-press (or armed by
-  // double-click) then drag moves only that node; a click selects the symbol.
-  onSubDblClick=(key)=>(e)=>{ if(e&&e.preventDefault)e.preventDefault(); this.setState({armedSub:key, selectedSym:key}); };
+  // Bottom-panel node — press and drag (while the pointer stays down) to move only
+  // that node; a press without dragging selects the symbol. Panning the panel is
+  // done by dragging empty background.
   onSubNodeDown=(key)=>(e)=>{
     e.stopPropagation();
     const base=(this._subPosCache&&this._subPosCache[key])||{x:0,y:0};
-    const armed=this.state.armedSub===key;
-    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1, pox:this.state.subPanX, poy:this.state.subPanY, mode: armed?'node':'pending', moved:false };
-    if(armed){ this.setState({selectedSym:key, draggingSub:key}); }
-    else { clearTimeout(this._sLp); this._sLp=setTimeout(()=>{ if(this._sd&&this._sd.mode==='pending'){ this._sd.mode='node'; this.setState({selectedSym:key, draggingSub:key}); } }, this.LP_MS); }
+    this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1, mode:'pending', moved:false };
     window.addEventListener('pointermove', this.onSubNodeMove);
     window.addEventListener('pointerup', this.onSubNodeUp);
   };
-  // Bottom-panel node drag: below threshold do nothing; first move starts a pan (plain) or moves the node (armed).
+  // Bottom-panel node drag: below threshold do nothing; once past it, move only that node.
   onSubNodeMove=(e)=>{
     if(!this._sd) return;
     const dx=e.clientX-this._sd.sx, dy=e.clientY-this._sd.sy;
     if(this._sd.mode==='pending'){
-      if(Math.abs(dx)>this.DRAG_MOVE||Math.abs(dy)>this.DRAG_MOVE){ clearTimeout(this._sLp); this._sd.mode='pan'; this._sd.sx=e.clientX; this._sd.sy=e.clientY; this._sd.pox=this.state.subPanX; this._sd.poy=this.state.subPanY; this.setState({subPanning:true}); }
-      return;
+      if(Math.abs(dx)<=this.DRAG_MOVE&&Math.abs(dy)<=this.DRAG_MOVE) return;
+      this._sd.mode='node'; this.setState({selectedSym:this._sd.key, draggingSub:this._sd.key});
     }
-    if(this._sd.mode==='pan'){ this.setState({ subPanX:this._sd.pox+(e.clientX-this._sd.sx), subPanY:this._sd.poy+(e.clientY-this._sd.sy) }); return; }
-    if(this._sd.mode==='node'){ const z=this._sd.z; this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx/z,y:this._sd.oy+dy/z}}})); }
+    const z=this._sd.z; this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx/z,y:this._sd.oy+dy/z}}}));
   };
   // End a bottom-panel node gesture; flag a drag so the trailing click doesn't select.
-  onSubNodeUp=()=>{ clearTimeout(this._sLp); if(this._sd&&(this._sd.mode==='node'||this._sd.mode==='pan'))this._justDraggedSub=true; this._sd=null; this.setState({subPanning:false, draggingSub:null}); window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
+  onSubNodeUp=()=>{ if(this._sd&&this._sd.moved)this._justDraggedSub=true; this._sd=null; this.setState({draggingSub:null}); window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
   // Track the hovered main-canvas node (drives edge highlighting).
   setHover=(id)=>()=>this.setState({hoverId:id});
   // Update the layer/canvas search query.
@@ -529,8 +525,8 @@ class Component extends DCLogic {
   // Reset main-canvas zoom and pan.
   resetView=()=>this.setState({zoom:0.6, panX:0, panY:0});
   // ── Unified canvas cursor ──
-  // click = select · drag empty space = pan the whole canvas · long-press a card
-  // then drag = move that card. No tool modes.
+  // click a card = select · drag a card = move that card · drag empty space = pan
+  // the whole canvas. No tool modes.
   onCanvasDown=(e)=>{
     const onFrame = e.target.closest && e.target.closest('[data-tour-id^="t-frame-"]');
     if(onFrame) return; // the frame handles its own pointer
@@ -546,32 +542,28 @@ class Component extends DCLogic {
 
   // Card click selects it, unless the click was the tail of a drag.
   selectCard=(id)=>(e)=>{ if(this._justDragged){ this._justDragged=false; return; } this.select(id)(e); };
-  // Double-click arms a card for moving (a trackpad-friendly equivalent of long-press).
-  onCardDblClick=(id)=>(e)=>{ if(e&&e.preventDefault)e.preventDefault(); this.setState({armedCard:id, selectedId:id, selectedSet:[id], selectedSym:null}); };
-  // Press a card: a plain drag pans; a long-press (or armed-by-double-click) then drag moves only that card.
+  // Press a card and drag (while the pointer stays down) to move only that card —
+  // no long-press, no arming. A press without dragging selects the card; panning
+  // the whole canvas is done by dragging empty space.
   onFrameDown=(id)=>(e)=>{
     e.stopPropagation();
     const base=(this._nodePosCache&&this._nodePosCache[id])||{x:0,y:0};
-    const armed=this.state.armedCard===id;
-    this._nd={ id, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.zoom||1, pox:this.state.panX, poy:this.state.panY, mode: armed?'card':'pending', moved:false };
-    if(armed){ this.setState({draggingCard:id, selectedId:id, selectedSet:[id], selectedSym:null}); }
-    else { clearTimeout(this._lp); this._lp=setTimeout(()=>{ if(this._nd&&this._nd.mode==='pending'){ this._nd.mode='card'; this.setState({draggingCard:id, selectedId:id, selectedSet:[id], selectedSym:null}); } }, this.LP_MS); }
+    this._nd={ id, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.zoom||1, mode:'pending', moved:false };
     window.addEventListener('pointermove', this.onFrameMove);
     window.addEventListener('pointerup', this.onFrameUp);
   };
-  // Card gesture: below threshold pending; a plain drag pans; an armed/long-pressed card moves.
+  // Card gesture: below threshold pending; once past it, move only that card.
   onFrameMove=(e)=>{
     if(!this._nd) return;
     const dx=e.clientX-this._nd.sx, dy=e.clientY-this._nd.sy;
     if(this._nd.mode==='pending'){
-      if(Math.abs(dx)>this.DRAG_MOVE||Math.abs(dy)>this.DRAG_MOVE){ clearTimeout(this._lp); this._nd.mode='pan'; this._nd.sx=e.clientX; this._nd.sy=e.clientY; this._nd.pox=this.state.panX; this._nd.poy=this.state.panY; this.setState({dragging:true}); }
-      return;
+      if(Math.abs(dx)<=this.DRAG_MOVE&&Math.abs(dy)<=this.DRAG_MOVE) return;
+      this._nd.mode='card'; this.setState({draggingCard:this._nd.id, selectedId:this._nd.id, selectedSet:[this._nd.id], selectedSym:null});
     }
-    if(this._nd.mode==='pan'){ this.setState({ panX:this._nd.pox+(e.clientX-this._nd.sx), panY:this._nd.poy+(e.clientY-this._nd.sy) }); return; }
-    if(this._nd.mode==='card'){ const z=this._nd.z; this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx/z,y:this._nd.oy+dy/z}}})); }
+    const z=this._nd.z; this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx/z,y:this._nd.oy+dy/z}}}));
   };
   // End a card gesture; flag a drag so the trailing click doesn't re-select.
-  onFrameUp=()=>{ clearTimeout(this._lp); if(this._nd&&(this._nd.mode==='card'||this._nd.mode==='pan'))this._justDragged=true; this._nd=null; this.setState({dragging:false, draggingCard:null}); window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
+  onFrameUp=()=>{ if(this._nd&&this._nd.moved)this._justDragged=true; this._nd=null; this.setState({draggingCard:null}); window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
 
   // func/ds empty-background pan (nodes handle their own pointer)
   onSubPanDown=(e)=>{
@@ -929,13 +921,13 @@ class Component extends DCLogic {
       const ov=st.nodePos[n.id]; const px=ov?ov.x:n.x, py=ov?ov.y:n.y; this._nodePosCache[n.id]={x:px,y:py};
       return {
         ...n, tourId:'t-frame-'+n.id, label:n.label, locText:n.loc+' LOC', color:c,
-        onClick:this.selectCard(n.id), onFrameDown:this.onFrameDown(n.id), onDblClick:this.onCardDblClick(n.id), onEnter:this.setHover(n.id), onLeave:this.setHover(null),
+        onClick:this.selectCard(n.id), onFrameDown:this.onFrameDown(n.id), onEnter:this.setHover(n.id), onLeave:this.setHover(null),
         selected:isSel, hot,
         kindLabel:this.KLABEL[n.kind],
         chipStyle:`font-size:9px;font-weight:500;letter-spacing:.3px;text-transform:uppercase;color:${c};background:transparent;padding:0;border-radius:0;display:flex;align-items:center;gap:4px`,
         wrapStyle:`position:absolute;left:${px}px;top:${py}px;width:${this.W}px;opacity:${dim?0.32:1};transition:opacity .35s;z-index:${isSel?5:2}`,
         labelStyle:`font-size:10.5px;font-family:Inter,sans-serif;margin-bottom:4px;color:${isSel?'var(--sel)':'var(--text3)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.1px`,
-        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:${(isSel||st.armedCard===n.id)?'2px':'1px'} solid ${st.armedCard===n.id?'var(--sel)':baseBorder};border-radius:3px;box-shadow:${(st.draggingCard===n.id||st.armedCard===n.id)?'0 6px 18px var(--shadow)':'0 1px 3px var(--shadow)'};cursor:${st.draggingCard===n.id?'grabbing':(st.armedCard===n.id?'grab':'pointer')};touch-action:none;transition:border-color .15s,box-shadow .15s`,
+        frameStyle:`height:${this.H}px;padding:11px 12px;background:var(--frame);border:${isSel?'2px':'1px'} solid ${baseBorder};border-radius:3px;box-shadow:${st.draggingCard===n.id?'0 6px 18px var(--shadow)':'0 1px 3px var(--shadow)'};cursor:${st.draggingCard===n.id?'grabbing':'grab'};touch-action:none;transition:border-color .15s,box-shadow .15s`,
       };
     });
 
@@ -1025,9 +1017,8 @@ class Component extends DCLogic {
       const isSel=n.key===selSym;
       const bd=isSel?'var(--sel)':(n.bridge?'#f5a623':(isEntry?baseColor:'var(--frameborder)'));
       const ring=isSel?'0 0 0 1.5px var(--sel),0 4px 14px var(--shadow)':'0 1px 4px var(--shadow)';
-      const bd2 = st.armedSub===n.key ? 'var(--sel)' : bd;
-      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key), onClick:this.onSubNodeClick(n.key), onDblClick:this.onSubDblClick(n.key), onEnter:this.setSubHover(n.key), onLeave:this.setSubHover(null),
-        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd2};border-radius:5px;box-shadow:${(st.draggingSub===n.key||st.armedSub===n.key)?'0 4px 14px var(--shadow)':ring};cursor:${st.draggingSub===n.key?'grabbing':(st.armedSub===n.key?'grab':'pointer')};touch-action:none` };
+      return { key:n.key, label:n.label, sig:n.sig, color:n.bridge?'#f5a623':baseColor, dot:isFns?'50%':'2px', isEntry, onDown:this.onSubNodeDown(n.key), onClick:this.onSubNodeClick(n.key), onEnter:this.setSubHover(n.key), onLeave:this.setSubHover(null),
+        style:`position:absolute;left:${p.x}px;top:${p.y}px;width:${lay.NW}px;height:${lay.NH}px;padding:8px 10px;background:var(--frame);border:1.5px ${n.bridge?'dashed':'solid'} ${bd};border-radius:5px;box-shadow:${st.draggingSub===n.key?'0 4px 14px var(--shadow)':ring};cursor:${st.draggingSub===n.key?'grabbing':'grab'};touch-action:none` };
     });
     // Edge highlighting mirrors the main canvas: edges touching the hovered/
     // selected node flow blue (animated dashes); the rest dim.
