@@ -16,6 +16,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+/// Per-language helpers: extension detection, symbol extraction, import/call
+/// scanning, identifier listing and syntax-highlight snippeting.
 mod lang;
 use lang::Lang;
 
@@ -236,7 +238,8 @@ struct FileInfo {
     has_io: bool,
     /// True when the file contains `unsafe` blocks.
     has_unsafe: bool,
-    /// lowercase identifier set appearing in this file (for mention edges)
+    /// Lowercased set of identifiers appearing in this file (used to infer
+    /// symbol-mention dependency edges).
     idents: HashSet<String>,
 }
 
@@ -260,6 +263,7 @@ const IGNORED_DIRS: &[&str] = &[
 
 /// Walk a directory tree on disk and collect readable source files.
 pub fn scan_dir(root: &Path, max_file_bytes: u64) -> io::Result<(String, Vec<InputFile>)> {
+    // Use the root directory's own name as the repository display name.
     let repo_name = root
         .file_name()
         .and_then(|s| s.to_str())
@@ -280,16 +284,20 @@ fn collect(root: &Path, dir: &Path, max: u64, out: &mut Vec<InputFile>) -> io::R
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
+            // Skip vendored/build/VCS folders and any hidden directory; recurse otherwise.
             if IGNORED_DIRS.contains(&name.as_str()) || name.starts_with('.') {
                 continue;
             }
             collect(root, &path, max, out)?;
         } else if Lang::from_path(&path).is_some() {
+            // Only consider files with a recognised source extension.
+            // Skip files larger than the byte budget (generated/minified blobs).
             if let Ok(meta) = entry.metadata() {
                 if meta.len() > max {
                     continue;
                 }
             }
+            // Read as UTF-8 and store with a forward-slash repo-relative path.
             if let Ok(text) = fs::read_to_string(&path) {
                 let rel = path
                     .strip_prefix(root)
@@ -559,6 +567,8 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
             },
         );
 
+        // Per-function sub-graph: resolve each call to a sibling function in the
+        // same file (skip self-calls, external calls and duplicates).
         let fns = info
             .funcs
             .iter()
@@ -586,6 +596,8 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
             })
             .collect();
 
+        // Per-type sub-graph: link each type to sibling types it references in
+        // the same file (skip self-references, external types and duplicates).
         let structs = info
             .types
             .iter()
@@ -760,6 +772,7 @@ fn clamp_sentence(s: &str) -> String {
     if s.len() <= 320 {
         return s.to_string();
     }
+    // Accumulate characters until we pass ~300 bytes and hit a sentence end.
     let mut out = String::new();
     for ch in s.chars() {
         out.push(ch);
@@ -1008,6 +1021,8 @@ fn sorted_labels(ids: Option<&Vec<String>>, _infos: &[FileInfo]) -> Vec<String> 
 /// Derive a stable, unique node id from a file path: the file stem, disambiguated with the parent folder for ambiguous names (mod/index/__init__) and a numeric suffix on collision.
 fn unique_id(path: &str, used: &mut HashSet<String>) -> String {
     let stem = file_stem(path);
+    // Generic stems (mod.rs, index.js, …) collide across folders, so prefix the
+    // parent directory to keep ids meaningful and distinct.
     let ambiguous = matches!(
         stem.as_str(),
         "mod" | "index" | "main" | "lib" | "__init__" | "__main__"
@@ -1027,6 +1042,7 @@ fn unique_id(path: &str, used: &mut HashSet<String>) -> String {
     if base.is_empty() {
         base = "mod".into();
     }
+    // Append an incrementing numeric suffix until the id is unique.
     let mut candidate = base.clone();
     let mut n = 1;
     while used.contains(&candidate) {
@@ -1077,6 +1093,7 @@ fn dir_of(path: &str) -> String {
     }
 }
 
+/// Unit tests exercising the end-to-end analysis on small synthetic projects.
 #[cfg(test)]
 mod tests {
     use super::*;

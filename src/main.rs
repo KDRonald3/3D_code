@@ -18,6 +18,8 @@ use codebase_visualizer::{analyze, scan_dir};
 /// printed to stdout. Exits with a non-zero status on a missing path, an
 /// unknown option, or a scan/write failure.
 fn main() {
+    // Parse command-line arguments (skipping argv[0]) into local options, with
+    // defaults for `max_file_bytes` and `pretty`.
     let mut args = std::env::args().skip(1);
     let mut path: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -47,12 +49,14 @@ fn main() {
         }
     }
 
+    // A target path is required; bail out with usage and a non-zero status if absent.
     let Some(path) = path else {
         eprintln!("error: missing path to scan\n");
         print_help();
         process::exit(2);
     };
 
+    // Scan the directory for source files, exiting on I/O or traversal failure.
     let (repo_name, files) = match scan_dir(&path, max_file_bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -61,6 +65,8 @@ fn main() {
         }
     };
 
+    // Analyze the scanned files into the model and serialize it to JSON,
+    // honoring the `--pretty` flag for indented output.
     eprintln!("scanned {} source files from {repo_name}", files.len());
     let model = analyze(&repo_name, files);
     let json = if pretty {
@@ -70,6 +76,8 @@ fn main() {
     }
     .expect("serialize model");
 
+    // Choose the output destination: write to the `--output` file when set
+    // (exiting on write failure), otherwise print the JSON to stdout.
     match output {
         Some(out) => {
             if let Err(e) = std::fs::write(&out, json) {

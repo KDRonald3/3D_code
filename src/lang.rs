@@ -82,22 +82,28 @@ impl Lang {
     }
 
     /// Top-of-file documentation comment, if any.
+    ///
+    /// Reads the header doc: a Python module docstring or leading `#` comments,
+    /// or a C-like leading `//`/`//!` run or `/* ... */` block. Stops at the
+    /// first non-comment line and joins the collected text into one string.
     pub fn file_doc(self, text: &str) -> String {
         let lines: Vec<&str> = text.lines().collect();
         let mut i = 0;
-        // skip shebang / blank
+        // Skip a leading shebang and blank lines before the doc.
         while i < lines.len() && (lines[i].trim().is_empty() || lines[i].starts_with("#!")) {
             i += 1;
         }
         if self == Lang::Python {
-            // module docstring
+            // Module docstring: a `"""`/`'''` block, possibly single-line.
             let t = lines.get(i).map(|s| s.trim()).unwrap_or("");
             if t.starts_with("\"\"\"") || t.starts_with("'''") {
                 let q = &t[..3];
                 let rest = &t[3..];
+                // Closing quote on the same line -> single-line docstring.
                 if let Some(end) = rest.find(q) {
                     return rest[..end].trim().to_string();
                 }
+                // Otherwise accumulate lines until the closing triple-quote.
                 let mut buf = vec![rest.to_string()];
                 let mut j = i + 1;
                 while j < lines.len() {
@@ -110,7 +116,7 @@ impl Lang {
                 }
                 return buf.join(" ").trim().to_string();
             }
-            // leading # comments
+            // No docstring: fall back to a run of leading `#` comments.
             let mut docs = Vec::new();
             while i < lines.len() && lines[i].trim_start().starts_with('#') {
                 docs.push(lines[i].trim_start().trim_start_matches('#').trim().to_string());
@@ -118,7 +124,7 @@ impl Lang {
             }
             return docs.join(" ").trim().to_string();
         }
-        // C-like: leading // or //! or /* */ comment block
+        // C-like: collect a leading run of `//`/`//!` lines or a `/* ... */` block.
         let mut docs = Vec::new();
         while i < lines.len() {
             let t = lines[i].trim_start();
@@ -126,6 +132,8 @@ impl Lang {
                 docs.push(t.trim_start_matches('/').trim_start_matches('!').trim().to_string());
                 i += 1;
             } else if t.starts_with("/*") {
+                // Block comment: capture the first segment, then keep reading
+                // lines (stripping `*` margins) until the closing `*/`.
                 let mut seg = t.trim_start_matches("/*").to_string();
                 if let Some(end) = seg.find("*/") {
                     docs.push(seg[..end].trim().to_string());
@@ -156,12 +164,17 @@ impl Lang {
     }
 
     /// Module/import hints used to infer file-level dependencies.
+    ///
+    /// Scans each line with a per-language rule and collects the referenced
+    /// module/path. This is purely textual and only inspects the start of each
+    /// trimmed line, so it tolerates partial files but ignores multi-line forms.
     pub fn imports(self, text: &str) -> Vec<String> {
         let mut out = Vec::new();
         for raw in text.lines() {
             let t = raw.trim();
             match self {
                 Lang::Rust => {
+                    // `use`/`pub use` paths and `mod` declarations; strip the trailing `;`.
                     if let Some(rest) = t.strip_prefix("use ").or_else(|| t.strip_prefix("pub use ")) {
                         out.push(rest.trim_end_matches(';').to_string());
                     } else if let Some(rest) = t.strip_prefix("mod ") {
@@ -169,6 +182,8 @@ impl Lang {
                     }
                 }
                 Lang::Python => {
+                    // `from X import ...` keeps the module before `import`;
+                    // `import a, b` splits on commas and takes the first word of each.
                     if let Some(rest) = t.strip_prefix("from ") {
                         if let Some((module, _)) = rest.split_once(" import") {
                             out.push(module.trim().to_string());
@@ -181,6 +196,8 @@ impl Lang {
                     }
                 }
                 Lang::JavaScript | Lang::TypeScript => {
+                    // ES `import`, CommonJS `require(...)` and `... from "x"` all
+                    // carry the module path inside quotes.
                     if t.starts_with("import") || t.contains("require(") || t.contains("from ") {
                         if let Some(p) = extract_quoted(t) {
                             out.push(p);
@@ -188,6 +205,8 @@ impl Lang {
                     }
                 }
                 Lang::Go => {
+                    // Quoted path on an `import` line or inside an `import (...)`
+                    // block (a bare quoted line, or an aliased/`_ "pkg"` entry).
                     if let Some(p) = extract_quoted(t) {
                         if t.starts_with('"') || t.contains("import") || t.starts_with('_') {
                             out.push(p);
@@ -195,11 +214,13 @@ impl Lang {
                     }
                 }
                 Lang::Java => {
+                    // `import [static] a.b.C;` — drop the `;` and the `static ` modifier.
                     if let Some(rest) = t.strip_prefix("import ") {
                         out.push(rest.trim_end_matches(';').replace("static ", ""));
                     }
                 }
                 Lang::C | Lang::Cpp => {
+                    // `#include "x"` or `#include <x>`; extract_quoted handles both.
                     if t.starts_with("#include") {
                         if let Some(p) = extract_quoted(t) {
                             out.push(p);
@@ -212,14 +233,22 @@ impl Lang {
     }
 
     /// Extract function and type symbols from a file.
+    ///
+    /// Walks the file line by line, treating each line as a potential
+    /// declaration. Function matches take precedence over type matches. For
+    /// every hit it gathers the preceding doc comment, the brace/indent-scoped
+    /// body, and metadata (test/visibility), then assigns a file-unique id.
     pub fn extract(self, text: &str) -> (Vec<FuncSym>, Vec<TypeSym>) {
         let lines: Vec<&str> = text.lines().collect();
         let mut funcs: Vec<FuncSym> = Vec::new();
         let mut types: Vec<TypeSym> = Vec::new();
+        // Track ids already handed out so duplicate names get a `_n` suffix.
         let mut fn_ids: HashSet<String> = HashSet::new();
         let mut ty_ids: HashSet<String> = HashSet::new();
 
         for (idx, line) in lines.iter().enumerate() {
+            // Function declaration: skip keyword false-positives, then capture
+            // the doc comment, body and metadata for the symbol.
             if let Some((name, sig)) = self.decl_func(line) {
                 if is_keyword(&name) {
                     continue;
@@ -227,6 +256,8 @@ impl Lang {
                 let doc = gather_doc(&lines, idx, self);
                 let body = self.body_of(&lines, idx);
                 let is_test = self.is_test_fn(&lines, idx, &name);
+                // Visibility differs per language: explicit `pub`/`export`/`public`
+                // keywords, or convention (Python non-`_` name, Go capitalised name).
                 let is_pub = line.contains("pub ")
                     || line.contains("export ")
                     || line.trim_start().starts_with("public ")
@@ -245,6 +276,8 @@ impl Lang {
                 });
                 continue;
             }
+            // Type declaration (struct/enum/class/...): same doc/body capture,
+            // but without the test/visibility fields.
             if let Some((name, sig)) = self.decl_type(line) {
                 if is_keyword(&name) {
                     continue;
@@ -265,11 +298,18 @@ impl Lang {
         (funcs, types)
     }
 
-    /// Try to read a function declaration off a single line, returning its name and signature (per language).
+    /// Try to read a function declaration off a single line, returning its
+    /// name and signature (per language).
+    ///
+    /// Each arm strips the language's modifiers/keywords, then takes the first
+    /// identifier as the name and `clean_sig` of the rest as the signature.
+    /// Returns `None` when the line is not a recognisable function declaration.
     fn decl_func(self, line: &str) -> Option<(String, String)> {
         let t = line.trim_start();
         match self {
             Lang::Rust => {
+                // Strip visibility/modifier keywords (two passes to handle e.g.
+                // `pub async unsafe`), then require the `fn ` keyword.
                 let inner = strip_prefixes(t, &["pub(crate) ", "pub ", "async ", "const ", "unsafe ", "extern ", "default "]);
                 let inner = strip_prefixes(inner, &["async ", "unsafe ", "extern ", "extern \"C\" "]);
                 let rest = inner.strip_prefix("fn ")?;
@@ -281,6 +321,7 @@ impl Lang {
                 Some((name, clean_sig(after)))
             }
             Lang::Python => {
+                // Optional `async`, then the `def ` keyword.
                 let inner = t.strip_prefix("async ").unwrap_or(t);
                 let rest = inner.strip_prefix("def ")?;
                 let name = first_ident(rest);
@@ -291,10 +332,13 @@ impl Lang {
                 Some((name, clean_sig(after)))
             }
             Lang::JavaScript | Lang::TypeScript => {
+                // Strip access/modifier keywords plus the `function`/`function*`
+                // keyword itself.
                 let inner = strip_prefixes(t, &["export default ", "export ", "async ", "static ", "public ", "private ", "protected "]);
                 let inner = strip_prefixes(inner, &["async ", "function* ", "function "]);
+                // Classic `function foo(...)` form: only accept the leading
+                // identifier when the original line actually contained `function`.
                 if let Some(name) = inner.strip_prefix("").map(first_ident) {
-                    // function declaration: original had "function " stripped
                     if t.contains("function") {
                         if !name.is_empty() {
                             let after = &inner[name.len()..];
@@ -302,7 +346,8 @@ impl Lang {
                         }
                     }
                 }
-                // const f = (..) => / arrow
+                // Arrow/function-expression form: `const f = (..) =>` or
+                // `let f = function ...`; the RHS must start a function value.
                 for kw in &["const ", "let ", "var "] {
                     if let Some(after_kw) = inner.strip_prefix(kw) {
                         let name = first_ident(after_kw);
@@ -322,6 +367,8 @@ impl Lang {
                 None
             }
             Lang::Go => {
+                // `func (recv) Name(...)` — drop any method receiver in parens
+                // before reading the name.
                 let rest = t.strip_prefix("func ")?;
                 let rest = if rest.starts_with('(') {
                     rest.split_once(')').map(|(_, a)| a.trim_start()).unwrap_or(rest)
@@ -336,6 +383,9 @@ impl Lang {
                 Some((name, clean_sig(after)))
             }
             Lang::Java => {
+                // No keyword; infer a method from `... name(` where the text
+                // before `(` is not a call/assignment. Reject prototypes (`;`)
+                // and assignments (`=`); the name is the last word before `(`.
                 if !t.contains('(') || t.trim_end().ends_with(';') {
                     return None;
                 }
@@ -346,6 +396,7 @@ impl Lang {
                 let words: Vec<&str> = before.split_whitespace().collect();
                 let cand = words.last().copied().unwrap_or("");
                 let cand = cand.split('.').last().unwrap_or("");
+                // Require a return type/modifier (>=2 words) so bare calls don't match.
                 if cand.is_empty() || words.len() < 2 || is_keyword(cand) {
                     return None;
                 }
@@ -357,6 +408,9 @@ impl Lang {
                 }
             }
             Lang::C | Lang::Cpp => {
+                // Like Java: a definition `ret name(...) {` rather than a
+                // prototype. Reject `;`/`)`-terminated and `=` lines; the name is
+                // the last identifier token before `(`.
                 let te = t.trim_end();
                 if !t.contains('(') || te.ends_with(';') || te.ends_with(')') {
                     return None;
@@ -464,9 +518,15 @@ impl Lang {
     }
 
     /// Body text of a declaration starting on `lines[idx]`.
+    ///
+    /// For brace-based languages this is the text from the opening `{` to its
+    /// matching `}`; for Python it is the indented suite below the `def`/`class`
+    /// line. Note this is a naive scan: braces inside strings/comments are not
+    /// ignored (unlike `snippet_at`), which is acceptable for call detection.
     fn body_of(self, lines: &[&str], idx: usize) -> String {
         if self.brace_based() {
-            // join from idx, find first '{', collect to matching '}'
+            // Accumulate characters once the first `{` is seen, tracking nesting
+            // depth, and stop when depth returns to zero (matching `}`).
             let mut buf = String::new();
             let mut depth: i32 = 0;
             let mut started = false;
@@ -488,13 +548,15 @@ impl Lang {
                 if started && depth <= 0 {
                     break;
                 }
+                // Safety cap so a missing/unbalanced brace can't run away.
                 if count > 400 {
                     break;
                 }
             }
             buf
         } else {
-            // python indentation
+            // Python: collect lines more indented than the declaration; blank
+            // lines are kept (they don't end the suite), a shallower line stops it.
             let base = indent_of(lines[idx]);
             let mut buf = String::new();
             for line in &lines[idx + 1..] {
@@ -516,6 +578,8 @@ impl Lang {
     fn is_test_fn(self, lines: &[&str], idx: usize, name: &str) -> bool {
         match self {
             Lang::Rust => {
+                // Scan upward over attribute lines; a `#[...test...]` attribute
+                // (e.g. `#[test]`, `#[tokio::test]`) marks it as a test.
                 let mut i = idx;
                 while i > 0 {
                     i -= 1;
@@ -536,6 +600,7 @@ impl Lang {
             Lang::Python => name.starts_with("test_") || name == "test",
             Lang::Go => name.starts_with("Test") && name.len() > 4,
             Lang::Java => {
+                // Scan upward over annotations; a `@Test` annotation marks it.
                 let mut i = idx;
                 while i > 0 {
                     i -= 1;
@@ -551,13 +616,19 @@ impl Lang {
                     }
                     break;
                 }
+                // Fall back to the JUnit-style `test*` naming convention.
                 name.starts_with("test")
             }
+            // C/C++ and JS/TS: rely on the conventional `test`/`Test` name prefix.
             _ => name.starts_with("test") || name.starts_with("Test"),
         }
     }
 
     /// Identifiers that appear as a call `name(` inside `body`.
+    ///
+    /// Lexes identifiers and keeps each one immediately followed (after any
+    /// whitespace) by `(`, excluding language keywords like `if`/`for`. Results
+    /// are de-duplicated while preserving first-seen order.
     pub fn calls_in(self, body: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
@@ -567,12 +638,13 @@ impl Lang {
         while i < n {
             let c = chars[i];
             if c.is_alphabetic() || c == '_' {
+                // Consume a full identifier.
                 let start = i;
                 while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
                     i += 1;
                 }
                 let ident: String = chars[start..i].iter().collect();
-                // skip whitespace
+                // Look past whitespace for a `(` that marks a call site.
                 let mut j = i;
                 while j < n && chars[j].is_whitespace() {
                     j += 1;
@@ -655,6 +727,9 @@ impl Lang {
         if info.text.lines().next().is_none() {
             return vec![("// empty file\n".into(), "c".into())];
         }
+        // Pick the most informative starting symbol: `main`, else the first
+        // public function, else the first function, else the first type, else
+        // the top of the file.
         let start = if let Some(f) = info
             .funcs
             .iter()
@@ -818,6 +893,8 @@ pub fn type_refs(body: &str) -> Vec<String> {
                 i += 1;
             }
             let ident: String = chars[start..i].iter().collect();
+            // Keep only multi-char Capitalised names (a PascalCase type-name
+            // heuristic), excluding keywords; de-duplicate.
             let first = ident.chars().next().unwrap();
             if first.is_uppercase() && ident.len() >= 2 && !is_keyword(&ident) {
                 if seen.insert(ident.clone()) {
@@ -831,6 +908,8 @@ pub fn type_refs(body: &str) -> Vec<String> {
     out
 }
 
+/// Lowercased identifiers considered too generic to form meaningful graph
+/// edges; consulted by `is_common_word` to suppress noisy mentions.
 const COMMON_WORDS: &[&str] = &[
     "string", "result", "option", "vec", "self", "none", "some", "true", "false", "error",
     "value", "data", "node", "item", "name", "path", "type", "kind", "list", "map", "set",
@@ -848,6 +927,8 @@ pub fn is_common_word(name: &str) -> bool {
 
 /// Tokenise a snippet into `[text, kind]` spans (kw/fn/ty/c/'') for the inspector, lexing comments, strings, identifiers and punctuation.
 fn highlight(src: &str, lang: Lang) -> Vec<(String, String)> {
+    // Per-language lexing context: keyword/primitive sets, the line-comment
+    // marker (1 or 2 chars), and whether `/* */` block comments apply.
     let kws: HashSet<&str> = lang.keywords().iter().copied().collect();
     let prims: HashSet<&str> = lang.primitives().iter().copied().collect();
     let line_comment = lang.line_comment();
@@ -858,6 +939,8 @@ fn highlight(src: &str, lang: Lang) -> Vec<(String, String)> {
     let chars: Vec<char> = src.chars().collect();
     let n = chars.len();
     let mut out: Vec<(String, String)> = Vec::new();
+    // Append a span, coalescing with the previous one when it has the same kind
+    // so the output isn't fragmented into many tiny spans.
     let mut push = |s: String, k: &str| {
         if let Some(last) = out.last_mut() {
             if last.1 == k {
@@ -922,10 +1005,13 @@ fn highlight(src: &str, lang: Lang) -> Vec<(String, String)> {
                 i += 1;
             }
             let ident: String = chars[start..i].iter().collect();
+            // Peek past spaces/tabs to see if a `(` follows (call site).
             let mut j = i;
             while j < n && (chars[j] == ' ' || chars[j] == '\t') {
                 j += 1;
             }
+            // Classify: keyword, known primitive, function (followed by `(`),
+            // type (Capitalised), else a plain identifier.
             let kind = if kws.contains(ident.as_str()) {
                 "kw"
             } else if prims.contains(ident.as_str()) {
@@ -1034,6 +1120,8 @@ fn gather_doc(lines: &[&str], decl_idx: usize, lang: Lang) -> String {
         let mut matched = false;
         for p in prefixes {
             if t.starts_with(p) {
+                // Strip comment markers (`///`, `//!`, `#`, `*`, `*/`) to leave
+                // just the comment text.
                 let cleaned = t
                     .trim_start_matches('/')
                     .trim_start_matches('#')

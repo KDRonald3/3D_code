@@ -1,6 +1,7 @@
 // GENERATED from dc-runtime/src/*.ts — do not edit. Rebuild with `cd dc-runtime && bun run build`.
 "use strict";
 (() => {
+  // esbuild helper: alias for Object.defineProperty used by the other shims below.
   var __defProp = Object.defineProperty;
   // esbuild helper: define `obj[key] = value` as a normal (enumerable/writable/configurable) own property.
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
@@ -175,6 +176,8 @@
     const rootName = rootNameForDocument(doc, location);
     runtime.markFetched(rootName);
     runtime.adoptParsed(rootName, parsed);
+    // Re-fetch the page source so the root uses the exact (unminified-by-the-DOM)
+    // template markup; failures are ignored since the adopted DOM template suffices.
     fetch(location.href).then((res) => res.ok ? res.text() : "").then((t) => {
       const raw = t ? parseDcText(t) : null;
       if (raw?.template) runtime.updateHtml(rootName, raw.template);
@@ -1213,6 +1216,7 @@
       const { mod, globals } = entry;
       const C = mod && mod[name] || globals && globals[name] || typeof window !== "undefined" && window[name] || mod && mod.default;
       if (typeof C === "function") return C;
+      // Dedup key (url + NUL + name) so the missing-export error is reported only once.
       const key = url + "\0" + name;
       if (!reportedMissing.has(key)) {
         reportedMissing.set(
@@ -1282,6 +1286,7 @@
       const g = entry.globals[name] ?? resolveDottedPath(window, name);
       if (isRenderableType(g)) return g;
       if (name.includes(".")) return null;
+      // Dedup key (url + NUL + "global" + NUL + name) so the unregistered-global warning fires once.
       const key = url + "\0global\0" + name;
       if (!reportedMissing.has(key)) {
         reportedMissing.set(key, null);
@@ -1337,6 +1342,7 @@
           const mayBePartial = streaming && !helmetClosed && i === raw.length - 1;
           if (tag === "SCRIPT") {
             if (mayBePartial) continue;
+            // Dedup key by src (or inline body) so each script is appended only once.
             const key = "SCRIPT|" + (child.getAttribute("src") || child.textContent || "");
             if (mounted.has(key)) continue;
             mounted.add(key);
@@ -1347,11 +1353,13 @@
             doc.head.appendChild(el);
           } else if (tag === "LINK" || tag === "META") {
             if (mayBePartial) continue;
+            // Dedup key by href/src (or full markup) so each link/meta is appended only once.
             const key = tag + "|" + (child.getAttribute("href") || child.getAttribute("src") || child.outerHTML);
             if (mounted.has(key)) continue;
             mounted.add(key);
             doc.head.appendChild(child.cloneNode(true));
           } else {
+            // Stable per-(component, child index) key identifying the live head element to update in place.
             const key = name + "|" + i;
             let el = live.get(key);
             if (!el || el.tagName !== tag) {
@@ -1708,6 +1716,8 @@
     if (document.readyState !== "loading") api.__dcBoot();
     else document.addEventListener("DOMContentLoaded", () => api.__dcBoot());
   }
+  // Bootstrap: hide the raw template immediately, then load React and initialize;
+  // a load/boot failure is logged and rethrown so it surfaces as a page error.
   hideRawTemplate();
   loadReactUmd().then(init).catch((err) => {
     console.error("[dc] failed to load React or boot:", err);

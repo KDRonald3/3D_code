@@ -376,6 +376,8 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1400,&quot;height&quot;:820}}">
 class Component extends DCLogic {
+  // Full UI state: selection, view mode, canvas/bottom-panel zoom+pan, per-node
+  // position overrides, sidebar widths, import flow, and the loaded data model.
   state = {
     selectedId:null, hoverId:null, query:'', view:'map',
     filters:{ entry:true, file:true, fn:true, struct:true },
@@ -390,14 +392,18 @@ class Component extends DCLogic {
     appState:'import', importError:null, scanProgress:{current:0,total:0,file:''},
     projectMeta:{name:'',language:''}, recentProjects:[], githubUrl:'', versionWarn:null,
   };
+  // Minimum widths (px) the left/right sidebars can be resized down to.
   LEFT_MIN=180; RIGHT_MIN=240;
   DRAG_MOVE=5;  // pointer move tolerance (px) before a press becomes a drag
 
   // Seed the initial theme from the OS dark-mode preference (before any user override).
   constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
 
+  // Main-canvas card dimensions (px) used for layout and edge geometry.
   W=150; H=84;
+  // Accent colour per node kind (entry/file/fn/struct).
   KCOLOR={ entry:'#e8922a', file:'#3b82f6', fn:'#16a35c', struct:'#7c5be0' };
+  // Short display label per node kind.
   KLABEL={ entry:'entry', file:'file', fn:'fn', struct:'type' };
 
   // ── Live data model (populated by the Rust analyzer via /api/scan) ──
@@ -463,22 +469,28 @@ class Component extends DCLogic {
   // done by dragging empty background.
   onSubNodeDown=(key)=>(e)=>{
     e.stopPropagation();
+    // Seed the gesture tracker in 'pending' mode: start point, the node's current
+    // position override, and the panel zoom at press time (to undo zoom on the delta).
     const base=(this._subPosCache&&this._subPosCache[key])||{x:0,y:0};
     this._sd={ key, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.subZoom||1, mode:'pending', moved:false };
     window.addEventListener('pointermove', this.onSubNodeMove);
     window.addEventListener('pointerup', this.onSubNodeUp);
   };
-  // Bottom-panel node drag: below threshold do nothing; once past it, move only that node.
+  // Bottom-panel node state machine: stay 'pending' until the pointer moves past
+  // DRAG_MOVE, then flip to 'node' (selecting it and marking it dragging) and move only
+  // that node, dividing the pixel delta by zoom to get panel-space movement.
   onSubNodeMove=(e)=>{
     if(!this._sd) return;
     const dx=e.clientX-this._sd.sx, dy=e.clientY-this._sd.sy;
     if(this._sd.mode==='pending'){
+      // Within tolerance it's still a candidate click, so don't move anything yet.
       if(Math.abs(dx)<=this.DRAG_MOVE&&Math.abs(dy)<=this.DRAG_MOVE) return;
       this._sd.mode='node'; this.setState({selectedSym:this._sd.key, draggingSub:this._sd.key});
     }
     const z=this._sd.z; this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx/z,y:this._sd.oy+dy/z}}}));
   };
-  // End a bottom-panel node gesture; flag a drag so the trailing click doesn't select.
+  // End a bottom-panel node gesture; if it moved, set _justDraggedSub so the trailing
+  // click (onSubNodeClick) is swallowed and the drag doesn't double as a select.
   onSubNodeUp=()=>{ if(this._sd&&this._sd.moved)this._justDraggedSub=true; this._sd=null; this.setState({draggingSub:null}); window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
   // Track the hovered main-canvas node (drives edge highlighting).
   setHover=(id)=>()=>this.setState({hoverId:id});
@@ -529,9 +541,12 @@ class Component extends DCLogic {
   // ── Unified canvas cursor ──
   // click a card = select · drag a card = move that card · drag empty space = pan
   // the whole canvas. No tool modes.
+  // Pointer down on empty canvas background -> start a pan; if the press landed on a
+  // card frame, bail out and let that frame's own pointer handler take over.
   onCanvasDown=(e)=>{
     const onFrame = e.target.closest && e.target.closest('[data-tour-id^="t-frame-"]');
     if(onFrame) return; // the frame handles its own pointer
+    // Remember where the drag started and the pan offset at that moment.
     this._pan={ sx:e.clientX, sy:e.clientY, ox:this.state.panX, oy:this.state.panY };
     this.setState({dragging:true});
     window.addEventListener('pointermove', this.onCanvasMove);
@@ -549,22 +564,28 @@ class Component extends DCLogic {
   // the whole canvas is done by dragging empty space.
   onFrameDown=(id)=>(e)=>{
     e.stopPropagation();
+    // Seed the gesture tracker in 'pending' mode: start point, the card's current
+    // position override, and the zoom at press time (to convert px back to canvas units).
     const base=(this._nodePosCache&&this._nodePosCache[id])||{x:0,y:0};
     this._nd={ id, sx:e.clientX, sy:e.clientY, ox:base.x, oy:base.y, z:this.state.zoom||1, mode:'pending', moved:false };
     window.addEventListener('pointermove', this.onFrameMove);
     window.addEventListener('pointerup', this.onFrameUp);
   };
-  // Card gesture: below threshold pending; once past it, move only that card.
+  // Card gesture state machine: stay 'pending' until the pointer moves past DRAG_MOVE,
+  // then flip to 'card' (which selects the card and marks it dragging) and from there
+  // move only that card, dividing the pixel delta by zoom to get canvas-space movement.
   onFrameMove=(e)=>{
     if(!this._nd) return;
     const dx=e.clientX-this._nd.sx, dy=e.clientY-this._nd.sy;
     if(this._nd.mode==='pending'){
+      // Within the tolerance it's still a candidate click, so don't move anything yet.
       if(Math.abs(dx)<=this.DRAG_MOVE&&Math.abs(dy)<=this.DRAG_MOVE) return;
       this._nd.mode='card'; this.setState({draggingCard:this._nd.id, selectedId:this._nd.id, selectedSet:[this._nd.id], selectedSym:null});
     }
     const z=this._nd.z; this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx/z,y:this._nd.oy+dy/z}}}));
   };
-  // End a card gesture; flag a drag so the trailing click doesn't re-select.
+  // End a card gesture; if it actually moved, set _justDragged so the trailing click
+  // (selectCard) is swallowed and the drag doesn't double as a select.
   onFrameUp=()=>{ if(this._nd&&this._nd.moved)this._justDragged=true; this._nd=null; this.setState({draggingCard:null}); window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
 
   // func/ds empty-background pan (nodes handle their own pointer)
@@ -625,7 +646,9 @@ class Component extends DCLogic {
   // thousands of px to the right, drawing "infinitely long" links. So we first strip
   // back edges (detected via DFS) and layer over the resulting DAG, which converges.
   subLayout(nodes, edges){
+    // Node size (NW/NH), inter-column/row gaps (GX/GY) and canvas padding (PADX/PADY).
     const NW=156, NH=46, GX=200, GY=66, PADX=18, PADY=16;
+    // Adjacency build: directed list per node, keeping only edges between known nodes.
     const known=new Set(nodes.map(n=>n.id));
     const adj={}; nodes.forEach(n=>adj[n.id]=[]);
     edges.forEach(([a,b])=>{ if(known.has(a)&&known.has(b)) adj[a].push(b); });
@@ -644,13 +667,18 @@ class Component extends DCLogic {
         } else { color[u]=2; stack.pop(); }
       }
     });
+    // DAG filter: keep every edge except the detected back edges -> an acyclic graph.
     const dag=edges.filter(([a,b])=>known.has(a)&&known.has(b)&&!back.has(a+'\u0001'+b));
+    // Incoming-degree count over the DAG; nodes with zero incoming edges are roots (depth 0).
     const inc={}; nodes.forEach(n=>inc[n.id]=0); dag.forEach(([a,b])=>{ inc[b]++; });
     const depth={}; const roots=nodes.filter(n=>inc[n.id]===0).map(n=>n.id);
+    // Fall back to the first node as root if the DAG somehow has no zero-incoming node.
     (roots.length?roots:[nodes[0]&&nodes[0].id]).forEach(r=>{ if(r!=null)depth[r]=0; });
+    // Longest-path relaxation: repeatedly push each node's depth to max(parent depth + 1).
     // The DAG's longest path is bounded by the node count, so this converges.
     let changed=true, guard=0; const cap=nodes.length+1;
     while(changed && guard++<cap){ changed=false; dag.forEach(([a,b])=>{ if(depth[a]!=null){ const d=depth[a]+1; if(depth[b]==null||depth[b]<d){ depth[b]=d; changed=true; } } }); }
+    // Any node never reached by relaxation (e.g. isolated) defaults to the first column.
     nodes.forEach(n=>{ if(depth[n.id]==null) depth[n.id]=0; });
     // Place each node: column = depth (x), stacked by row within the column (y).
     const rowOf={}; const pos={};
@@ -799,7 +827,9 @@ class Component extends DCLogic {
     r.readAsText(file);
   }
 
+  // Source file extensions the scanner accepts when ingesting a folder.
   SRC_EXT=new Set(['rs','py','pyi','js','jsx','mjs','cjs','ts','tsx','mts','cts','go','java','c','h','cpp','cc','cxx','hpp','hh','hxx']);
+  // Directory names skipped (deps, build output, VCS, editor metadata) during folder ingest.
   IGNORE_DIR=new Set(['.git','node_modules','target','.venv','venv','dist','build','__pycache__','.next','.nuxt','vendor','.idea','.vscode']);
 
   // Filter a picked folder to source files, upload them to the Rust scanner, and load the result (with a progress view).
@@ -1053,7 +1083,7 @@ class Component extends DCLogic {
     let subW=lay.w, subH=lay.h;
     const selSym=st.selectedSym;
     // Bottom-panel nodes: start from the auto-layout position (overridable by drag), grow the
-    // canvas to fit, and style for entry/selected/armed/bridge states.
+    // canvas to fit, and style for entry/selected/bridge states.
     const subNodes=sg.nodes.map(n=>{
       const lp=lay.pos[n.key]||{x:8,y:8};
       const p=st.subPos[n.key]||lp; this._subPosCache[n.key]=p;
