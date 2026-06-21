@@ -2,7 +2,9 @@
 "use strict";
 (() => {
   var __defProp = Object.defineProperty;
+  // esbuild helper: define `obj[key] = value` as a normal (enumerable/writable/configurable) own property.
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  // esbuild helper: declare a public class field, coercing non-symbol keys to strings.
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
   // src/react.ts — accessors for the UMD-loaded React/ReactDOM globals + a createElement shorthand.
@@ -194,6 +196,7 @@
     function StandaloneRoot() {
       const [, setTick] = React.useState(0);
       React.useEffect(() => {
+        // Subscriber that forces a re-render of the standalone root when overrides change.
         const sub = () => setTick((n) => n + 1);
         entry.subs.add(sub);
         return () => {
@@ -517,6 +520,7 @@
   var warnedHoles = /* @__PURE__ */ new Set();
   /** Console-warn once per (component, message) about an unresolved interpolation. */
   function warnUnresolved(ctx, what) {
+    // Dedup key combining the component name and the message so each warning fires once.
     const key = (ctx?.__name || "?") + "\0" + what;
     if (warnedHoles.has(key)) return;
     warnedHoles.add(key);
@@ -1079,6 +1083,7 @@
       function Dispatcher(p) {
         const [, setTick] = React.useState(0);
         React.useEffect(() => {
+          // Subscriber that forces this component host to re-render on hot updates.
           const sub = () => setTick((n) => n + 1);
           registry.get(name).subs.add(sub);
           return () => {
