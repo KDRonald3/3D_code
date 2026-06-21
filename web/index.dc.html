@@ -393,6 +393,7 @@ class Component extends DCLogic {
   LEFT_MIN=180; RIGHT_MIN=240;
   DRAG_MOVE=5;  // pointer move tolerance (px) before a press becomes a drag
 
+  // Seed the initial theme from the OS dark-mode preference (before any user override).
   constructor(p){ super(p); try{ this.state.dark = window.matchMedia('(prefers-color-scheme: dark)').matches; }catch(e){} }
 
   W=150; H=84;
@@ -493,6 +494,7 @@ class Component extends DCLogic {
   toggleFolder=(name)=>()=>this.setState(s=>({collapsed:{...s.collapsed,[name]:!s.collapsed[name]}}));
 
   // ── Resizable / collapsible sidebars (min width, no max) ──
+  // Stop a pointer/click event from bubbling to outer canvas handlers.
   stopProp=(e)=>{ e.stopPropagation(); };
   // Show/hide the left Layers sidebar.
   toggleLeft=()=>this.setState(s=>({leftOpen:!s.leftOpen}));
@@ -650,8 +652,10 @@ class Component extends DCLogic {
     let changed=true, guard=0; const cap=nodes.length+1;
     while(changed && guard++<cap){ changed=false; dag.forEach(([a,b])=>{ if(depth[a]!=null){ const d=depth[a]+1; if(depth[b]==null||depth[b]<d){ depth[b]=d; changed=true; } } }); }
     nodes.forEach(n=>{ if(depth[n.id]==null) depth[n.id]=0; });
+    // Place each node: column = depth (x), stacked by row within the column (y).
     const rowOf={}; const pos={};
     nodes.forEach(n=>{ const c=depth[n.id]; rowOf[c]=(rowOf[c]||0); pos[n.id]={ x:PADX+c*GX, y:PADY+rowOf[c]*GY }; rowOf[c]++; });
+    // Derive the canvas size from the widest column and tallest row.
     const maxCol=Math.max(0,...nodes.map(n=>depth[n.id]));
     const maxRow=Math.max(1,...Object.values(rowOf));
     return { pos, NW, NH, w:PADX*2+maxCol*GX+NW, h:PADY*2+(maxRow-1)*GY+NH };
@@ -659,27 +663,34 @@ class Component extends DCLogic {
 
   // build the function / data-structure graph shown in the bottom panel, honouring scope mode
   getSubGraph(st, isFns, selFiles, mode){
+    // Helpers parameterised on the active tab: items, their refs, and the cross-file edge list.
     const listOf=(fid)=> isFns ? ((this.SUB[fid]||{}).fns||[]) : ((this.SUB[fid]||{}).structs||[]);
     const refsOf=(it)=> isFns ? (it.calls||[]) : (it.fields||[]);
     const X = isFns ? this.FNX : this.FIELDX;
     const multi = mode!=='single';
+    // Build a node view; in multi-file scopes the signature line shows the owning file.
     const mk=(fid,it,bridge)=>({ key:fid+':'+it.id, file:fid, id:it.id, label:it.label,
       sig: bridge ? (this.fileLabelOf(fid)+' \u00b7 bridge') : (multi ? this.fileLabelOf(fid) : it.sig), bridge:!!bridge });
+    // Edges within one file (a symbol's ref resolves to another symbol in the same file).
     const intra=(fid)=>{ const items=listOf(fid); const ids=new Set(items.map(x=>x.id)); const out=[];
       items.forEach(it=>refsOf(it).forEach(r=>{ if(ids.has(r)) out.push([fid+':'+it.id, fid+':'+r]); })); return out; };
 
+    // Single-file scope: just one file's symbols and their internal edges.
     if(mode==='single'){
       const fid=(st.subFilePick && this.SUB[st.subFilePick] && selFiles.indexOf(st.subFilePick)>=0) ? st.subFilePick : (selFiles[0]||st.selectedId);
       return { nodes:listOf(fid).map(it=>mk(fid,it,false)), edges:intra(fid), pick:fid };
     }
 
+    // Multi-file: collect all selected files' symbols plus their intra- and cross-file edges.
     const sf=new Set(selFiles);
     const nodeMap={}; selFiles.forEach(fid=>listOf(fid).forEach(it=>nodeMap[fid+':'+it.id]=mk(fid,it,false)));
     let edges=[]; selFiles.forEach(fid=>edges.push(...intra(fid)));
     X.forEach(a=>{ if(sf.has(a[0])&&sf.has(a[2])&&nodeMap[a[0]+':'+a[1]]&&nodeMap[a[2]+':'+a[3]]) edges.push([a[0]+':'+a[1], a[2]+':'+a[3]]); });
 
+    // Union: every symbol of every selected file.
     if(mode==='union') return { nodes:Object.values(nodeMap), edges };
 
+    // Connecting: keep only symbols on cross-file edges (those directly linking the selected files).
     if(mode==='connecting'){
       const keep=new Set();
       edges.forEach(e=>{ if(e[0].split(':')[0]!==e[1].split(':')[0]){ keep.add(e[0]); keep.add(e[1]); } });
@@ -695,6 +706,8 @@ class Component extends DCLogic {
     all.forEach(fid=>intra(fid).forEach(e=>link(e[0],e[1])));
     X.forEach(a=>link(a[0]+':'+a[1], a[2]+':'+a[3]));
     const nodesIn=(fid)=>Object.keys(g).filter(k=>k.slice(0,k.lastIndexOf(':'))===fid || k.split(':')[0]===fid);
+    // For each pair of selected files, BFS the whole-graph adjacency for a shortest path,
+    // then walk the predecessor chain back to collect the path's nodes and edges.
     const onPath=new Set(), pe=new Set();
     for(let i=0;i<selFiles.length;i++) for(let j=i+1;j<selFiles.length;j++){
       const srcs=nodesIn(selFiles[i]); const dst=new Set(nodesIn(selFiles[j]));
@@ -916,17 +929,20 @@ class Component extends DCLogic {
   // Compute every value the template binds to for the current state (the render model).
   renderVals(){
     const st=this.state, dark=st.dark;
+    // Theme tokens become CSS custom properties spread onto the root element.
     const T=this.tokens(dark);
     const rootStyle={ ...T, position:'relative', width:'100%', height:'100vh', minHeight:'700px', overflow:'hidden',
       display:'flex', flexDirection:'column', background:'var(--bg)', color:'var(--text)',
       fontFamily:"Inter, system-ui, sans-serif", fontSize:'13px',
       userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none' };
 
+    // Current selection: a symbol (bottom panel) takes precedence over the file detail.
     const q=st.query.trim().toLowerCase();
     const isDiff=st.view==='diff';
     const symSel = st.selectedSym ? this.symDetail(st.selectedSym) : null;
     const sel = symSel || this.detail(st.selectedId);
     const selSet=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
+    // Focus = hovered node if any, else the selection; connected = its edge neighbours.
     const focusIds=st.hoverId?new Set([st.hoverId]):selSet;
     const connected=new Set(); this.EDGES.forEach(e=>{ if(selSet.has(e[0]))connected.add(e[1]); if(selSet.has(e[1]))connected.add(e[0]); });
 
@@ -934,6 +950,7 @@ class Component extends DCLogic {
     const orphanSet=new Set(this.NODES.filter(n=>n.orphan).map(n=>n.id));
     this._nodePosCache={};
 
+    // Main-canvas cards: search/filter visibility, selection/focus dimming, and per-node styles + handlers.
     const nodeViews=this.NODES.map(n=>{
       const matchSearch=!q||n.label.toLowerCase().includes(q)||this.KLABEL[n.kind].includes(q);
       const visible=matchSearch && st.filters[n.kind];
@@ -955,6 +972,7 @@ class Component extends DCLogic {
       };
     });
 
+    // Dependency edges: route an orthogonal-ish bezier between card edges, highlighting focused ones.
     const ctr=(id)=>{ const p=this._nodePosCache[id]||{x:0,y:0}; return {x:p.x+this.W/2, y:p.y+this.H/2, l:p.x, r:p.x+this.W, t:p.y, b:p.y+this.H}; };
     const edgeViews=this.EDGES.map(e=>{
       const a=ctr(e[0]), b=ctr(e[1]); const dx=b.x-a.x, dy=b.y-a.y; let d;
@@ -1001,6 +1019,7 @@ class Component extends DCLogic {
         style:`display:flex;align-items:center;gap:0;width:100%;padding:5px 7px;margin-bottom:1px;border:none;cursor:pointer;border-radius:6px;background:${r.sel?'var(--selbg)':'transparent'};opacity:${r.dim?0.45:1}` };
     });
 
+    // Filter chips: one toggle per node kind.
     const fchips=[['entry','Entry'],['file','Files'],['fn','Fns'],['struct','Types']].map(([k,l])=>({
       label:l, color:this.KCOLOR[k], onClick:this.toggleFilter(k),
       style:`display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:7px;cursor:pointer;font-size:11px;font-family:Inter;background:${st.filters[k]?'var(--panel2)':'transparent'};border:1px solid var(--border);color:${st.filters[k]?'var(--text)':'var(--text3)'}` }));
@@ -1033,6 +1052,8 @@ class Component extends DCLogic {
     this._subPosCache={};
     let subW=lay.w, subH=lay.h;
     const selSym=st.selectedSym;
+    // Bottom-panel nodes: start from the auto-layout position (overridable by drag), grow the
+    // canvas to fit, and style for entry/selected/armed/bridge states.
     const subNodes=sg.nodes.map(n=>{
       const lp=lay.pos[n.key]||{x:8,y:8};
       const p=st.subPos[n.key]||lp; this._subPosCache[n.key]=p;

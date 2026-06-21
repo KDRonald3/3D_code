@@ -9,7 +9,14 @@ use std::process;
 
 use codebase_visualizer::{analyze, scan_dir};
 
-/// CLI entry point: parse arguments, scan the directory, analyze it, and print or write the model JSON.
+/// CLI entry point.
+///
+/// Parses command-line arguments (the target `<PATH>`, plus `-o/--output`,
+/// `--pretty`, `--max-file-bytes`, and `-h/--help`), scans the directory with
+/// [`scan_dir`], analyzes the result with [`analyze`], and serializes the model
+/// to JSON. The JSON is written to the `--output` file when given, otherwise
+/// printed to stdout. Exits with a non-zero status on a missing path, an
+/// unknown option, or a scan/write failure.
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut path: Option<PathBuf> = None;
@@ -75,7 +82,7 @@ fn main() {
     }
 }
 
-/// Print CLI usage to stderr.
+/// Print CLI usage and options to stderr.
 fn print_help() {
     eprintln!(
         "Codebase Visualizer — analyzer CLI\n\n\

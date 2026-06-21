@@ -16,17 +16,24 @@ use codebase_visualizer::{analyze, scan_dir, InputFile};
 const INDEX_HTML: &str = include_str!("../../web/index.dc.html");
 const SUPPORT_JS: &str = include_str!("../../web/support.js");
 
+/// JSON body of a `POST /api/scan` request: the project name and the list of
+/// files the browser uploaded when the user added a folder.
 #[derive(Deserialize)]
 struct ScanRequest {
+    /// Optional project name; defaults to `"project"` when missing or blank.
     #[serde(default)]
     name: Option<String>,
+    /// The uploaded files to analyze.
     #[serde(default)]
     files: Vec<FileJson>,
 }
 
+/// A single uploaded file: its path and full text contents.
 #[derive(Deserialize)]
 struct FileJson {
+    /// Path of the file relative to the uploaded folder.
     path: String,
+    /// Full text contents of the file.
     text: String,
 }
 
@@ -122,6 +129,7 @@ fn handle_scan_path(url: &str) -> Response<std::io::Cursor<Vec<u8>>> {
 
 // ── response helpers ────────────────────────────────────────────────────────
 
+/// Alias for the concrete `tiny_http` response type returned by the helpers below.
 type Resp = Response<std::io::Cursor<Vec<u8>>>;
 
 /// Build an HTTP header from a name/value pair.

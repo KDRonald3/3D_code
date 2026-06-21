@@ -5,22 +5,27 @@
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-  // src/react.ts
+  // src/react.ts — accessors for the UMD-loaded React/ReactDOM globals + a createElement shorthand.
+  /** Return the global React object, throwing if the UMD bundle hasn't loaded yet. */
   function getReact() {
     const R = window.React;
     if (!R) throw new Error("dc-runtime: window.React is not available yet");
     return R;
   }
+  /** Return the global ReactDOM object, throwing if the UMD bundle hasn't loaded yet. */
   function getReactDOM() {
     const RD = window.ReactDOM;
     if (!RD) throw new Error("dc-runtime: window.ReactDOM is not available yet");
     return RD;
   }
+  /** Shorthand for React.createElement, resolving React lazily on each call. */
   var h = ((...args) => getReact().createElement(
     ...args
   ));
 
-  // src/parse.ts
+  // src/parse.ts — extract the template/JS/props of a DC app from a DOM document or raw HTML text.
+  /** Parse a live DOM document into a DC descriptor: the `<x-dc>` template HTML,
+   *  the `data-dc-script` body, and any `data-props` (props + $preview). */
   function parseDcDocument(doc) {
     const dc = doc.querySelector("x-dc");
     if (!dc) return null;
@@ -35,6 +40,9 @@
       preview
     };
   }
+  /** Parse raw HTML source text into a DC descriptor, slicing the `<x-dc>` body
+   *  by string indices (to preserve exact template markup) while using DOMParser
+   *  only to read the script's `data-props`. */
   function parseDcText(src) {
     const openMatch = /<x-dc(?:\s[^>]*)?>/.exec(src);
     if (!openMatch) return null;
@@ -53,6 +61,8 @@
       preview
     };
   }
+  /** Parse the JSON `data-props` attribute into `{ props, preview }`, splitting
+   *  `$`-prefixed meta keys (e.g. `$preview`) from the plain author props. */
   function parseDataProps(raw) {
     if (!raw) return { props: null, preview: null };
     let parsed;
@@ -72,6 +82,8 @@
     }
     return { props: Object.keys(rest).length ? rest : null, preview };
   }
+  /** Derive a DC component name from a URL path: the final segment with the
+   *  `.dc.html`/`.html` extension stripped, defaulting to "Root". */
   function dcNameFromPath(pathname) {
     let p = pathname || "";
     try {
@@ -82,7 +94,9 @@
     return base.replace(/\.dc\.html$/, "").replace(/\.html?$/, "") || "Root";
   }
 
-  // src/boot.ts
+  // src/boot.ts — base stylesheets plus boot() which mounts the root DC into the page.
+  /** Runtime base stylesheet: streaming placeholders/shimmer, interpolation
+   *  holes, logic-error overlay, and print normalization. */
   var BASE_CSS = `
     .sc-placeholder{background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.5);
       border-radius:2px;box-sizing:border-box;overflow:hidden}
@@ -126,7 +140,10 @@
       }
     }
   `;
+  /** CSS making the root host fill the viewport for non-preview (full-page) apps. */
   var FULL_PAGE_CSS = "html,body{height:100%;margin:0}#dc-root,#dc-root>.sc-host{height:100%}";
+  /** Determine the root component's name from the current location, falling back
+   *  to the document's baseURI when the path isn't a `.dc.html` file. */
   function rootNameForDocument(doc, loc) {
     let bootPath = loc.pathname || "";
     if (!/\.dc\.html?$/i.test(safeDecode(bootPath))) {
@@ -137,6 +154,7 @@
     }
     return dcNameFromPath(bootPath);
   }
+  /** decodeURIComponent that returns the input unchanged on malformed escapes. */
   function safeDecode(s) {
     try {
       return decodeURIComponent(s);
@@ -144,6 +162,10 @@
       return s;
     }
   }
+  /** Parse the page document, adopt it into the runtime as the root DC, replace
+   *  `<x-dc>` with a `#dc-root` host, and mount the root via ReactDOM. Also
+   *  re-fetches the page to pick up the exact (unmodified) template. Returns the
+   *  root name, or null if the document has no `<x-dc>`. */
   function boot(runtime, doc = document) {
     const parsed = parseDcDocument(doc);
     if (!parsed) return null;
@@ -167,6 +189,8 @@
     }
     const Root = runtime.getDC(rootName);
     const entry = runtime.registry.get(rootName);
+    /** Root React component: subscribes to the root registry entry so prop
+     *  override changes re-render, and renders the root DC with those overrides. */
     function StandaloneRoot() {
       const [, setTick] = React.useState(0);
       React.useEffect(() => {
@@ -185,9 +209,14 @@
     return rootName;
   }
 
-  // src/expr.ts
+  // src/expr.ts — tiny safe expression evaluator for `{{ ... }}` template bindings.
+  /** Matches a leading JS-style identifier. */
   var IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*/;
+  /** Matches an integer or decimal numeric literal. */
   var NUMBER_RE = /^-?\d+(\.\d+)?$/;
+  /** Evaluate a template expression against `vals`: handles parens, `==`/`===`
+   *  (and negations) equality, `!`, literals (bool/null/undefined/number/string),
+   *  and otherwise resolves a dotted/indexed path. No general JS eval. */
   function resolve(vals, src) {
     const expr = String(src).trim();
     if (!expr) return void 0;
@@ -220,6 +249,8 @@
     }
     return resolvePath(vals, expr);
   }
+  /** True if the leading `(` matches the trailing `)`, i.e. the whole expression
+   *  is wrapped in one pair of parens (vs. e.g. `(a)+(b)`). */
   function parensWrapWhole(expr) {
     let depth = 0;
     for (let i = 0; i < expr.length - 1; i++) {
@@ -231,6 +262,8 @@
     }
     return true;
   }
+  /** Find the first top-level (outside brackets/parens) equality operator,
+   *  returning its `{ index, op }` (`==`/`===`/`!=`/`!==`), or null if none. */
   function findTopLevelEquality(expr) {
     let depth = 0;
     for (let i = 0; i < expr.length; i++) {
@@ -246,6 +279,8 @@
     }
     return null;
   }
+  /** Walk a property-access path (`a.b[0].c`, `a[key]`) over `vals`, recursively
+   *  resolving bracket keys; returns undefined on any null/undefined hop. */
   function resolvePath(vals, expr) {
     const head = expr.match(IDENT_RE);
     if (!head) return void 0;
@@ -279,8 +314,11 @@
     return cur;
   }
 
-  // src/encode.ts
+  // src/encode.ts — rewrite author HTML so the HTML parser preserves camelCase attrs/tags, plus attr/css helpers.
+  /** Prefix used to encode camelCase attribute names the HTML parser lowercases. */
   var CAMEL_ATTR = "sc-camel-";
+  /** Map of table/select tags to `sc-raw-*` aliases so they survive being parsed
+   *  outside their required parent context. */
   var RAW_WRAP = {
     select: "sc-raw-select",
     table: "sc-raw-table",
@@ -292,9 +330,11 @@
     th: "sc-raw-th",
     caption: "sc-raw-caption"
   };
+  /** Inverse of RAW_WRAP: `sc-raw-*` alias back to the real tag name. */
   var RAW_UNWRAP = Object.fromEntries(
     Object.entries(RAW_WRAP).map(([k, v]) => [v, k])
   );
+  /** Map of lowercase DOM event attribute names to their React camelCase handlers. */
   var EVENT_MAP = {
     onclick: "onClick",
     onchange: "onChange",
@@ -312,12 +352,18 @@
     ondoubleclick: "onDoubleClick",
     oncontextmenu: "onContextMenu"
   };
+  /** Regex fragment matching a tag's attribute list, respecting quoted values. */
   var ATTRS = `(?:[^>"']|"[^"]*"|'[^']*')*`;
+  /** Matches self-closing `<x-import/>`/`<dc-import/>` so they can be expanded. */
   var IMPORT_SELF_CLOSE_RE = new RegExp(
     "<(x-import|dc-import)(" + ATTRS + ")/>",
     "gi"
   );
+  /** Matches camelCase attribute names (lower then upper) to be kebab-encoded. */
   var CAMEL_ATTR_RE = /(\s)([a-z]+[A-Z][A-Za-z0-9]*)(\s*=)/g;
+  /** Normalize author HTML before parsing: expand self-closing imports, alias
+   *  `<helmet>`→`<sc-helmet>`, kebab-encode camelCase attrs (with `sc-camel-`),
+   *  and rewrite table/select tags to their `sc-raw-*` aliases. */
   function encodeCase(html) {
     html = html.replace(
       IMPORT_SELF_CLOSE_RE,
@@ -337,9 +383,12 @@
     }
     return html;
   }
+  /** Convert a kebab-case string to camelCase (`foo-bar` → `fooBar`). */
   function kebabToCamel(s) {
     return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
   }
+  /** Parse an inline CSS string into a React style object, camelCasing property
+   *  names except CSS custom properties (`--*`). */
   function cssToObj(css) {
     const o = {};
     for (const decl of css.split(";")) {
@@ -350,6 +399,9 @@
     }
     return o;
   }
+  /** Compile an attribute value into a getter of `vals`: a whole-value `{{ }}`
+   *  yields the raw resolved value; mixed text interpolates to a string; a
+   *  literal returns a constant. */
   function compileAttr(raw) {
     const whole = raw.match(/^\s*\{\{([\s\S]+?)\}\}\s*$/);
     if (whole) {
@@ -363,7 +415,11 @@
     return () => raw;
   }
 
-  // src/compile.ts
+  // src/compile.ts — compile encoded template HTML into React element builder functions.
+  /** Read an element's attributes into compiled prop getters, splitting out
+   *  `style-<pseudo>` (registered as pseudo-class rules) and `hint-size`.
+   *  Decodes `sc-camel-*` names and maps DOM attrs/events to React props for
+   *  host elements (vs. passing through for components). */
   function collectProps(node, isComponent, host) {
     const propGetters = [];
     const pseudoClasses = [];
@@ -393,6 +449,7 @@
     }
     return { propGetters, pseudoClasses, hintSize };
   }
+  /** Style properties lifted onto the component's host wrapper for positioning. */
   var HOST_STYLE_PROPS = /* @__PURE__ */ new Set([
     "position",
     "left",
@@ -405,6 +462,8 @@
     "z-index",
     "transform"
   ]);
+  /** Extract only positioning-related declarations (HOST_STYLE_PROPS) from a
+   *  style string/object, for applying to a component's host wrapper. */
   function hostPositionStyle(style) {
     const all = typeof style === "string" ? cssToObj(style) : style != null && typeof style === "object" ? style : null;
     if (!all) return void 0;
@@ -415,11 +474,15 @@
     }
     return Object.keys(out).length ? out : void 0;
   }
+  /** Compile a template's HTML into a `render(vals, ctx)` function: encodes the
+   *  markup, stamps each element with a `data-dc-tpl` index (for the editor),
+   *  builds child builders, and exposes the annotated source as `__annotated`. */
   function compileTemplate(html, host) {
     const tpl = document.createElement("template");
     //! nosemgrep: direct-inner-html-assignment
     tpl.innerHTML = encodeCase(html);
     let tplN = 0;
+    /** Recursively tag every element node with a sequential `data-dc-tpl` id. */
     (function stamp(node) {
       if (node.nodeType === Node.ELEMENT_NODE) {
         node.setAttribute("data-dc-tpl", String(tplN++));
@@ -427,13 +490,17 @@
       for (const c of node.childNodes) stamp(c);
     })(tpl.content);
     const builders = walkChildren(tpl.content, host);
+    /** Render function: invoke each top-level child builder with the values/ctx. */
     const render = ((vals, ctx) => builders.map((b, i) => b(vals || {}, ctx, i)));
     render.__annotated = tpl.innerHTML;
     return render;
   }
+  /** Compile every child node of `node` into builders, dropping null (skipped) ones. */
   function walkChildren(node, host) {
     return [...node.childNodes].map((c) => walk(c, host)).filter((b) => b != null);
   }
+  /** Dispatch a single node to the right builder: text, the special `sc-for`/
+   *  `sc-if`/`x-import`/`sc-helmet`/`dc-import` constructs, or a plain element. */
   function walk(node, host) {
     if (node.nodeType === Node.TEXT_NODE) return walkText(node);
     if (node.nodeType !== Node.ELEMENT_NODE) return null;
@@ -446,13 +513,18 @@
     if (tag === "dc-import") return walkComponent(el, host);
     return walkElement(el, host);
   }
+  /** Dedup set of already-warned unresolved-interpolation keys. */
   var warnedHoles = /* @__PURE__ */ new Set();
+  /** Console-warn once per (component, message) about an unresolved interpolation. */
   function warnUnresolved(ctx, what) {
     const key = (ctx?.__name || "?") + "\0" + what;
     if (warnedHoles.has(key)) return;
     warnedHoles.add(key);
     console.warn("[dc-runtime] " + (ctx?.__name || "template") + ": " + what);
   }
+  /** Build a text node: static text returns a constant; text with `{{ }}` returns
+   *  a builder interpolating each hole — rendering missing values as streaming
+   *  placeholders, editor markers, or empty (with a one-time warning). */
   function walkText(node) {
     const txt = node.nodeValue ?? "";
     if (!txt.includes("{{")) {
@@ -495,6 +567,9 @@
       })
     );
   }
+  /** Build an `sc-for` loop: evaluates `list`, binds each item to `as` (plus
+   *  `$index`), and renders the children per item. Non-arrays warn (or render
+   *  `hint-placeholder-count` empty slots while streaming). */
   function walkFor(el, host) {
     const listGet = compileAttr(el.getAttribute("list") || "");
     const asName = el.getAttribute("as") || "item";
@@ -530,6 +605,8 @@
       );
     };
   }
+  /** Build an `sc-if`: renders children only when `value` is truthy, falling
+   *  back to `hint-placeholder-val` while streaming if the value is undefined. */
   function walkIf(el, host) {
     const valGet = compileAttr(el.getAttribute("value") || "");
     const hintRaw = el.getAttribute("hint-placeholder-val");
@@ -545,6 +622,9 @@
       ) : null;
     };
   }
+  /** Build a `dc-import` (sibling DC) reference: resolves the named DC component
+   *  via the host, passing compiled props, internal hint/tpl/host-style wiring,
+   *  and compiled children. */
   function walkComponent(el, host) {
     const name = el.getAttribute("name") || el.getAttribute("component") || "";
     el.removeAttribute("name");
@@ -567,6 +647,10 @@
       return h(host.component(name), props);
     };
   }
+  /** Build an `x-import` (external module) reference: kicks off loading the JS/JSX
+   *  module at `from`/`src`, then at render time resolves the named export or
+   *  global component, showing a placeholder (with error) until it's available
+   *  or while props are still streaming. Optionally wraps in a positioned host div. */
   function walkXImport(el, host) {
     const globalNameGet = compileAttr(
       el.getAttribute("component-from-global-scope") || ""
@@ -586,6 +670,7 @@
     const kids = hasContent ? walkChildren(el, host) : [];
     const urlBindable = url.includes("{{");
     if (url && !urlBindable) host.loadExternal(kind, url);
+    /** Evaluate a name getter to a string, blanking out any unresolved `{{ }}`. */
     const evalName = (g, vals) => {
       const v = g(vals);
       const s = v == null ? "" : String(v);
@@ -635,6 +720,9 @@
       return wrapper ? h("div", wrapper, h(C, props)) : h(C, props);
     };
   }
+  /** Build a plain HTML element: un-aliases `sc-raw-*` tags, applies compiled
+   *  props (coercing `style` strings, defaulting empty `value`/`checked`), merges
+   *  pseudo-class names, and renders compiled children. */
   function walkElement(el, host) {
     const realTag = RAW_UNWRAP[el.localName] || el.localName;
     const tplId = el.getAttribute("data-dc-tpl");
@@ -657,7 +745,10 @@
     };
   }
 
-  // src/logic.ts
+  // src/logic.ts — the DCLogic base class authors extend, plus evaluation of a DC's logic source.
+  /** Base class (exposed as `DCLogic`/`StreamableLogic`) for a DC's logic: holds
+   *  props/state, defers setState/forceUpdate to its host wrapper, and provides
+   *  React-like lifecycle no-ops and a `renderVals()` for template data. */
   var StreamableLogic = class {
     constructor(props) {
       __publicField(this, "props");
@@ -666,16 +757,21 @@
       __publicField(this, "__host");
       this.props = props || {};
     }
+    /** Merge a state update (object or updater fn) via the host and re-render. */
     setState(update, cb) {
       this.__host && this.__host.__setLogicState(update, cb);
     }
+    /** Force the host wrapper to re-render. */
     forceUpdate() {
       this.__host && this.__host.forceUpdate();
     }
+    /** Lifecycle hook (override): runs after the component mounts. */
     componentDidMount() {
     }
+    /** Lifecycle hook (override): runs after the component updates. */
     componentDidUpdate(_prevProps) {
     }
+    /** Lifecycle hook (override): runs before the component unmounts. */
     componentWillUnmount() {
     }
     /** The flat object the template renders against (merged over props). */
@@ -683,6 +779,8 @@
       return {};
     }
   };
+  /** Evaluate a DC's `<script data-dc-script>` source in a sandbox with `DCLogic`/
+   *  `StreamableLogic`/`React` injected, returning its `Component` class if defined. */
   function evalDcLogic(src) {
     //! nosemgrep: eval-and-function-constructor
     const fn = new Function(
@@ -694,7 +792,8 @@
     return fn(StreamableLogic, StreamableLogic, getReact());
   }
 
-  // src/component.ts
+  // src/component.ts — the React host component (error boundary + reactive logic) and the DC component factory.
+  /** Shallow-compare two props objects, ignoring `children`. */
   function shallowEqual(a, b) {
     if (!b) return false;
     const ak = Object.keys(a).filter((k) => k !== "children");
@@ -703,6 +802,8 @@
     for (const k of ak) if (a[k] !== b[k]) return false;
     return true;
   }
+  /** Placeholder box shown while a component is loading/streaming or has errored,
+   *  sized from `hintSize` ("width,height") and optionally showing an error message. */
   function Placeholder({
     name,
     hintSize,
@@ -724,15 +825,25 @@
       ) : null
     );
   }
+  /** Convert a `hintSize` ("width,height") into `{ minWidth, minHeight }` style. */
   function hintToMin(hint) {
     if (!hint) return void 0;
     const [w, hgt] = hint.split(",");
     return { minWidth: w.trim(), minHeight: hgt && hgt.trim() };
   }
+  /** Build the component layer over a registry: returns `getDC(name)` (a memoized
+   *  React dispatcher per DC name) and the `StreamableComponent` host class.
+   *  `ensureFetched` lazily loads a referenced sibling DC's source. */
   function createComponentFactory(registry, ensureFetched) {
     const React = getReact();
+    /** Context carrying the chain of ancestor DC names, used for cycle detection. */
     const AncestorContext = React.createContext([]);
+    /** Host React component for one DC instance: owns the logic instance, acts as
+     *  an error boundary, subscribes to its registry entry for reactive updates,
+     *  and renders the compiled template (or a placeholder/error). */
     class StreamableComponent extends React.Component {
+      /** Initialize state/version, wire the reactive subscription callback, build
+       *  the logic instance, and ensure this DC's source has been fetched. */
       constructor(props) {
         super(props);
         __publicField(this, "__name");
@@ -759,6 +870,7 @@
         __publicField(this, "logic");
         this.__name = props.__name;
         this.state = { __v: 0, __err: null };
+        /** Subscription callback: clears any prior error and re-renders on registry bump. */
         this.__sub = () => {
           if (this.state.__err) this.setState({ __err: null });
           this.forceUpdate();
@@ -772,6 +884,7 @@
       static getDerivedStateFromError(e) {
         return { __err: e instanceof Error && e.message ? e.message : String(e) };
       }
+      /** Error-boundary hook: logs the render error and its component stack. */
       componentDidCatch(e, info) {
         console.error(
           "[dc-runtime] render error in <" + this.__name + ">:",
@@ -808,6 +921,7 @@
         const { __name, __hintSize, __tplId, __hostStyle, ...rest } = this.props;
         return rest;
       }
+      /** Apply a logic setState (object or updater fn) and bump the version to re-render. */
       __setLogicState(update, cb) {
         const prev = this.logic.state;
         const patch = typeof update === "function" ? update(prev) : update;
@@ -834,6 +948,7 @@
         this.__makeLogic(Next, this.logic.state);
         this.__needsDidMount = true;
       }
+      /** Register the reactive subscription and fire the logic's didMount hook. */
       componentDidMount() {
         registry.get(this.__name).subs.add(this.__sub);
         try {
@@ -842,6 +957,8 @@
           console.error(e);
         }
       }
+      /** Refresh logic props and fire its deferred didMount (after a logic swap)
+       *  or its didUpdate hook. */
       componentDidUpdate(prevProps) {
         this.logic.props = this.__userProps();
         if (this.__needsDidMount) {
@@ -860,6 +977,7 @@
           }
         }
       }
+      /** Remove the reactive subscription and fire the logic's willUnmount hook. */
       componentWillUnmount() {
         registry.get(this.__name).subs.delete(this.__sub);
         if (!this.__needsDidMount) {
@@ -870,6 +988,9 @@
           }
         }
       }
+      /** Render the host wrapper: handles circular-import and error states, shows
+       *  a placeholder until the template exists, reconciles the logic class, then
+       *  renders the compiled template against props merged with `renderVals()`. */
       render() {
         const r = registry.get(this.__name);
         const cls = "sc-host" + (r.htmlStreaming ? " sc-streaming-html" : "") + (r.jsStreaming ? " sc-streaming-js" : "");
@@ -946,10 +1067,15 @@
       }
     }
     __publicField(StreamableComponent, "contextType", AncestorContext);
+    /** Cache of per-name dispatcher components so each DC name is stable across renders. */
     const named = /* @__PURE__ */ new Map();
+    /** Get (or create) the React component for a DC name: a memoized dispatcher
+     *  that subscribes to the registry and renders a `StreamableComponent`. */
     function getDC(name) {
       const hit = named.get(name);
       if (hit) return hit;
+      /** Thin wrapper that subscribes to the DC's registry entry, ensures its
+       *  source is fetched, and renders the host component with `__name` set. */
       function Dispatcher(p) {
         const [, setTick] = React.useState(0);
         React.useEffect(() => {
@@ -972,12 +1098,16 @@
     };
   }
 
-  // src/external.ts
+  // src/external.ts — load and resolve external JS/JSX modules referenced by x-import.
+  /** True for a custom-element tag name (hyphenated, no dotted path). */
   var isCustomElementName = (n) => !n.includes(".") && n.includes("-");
+  /** True if a value is renderable by React: a (non-DOM-element) function/class
+   *  or a React element-like object (symbol `$$typeof`). */
   function isRenderableType(g) {
     if (typeof g === "function") return !isElementClass(g);
     return typeof g === "object" && g !== null && typeof g.$$typeof === "symbol";
   }
+  /** Resolve a dotted path (`Foo.Bar`) from a root object, or undefined if absent. */
   function resolveDottedPath(root, name) {
     let cur = root;
     for (const seg of name.split(".")) {
@@ -986,14 +1116,21 @@
     }
     return cur;
   }
+  /** CDN URL for the Babel standalone bundle used to transform JSX/TSX modules. */
   var BABEL_URL = "https://unpkg.com/@babel/standalone@7.26.4/babel.min.js";
+  /** Interval between polls when waiting for a global component to appear. */
   var GLOBAL_POLL_INTERVAL_MS = 50;
+  /** Max time to poll for a global component before giving up. */
   var GLOBAL_POLL_TIMEOUT_MS = 3e4;
+  /** Build the external-module subsystem: caches loaded modules and exposes
+   *  `load`, `resolve`, `resolveGlobal`, and `getError`. `onResolved` is called
+   *  whenever something resolves so the runtime can re-render. */
   function createExternalModules(onResolved) {
     const cache = /* @__PURE__ */ new Map();
     let babelLoading = null;
     const reportedMissing = /* @__PURE__ */ new Map();
     const polling = /* @__PURE__ */ new Set();
+    /** Lazily inject the Babel standalone script (once), resolving when ready. */
     function ensureBabel() {
       if (window.Babel) return Promise.resolve();
       if (babelLoading) return babelLoading;
@@ -1007,6 +1144,9 @@
       });
       return babelLoading;
     }
+    /** Fetch a module at `url`, optionally Babel-transform JSX, evaluate it in a
+     *  CommonJS-ish sandbox, and cache its exports plus any new window globals.
+     *  Errors are cached too. Notifies `onResolved` on completion. */
     function load(kind, url) {
       if (cache.has(url)) return;
       cache.set(url, null);
@@ -1060,6 +1200,8 @@
         onResolved();
       });
     }
+    /** Resolve a named export (or default/global) from a loaded module to a
+     *  function component, recording and warning once if it's missing. */
     function resolve2(url, name) {
       const entry = cache.get(url);
       if (!entry) return null;
@@ -1086,11 +1228,14 @@
       }
       return null;
     }
+    /** Poll for a global component / custom element `name` to appear on window,
+     *  calling `onResolved` when found or warning after the timeout. */
     function waitForGlobal(name) {
       if (polling.has(name)) return;
       polling.add(name);
       const started = Date.now();
       const isCE = isCustomElementName(name);
+      /** One poll iteration: resolve and finish, time out, or schedule the next. */
       const tick = () => {
         const found = isCE ? customElements.get(name) : isRenderableType(resolveDottedPath(window, name));
         if (found) {
@@ -1110,6 +1255,9 @@
       };
       setTimeout(tick, GLOBAL_POLL_INTERVAL_MS);
     }
+    /** Resolve a component referenced by global name (custom element tag or
+     *  window path), with or without an associated module URL; starts polling
+     *  if not yet present. Returns the component, the tag name, or null. */
     function resolveGlobal(url, name) {
       const isCE = isCustomElementName(name);
       if (!url) {
@@ -1144,6 +1292,7 @@
       }
       return name;
     }
+    /** Return any recorded load/resolve error message for a `url`+`name`, or null. */
     function getError(url, name) {
       const entry = cache.get(url);
       if (entry?.error) return entry.error;
@@ -1151,6 +1300,7 @@
     }
     return { load, resolve: resolve2, resolveGlobal, getError };
   }
+  /** True if `g` is a class extending HTMLElement (a custom-element constructor). */
   function isElementClass(g) {
     try {
       return typeof g === "function" && typeof HTMLElement !== "undefined" && g.prototype instanceof HTMLElement;
@@ -1159,10 +1309,17 @@
     }
   }
 
-  // src/helmet.ts
+  // src/helmet.ts — manage `<sc-helmet>` contents by syncing them into document <head>.
+  /** Build the helmet manager: tracks once-mounted scripts/links/metas and live
+   *  (updatable) head elements. `isStreaming(name)` guards partial trailing nodes. */
   function createHelmetManager(doc, isStreaming) {
+    /** Keys of head elements appended once (scripts, links, metas). */
     const mounted = /* @__PURE__ */ new Set();
+    /** Map of (component|index) → live head element kept in sync on each render. */
     const live = /* @__PURE__ */ new Map();
+    /** Compile an `<sc-helmet>` node into a builder that, on render, appends its
+     *  one-time children and keeps its live children (title/etc.) synced in <head>,
+     *  skipping a possibly-incomplete trailing child while streaming. Renders nothing. */
     function compile(node) {
       const raw = [...node.children];
       const helmetClosed = node.nextSibling != null || node.parentNode?.nextSibling != null;
@@ -1211,11 +1368,15 @@
     return { compile };
   }
 
-  // src/pseudo.ts
+  // src/pseudo.ts — generate CSS classes for pseudo-class/element styles (style-hover, etc.).
+  /** Build a lazy stylesheet helper. Returns a function that, given a pseudo
+   *  (`hover`/`before`/...) and CSS, inserts a rule under a fresh generated class
+   *  (deduped by pseudo+css) and returns that class name. */
   function createPseudoSheet(doc) {
     let el = null;
     const cache = /* @__PURE__ */ new Map();
     let n = 0;
+    /** Return (creating once) the generated class name for a pseudo + css pair. */
     return (pseudo, css) => {
       const k = pseudo + "|" + css;
       const hit = cache.get(k);
@@ -1232,9 +1393,13 @@
     };
   }
 
-  // src/registry.ts
+  // src/registry.ts — per-DC state store (template, logic, streaming flags) with reactive subscriptions.
+  /** Create the registry of DC entries with `get`/`bump`/`bumpAll`. Each entry
+   *  holds compiled template, Logic class, streaming flags, a version, and the
+   *  set of subscriber callbacks notified on bump. */
   function createRegistry() {
     const entries = /* @__PURE__ */ Object.create(null);
+    /** Get (lazily creating) the entry for a DC name. */
     function get(name) {
       return entries[name] || (entries[name] = {
         html: "",
@@ -1247,6 +1412,7 @@
         fetched: false
       });
     }
+    /** Increment a DC entry's version and notify its subscribers (re-render). */
     function bump(name) {
       const r = get(name);
       r.ver++;
@@ -1256,14 +1422,18 @@
       entries,
       get,
       bump,
+      /** Bump every registered DC (used when an external module resolves). */
       bumpAll() {
         for (const n in entries) bump(n);
       }
     };
   }
 
-  // src/runtime.ts
+  // src/runtime.ts — wire all subsystems together into the runtime API (update/stream/boot helpers).
+  /** Directory (relative to the page) where sibling `<Name>.dc.html` files live. */
   var COMPONENT_DIR = ".";
+  /** Assemble the runtime: registry, pseudo-sheet, helmet, external modules, and
+   *  component factory, exposing a host object plus update/streaming/props APIs. */
   function createRuntime(doc = document) {
     const registry = createRegistry();
     const pseudoClass = createPseudoSheet(doc);
@@ -1273,6 +1443,8 @@
     );
     const external = createExternalModules(() => registry.bumpAll());
     const factory = createComponentFactory(registry, ensureFetched);
+    /** Capabilities the template builders depend on (component/placeholder/helmet
+     *  resolution, external-module access, pseudo-class registration). */
     const host = {
       component: (name) => factory.getDC(name),
       placeholder: (props) => h(Placeholder, props),
@@ -1283,6 +1455,8 @@
       resolveExternalError: (url, name) => external.getError(url, name),
       pseudoClass
     };
+    /** Lazily fetch a referenced sibling `<Name>.dc.html` once, parsing and
+     *  adopting its template/logic/props into the registry. */
     function ensureFetched(name) {
       const r = registry.get(name);
       if (r.fetched) return;
@@ -1323,6 +1497,7 @@
         )
       );
     }
+    /** Set a DC's template HTML, compile it (logging compile errors), and bump. */
     function updateHtml(name, html) {
       const r = registry.get(name);
       r.html = html;
@@ -1333,6 +1508,8 @@
       }
       registry.bump(name);
     }
+    /** Evaluate a DC's logic source into its Logic class (recording eval/shape
+     *  errors), guarding against out-of-order updates via a sequence number, then bump. */
     function updateJs(name, src) {
       const r = registry.get(name);
       const seq = r.jsSeq = (r.jsSeq || 0) + 1;
@@ -1357,6 +1534,8 @@
       }
       registry.bump(name);
     }
+    /** Toggle a DC's html/js streaming flag, update the global
+     *  `sc-dc-streaming` class if any DC is streaming, and bump. */
     function setStreaming(name, kind, on) {
       const r = registry.get(name);
       if (kind === "html") r.htmlStreaming = !!on;
@@ -1372,6 +1551,8 @@
       doc.documentElement.classList.toggle("sc-dc-streaming", any);
       registry.bump(name);
     }
+    /** Apply an incoming update (possibly streaming) for a DC's html, js, or
+     *  props — the main entry point DC tooling pushes content through. */
     function dcUpdate(name, kind, content, streaming) {
       if (streaming) registry.get(name).fetched = true;
       if (kind === "html") {
@@ -1388,10 +1569,12 @@
         registry.bump(name);
       }
     }
+    /** Store external prop overrides for a DC (used by the standalone root) and bump. */
     function setProps(name, overrides) {
       registry.get(name).propOverrides = overrides && typeof overrides === "object" ? { ...overrides } : null;
       registry.bump(name);
     }
+    /** Adopt a parsed DC descriptor's props/preview/template/logic into the registry. */
     function adoptParsed(name, parsed) {
       if (!parsed) return;
       const r = registry.get(name);
@@ -1408,28 +1591,33 @@
       dcUpdate,
       setProps,
       adoptParsed,
+      /** Mark a DC as already fetched to suppress the sibling auto-fetch. */
       markFetched: (name) => {
         registry.get(name).fetched = true;
       },
+      /** Return the encoded, `data-dc-tpl`-annotated template source (for the editor). */
       annotatedTemplate: (name) => {
         const r = registry.get(name);
         return r.tpl && r.tpl.__annotated || null;
       },
+      /** Return the original (decoded) template HTML source for a DC. */
       templateSource: (name) => registry.get(name).html || null,
       StreamableLogic
     };
   }
 
-  // src/index.ts
+  // src/index.ts — entry point: load React UMD, expose the window API, and boot the page.
   var REACT_URL = "https://unpkg.com/react@18.3.1/umd/react.production.min.js";
   var REACT_SRI = "sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z";
   var REACT_DOM_URL = "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js";
   var REACT_DOM_SRI = "sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1";
+  /** Inject CSS hiding the raw `<x-dc>` markup before it's mounted (avoids FOUC). */
   function hideRawTemplate() {
     const s = document.createElement("style");
     s.textContent = "x-dc{display:none!important}";
     document.head.appendChild(s);
   }
+  /** Load an external script with SRI integrity, resolving on load / rejecting on error. */
   function loadScript(src, integrity) {
     return new Promise((resolve2, reject) => {
       //! nosemgrep: create-script-element
@@ -1443,6 +1631,7 @@
       document.head.appendChild(s);
     });
   }
+  /** Load the React and ReactDOM UMD bundles (with SRI) unless already present. */
   function loadReactUmd() {
     const w = window;
     if (w.React && w.ReactDOM) return Promise.resolve();
@@ -1451,12 +1640,16 @@
       loadScript(REACT_DOM_URL, REACT_DOM_SRI)
     ]).then(() => void 0);
   }
+  /** Initialize the runtime: inject base CSS, expose the `__dc*` window API for
+   *  host tooling, and boot the page now or on DOMContentLoaded. */
   function init() {
     const runtime = createRuntime(document);
     let rootName = "Root";
     const baseCss = document.createElement("style");
     baseCss.textContent = BASE_CSS;
     document.head.prepend(baseCss);
+    /** Notify a parent frame (the host editor) that the root booted, posting its
+     *  name, props metadata, and preview config. */
     const notifyHost = () => {
       if (window.parent === window) return;
       const r = runtime.registry.entries[rootName];
@@ -1474,10 +1667,13 @@
       }
     };
     const api = {
+      /** Push a streaming/complete html/js/props update for a DC; re-notify the
+       *  host when the root's props finish updating. */
       __dcUpdate: (name, kind, content, streaming) => {
         runtime.dcUpdate(name, kind, content, streaming);
         if (name === rootName && !streaming && kind === "props") notifyHost();
       },
+      /** Apply external prop overrides for a DC (host-driven preview props). */
       __dcSetProps: (name, overrides) => runtime.setProps(name, overrides),
       /** Name of the component currently mounted as the page root — DC tools
        *  push their template-stream here when targeting "the open page". */
@@ -1490,11 +1686,13 @@
       __dcAnnotatedTemplate: (name) => runtime.annotatedTemplate(name),
       /** Editor bridge — the *original* (decoded) template source. */
       __dcTemplateSource: (name) => runtime.templateSource(name),
+      /** Boot the page (mount the root DC) and notify the host of the result. */
       __dcBoot: () => {
         rootName = boot(runtime, document) ?? rootName;
         notifyHost();
       },
       __dcRegistry: runtime.registry.entries,
+      /** Return the React component for a DC name (for host-side composition). */
       getDC: (name) => runtime.getDC(name),
       // `DCLogic` is the documented base class name; `StreamableLogic` is the
       // implementation alias kept for any project that already references it.

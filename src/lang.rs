@@ -6,6 +6,8 @@ use std::path::Path;
 
 use super::{FileInfo, FuncSym, TypeSym};
 
+/// A source language supported by the heuristic analyzer; selects the
+/// per-language rules for detection, symbol extraction and highlighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     Rust,

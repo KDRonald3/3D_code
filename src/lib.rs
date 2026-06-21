@@ -22,138 +22,226 @@ use lang::Lang;
 /// A source file handed to the analyzer (path is repo-relative).
 #[derive(Debug, Clone)]
 pub struct InputFile {
+    /// Repo-relative path to the file (forward-slash separated).
     pub path: String,
+    /// Full UTF-8 contents of the file.
     pub text: String,
 }
 
 // ── Serialised output model (matches the front-end data contract) ──────────
 
+/// Top-level analysis result; serialises to the exact JSON the front-end consumes.
 #[derive(Debug, Serialize)]
 pub struct Model {
+    /// Schema version of the emitted JSON.
     pub version: &'static str,
+    /// Repository / project display name.
     #[serde(rename = "repoName")]
     pub repo_name: String,
+    /// Dominant language (by file count), lowercased.
     pub language: String,
+    /// Plain-English architecture summary paragraph.
     pub arch: String,
+    /// File nodes with their canvas positions and metadata.
     pub nodes: Vec<NodeOut>,
+    /// Directed file-to-file dependency edges as `[from_id, to_id]`.
     pub edges: Vec<[String; 2]>,
+    /// Per-file inspector detail, keyed by node id.
     pub detail: BTreeMap<String, DetailOut>,
+    /// Folder grouping for the left-panel tree.
     pub folders: Vec<FolderOut>,
+    /// Per-file function/struct sub-graphs, keyed by node id.
     pub sub: BTreeMap<String, SubOut>,
+    /// Cross-file function-call edges as `[from_file, from_fn, to_file, to_fn]`.
     pub fnx: Vec<[String; 4]>,
+    /// Cross-file type-reference edges as `[from_file, from_type, to_file, to_type]`.
     pub fieldx: Vec<[String; 4]>,
 }
 
+/// A single file node positioned on the visualizer canvas.
 #[derive(Debug, Serialize)]
 pub struct NodeOut {
+    /// Stable unique node id.
     pub id: String,
+    /// Human-friendly node label (filename).
     pub label: String,
+    /// Classified role: `entry`, `struct`, `fn` or `file`.
     pub kind: String,
+    /// Canvas x coordinate.
     pub x: f64,
+    /// Canvas y coordinate.
     pub y: f64,
+    /// Lines of code in the file.
     pub loc: usize,
+    /// Optional diff marker (unused by the analyzer; reserved for the front-end).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    /// True when no live callers reach this module (possible dead code).
     pub orphan: bool,
 }
 
+/// Inspector panel detail for one file.
 #[derive(Debug, Serialize)]
 pub struct DetailOut {
+    /// Repo-relative path.
     pub path: String,
+    /// Plain-English summary of the file's role.
     pub summary: String,
+    /// Syntax-highlighted code snippet as `(token_class, text)` pairs.
     pub code: Vec<(String, String)>,
+    /// Lines of code in the file.
     pub loc: usize,
+    /// Humanised descriptions of tests that exercise this file.
     pub tests: Vec<String>,
+    /// Labels of files that depend on this one.
     pub callers: Vec<String>,
+    /// Labels of files this one depends on.
     pub callees: Vec<String>,
+    /// Risk notes (large module, high fan-in, orphan, unsafe, …).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub risks: Vec<String>,
+    /// UI badges as `(label, severity)` pairs (`r` = risk, `n` = neutral).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub badges: Vec<(String, String)>,
 }
 
+/// A folder grouping of file ids for the left-panel tree.
 #[derive(Debug, Serialize)]
 pub struct FolderOut {
+    /// Directory name (`.` for the repo root).
     pub name: String,
+    /// File node ids contained in this folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<String>>,
+    /// Vendored/third-party file ids (reserved; currently always `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor: Option<Vec<String>>,
 }
 
+/// The bottom-panel sub-graph for one file: its functions and types.
 #[derive(Debug, Serialize)]
 pub struct SubOut {
+    /// Functions defined in the file.
     pub fns: Vec<FnOut>,
+    /// Types (structs/enums) defined in the file.
     pub structs: Vec<StructOut>,
 }
 
+/// A function node within a file's sub-graph.
 #[derive(Debug, Serialize)]
 pub struct FnOut {
+    /// Unique function symbol id.
     pub id: String,
+    /// Function name.
     pub label: String,
+    /// Signature (defaults to `()` when unknown).
     pub sig: String,
+    /// Ids of sibling functions in the same file that this one calls.
     pub calls: Vec<String>,
+    /// Syntax-highlighted snippet as `(token_class, text)` pairs.
     pub code: Vec<(String, String)>,
+    /// Lines of code in the function body.
     pub loc: usize,
+    /// Doc comment, if any.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub doc: String,
 }
 
+/// A type (struct/enum) node within a file's sub-graph.
 #[derive(Debug, Serialize)]
 pub struct StructOut {
+    /// Unique type symbol id.
     pub id: String,
+    /// Type name.
     pub label: String,
+    /// Signature / declaration line.
     pub sig: String,
+    /// Ids of sibling types in the same file that this one references.
     pub fields: Vec<String>,
+    /// Syntax-highlighted snippet as `(token_class, text)` pairs.
     pub code: Vec<(String, String)>,
+    /// Lines of code in the type body.
     pub loc: usize,
+    /// Doc comment, if any.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub doc: String,
 }
 
 // ── Internal working types ─────────────────────────────────────────────────
 
+/// A function/method symbol extracted from a file during the first pass.
 #[derive(Debug, Clone)]
 struct FuncSym {
+    /// Unique id (file id + function name based).
     id: String,
+    /// Function name.
     name: String,
+    /// 1-based line where the function starts.
     line: usize,
+    /// Extracted signature text.
     sig: String,
+    /// Doc comment preceding the function.
     doc: String,
+    /// Source of the function body (used for call extraction).
     body: String,
+    /// True when this is a test function.
     is_test: bool,
+    /// True when the function is public.
     is_pub: bool,
 }
 
+/// A type (struct/enum/alias) symbol extracted from a file during the first pass.
 #[derive(Debug, Clone)]
 struct TypeSym {
+    /// Unique id (file id + type name based).
     id: String,
+    /// Type name.
     name: String,
+    /// 1-based line where the type starts.
     line: usize,
+    /// Extracted signature / declaration text.
     sig: String,
+    /// Doc comment preceding the type.
     doc: String,
+    /// Source of the type body (used for type-reference extraction).
     body: String,
 }
 
+/// All analyzer state computed for a single file (the central working record).
 #[derive(Debug)]
 struct FileInfo {
+    /// Stable unique node id.
     id: String,
+    /// Human-friendly display label.
     label: String,
+    /// Repo-relative path.
     path: String,
+    /// Parent directory (empty for root-level files).
     dir: String,
+    /// Detected language.
     lang: Lang,
+    /// Full file contents.
     text: String,
+    /// Lines of code.
     loc: usize,
+    /// Functions defined in the file.
     funcs: Vec<FuncSym>,
+    /// Types defined in the file.
     types: Vec<TypeSym>,
+    /// File-level doc comment, if any.
     file_doc: String,
+    /// Classified role: `entry`, `struct`, `fn` or `file`.
     kind: String,
+    /// True when the file performs I/O.
     has_io: bool,
+    /// True when the file contains `unsafe` blocks.
     has_unsafe: bool,
     /// lowercase identifier set appearing in this file (for mention edges)
     idents: HashSet<String>,
 }
 
+/// Directory names skipped while walking the source tree (vendored deps, build
+/// output, VCS metadata, editor settings).
 const IGNORED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
