@@ -402,14 +402,22 @@ class Component extends DCLogic {
   // ── Live data model (populated by the Rust analyzer via /api/scan) ──
   // The app opens empty; adding a folder replaces this model.
   emptyModel(){ return { repoName:'', arch:'', nodes:[], edges:[], detail:{}, folders:[], sub:{}, fnx:[], fieldx:[] }; }
+  // File nodes (main-canvas cards) from the loaded model.
   get NODES(){ return this.state.model.nodes || []; }
+  // File-level dependency edges, [fromId, toId].
   get EDGES(){ return this.state.model.edges || []; }
+  // Per-file inspector details, keyed by node id.
   get DETAIL(){ return this.state.model.detail || {}; }
+  // Folder groups for the left-panel layer tree.
   get FOLDERS(){ return this.state.model.folders || []; }
+  // Per-file function/struct sub-graphs (bottom panel).
   get SUB(){ return this.state.model.sub || {}; }
+  // Cross-file function-call edges.
   get FNX(){ return this.state.model.fnx || []; }
+  // Cross-file struct-composition edges.
   get FIELDX(){ return this.state.model.fieldx || []; }
 
+  // On mount: follow the OS dark-mode preference and restore recent projects.
   componentDidMount(){
     try{ this._mql=window.matchMedia('(prefers-color-scheme: dark)');
       this._onmql=(e)=>{ if(!this.state.userSet) this.setState({dark:e.matches}); };
@@ -417,10 +425,14 @@ class Component extends DCLogic {
     }catch(e){}
     this._loadRecent();
   }
+  // Detach the dark-mode media listener.
   componentWillUnmount(){ if(this._mql) this._mql.removeEventListener('change', this._onmql); }
 
+  // Ref to the root element (used to measure rects).
   setRoot=(el)=>{ this.root=el; };
+  // Toggle light/dark and pin it so the media query stops overriding.
   toggleTheme=()=>this.setState(s=>({dark:!s.dark, userSet:true}));
+  // Select a file node; shift-click multi-selects; clears symbol selection and any armed card.
   select=(id)=>(e)=>this.setState(st=>{
     if(e&&e.shiftKey){
       const set=new Set(st.selectedSet&&st.selectedSet.length?st.selectedSet:[st.selectedId]);
@@ -431,12 +443,19 @@ class Component extends DCLogic {
   });
   // select a function / data-structure node in the bottom panel (Inspector shows its source)
   selectSym=(key)=>()=>this.setState({selectedSym:key});
+  // Click a bottom-panel node -> select its symbol (suppressed right after a drag).
   onSubNodeClick=(key)=>(e)=>{ if(this._justDraggedSub){ this._justDraggedSub=false; return; } this.setState({selectedSym:key, armedSub:null}); };
+  // Track the hovered bottom-panel node (drives edge highlighting).
   setSubHover=(key)=>()=>this.setState({subHover:key});
+  // Zoom the bottom panel in (cap 2x).
   subZoomIn=()=>this.setState(s=>({subZoom:Math.min(2,+(s.subZoom+0.15).toFixed(2))}));
+  // Zoom the bottom panel out (floor 0.5x).
   subZoomOut=()=>this.setState(s=>({subZoom:Math.max(0.5,+(s.subZoom-0.15).toFixed(2))}));
+  // Reset bottom-panel zoom and pan.
   subZoomReset=()=>this.setState({subZoom:1, subPanX:0, subPanY:0});
+  // Set the multi-file scope mode (union/single/connecting/bridge).
   setSubScope=(m)=>()=>this.setState({subScope:m});
+  // Choose which selected file the 'By file' mode shows.
   onPickFile=(e)=>this.setState({subFilePick:e.target.value});
   // Bottom-panel node — a plain drag pans the panel; a long-press (or armed by
   // double-click) then drag moves only that node; a click selects the symbol.
@@ -451,6 +470,7 @@ class Component extends DCLogic {
     window.addEventListener('pointermove', this.onSubNodeMove);
     window.addEventListener('pointerup', this.onSubNodeUp);
   };
+  // Bottom-panel node drag: below threshold do nothing; first move starts a pan (plain) or moves the node (armed).
   onSubNodeMove=(e)=>{
     if(!this._sd) return;
     const dx=e.clientX-this._sd.sx, dy=e.clientY-this._sd.sy;
@@ -461,17 +481,26 @@ class Component extends DCLogic {
     if(this._sd.mode==='pan'){ this.setState({ subPanX:this._sd.pox+(e.clientX-this._sd.sx), subPanY:this._sd.poy+(e.clientY-this._sd.sy) }); return; }
     if(this._sd.mode==='node'){ const z=this._sd.z; this._sd.moved=true; this.setState(st=>({subPos:{...st.subPos,[this._sd.key]:{x:this._sd.ox+dx/z,y:this._sd.oy+dy/z}}})); }
   };
+  // End a bottom-panel node gesture; flag a drag so the trailing click doesn't select.
   onSubNodeUp=()=>{ clearTimeout(this._sLp); if(this._sd&&(this._sd.mode==='node'||this._sd.mode==='pan'))this._justDraggedSub=true; this._sd=null; this.setState({subPanning:false, draggingSub:null}); window.removeEventListener('pointermove',this.onSubNodeMove); window.removeEventListener('pointerup',this.onSubNodeUp); };
+  // Track the hovered main-canvas node (drives edge highlighting).
   setHover=(id)=>()=>this.setState({hoverId:id});
+  // Update the layer/canvas search query.
   onSearch=(e)=>this.setState({query:e.target.value});
+  // Show the map view (and exit func/ds full view).
   setMap=()=>this.setState({view:'map', subFullView:false});
+  // Show the diff view.
   setDiff=()=>this.setState({view:'diff'});
+  // Toggle visibility of a node kind (entry/file/fn/struct).
   toggleFilter=(k)=>()=>this.setState(s=>({filters:{...s.filters,[k]:!s.filters[k]}}));
+  // Collapse/expand a folder group in the layer tree.
   toggleFolder=(name)=>()=>this.setState(s=>({collapsed:{...s.collapsed,[name]:!s.collapsed[name]}}));
 
   // ── Resizable / collapsible sidebars (min width, no max) ──
   stopProp=(e)=>{ e.stopPropagation(); };
+  // Show/hide the left Layers sidebar.
   toggleLeft=()=>this.setState(s=>({leftOpen:!s.leftOpen}));
+  // Show/hide the right Inspector sidebar.
   toggleRight=()=>this.setState(s=>({rightOpen:!s.rightOpen}));
   // Fixed top-bar panel-toggle icon (a panel rectangle with a side divider).
   panelIcon(side, active){
@@ -481,14 +510,23 @@ class Component extends DCLogic {
       R('rect',{key:'r',x:1.6,y:2.6,width:12.8,height:10.8,rx:2.4,stroke:col,strokeWidth:1.5}),
       R('line',{key:'l',x1:lx,y1:2.6,x2:lx,y2:13.4,stroke:col,strokeWidth:1.5}));
   }
+  // Start dragging the left sidebar boundary to resize it (min width, no max).
   onLeftResizeDown=(e)=>{ if(!this.state.leftOpen) return; e.preventDefault(); this._lr={ sx:e.clientX, ow:this.state.leftW }; window.addEventListener('pointermove', this.onLeftResizeMove); window.addEventListener('pointerup', this.onLeftResizeUp); };
+  // Resize the left sidebar to follow the cursor.
   onLeftResizeMove=(e)=>{ if(!this._lr) return; this.setState({ leftW:Math.max(this.LEFT_MIN, this._lr.ow+(e.clientX-this._lr.sx)) }); };
+  // Finish the left-sidebar resize.
   onLeftResizeUp=()=>{ this._lr=null; window.removeEventListener('pointermove',this.onLeftResizeMove); window.removeEventListener('pointerup',this.onLeftResizeUp); };
+  // Start dragging the right sidebar boundary to resize it (min width, no max).
   onRightResizeDown=(e)=>{ if(!this.state.rightOpen) return; e.preventDefault(); this._rr={ sx:e.clientX, ow:this.state.rightW }; window.addEventListener('pointermove', this.onRightResizeMove); window.addEventListener('pointerup', this.onRightResizeUp); };
+  // Resize the right sidebar to follow the cursor.
   onRightResizeMove=(e)=>{ if(!this._rr) return; this.setState({ rightW:Math.max(this.RIGHT_MIN, this._rr.ow-(e.clientX-this._rr.sx)) }); };
+  // Finish the right-sidebar resize.
   onRightResizeUp=()=>{ this._rr=null; window.removeEventListener('pointermove',this.onRightResizeMove); window.removeEventListener('pointerup',this.onRightResizeUp); };
+  // Zoom the main canvas in (cap 1.5x).
   zoomIn=()=>this.setState(s=>({zoom:Math.min(1.5,+(s.zoom+0.12).toFixed(2))}));
+  // Zoom the main canvas out (floor 0.45x).
   zoomOut=()=>this.setState(s=>({zoom:Math.max(0.45,+(s.zoom-0.12).toFixed(2))}));
+  // Reset main-canvas zoom and pan.
   resetView=()=>this.setState({zoom:0.6, panX:0, panY:0});
   // ── Unified canvas cursor ──
   // click = select · drag empty space = pan the whole canvas · long-press a card
@@ -501,9 +539,12 @@ class Component extends DCLogic {
     window.addEventListener('pointermove', this.onCanvasMove);
     window.addEventListener('pointerup', this.onCanvasUp);
   };
+  // Pan the main canvas while dragging empty space.
   onCanvasMove=(e)=>{ if(!this._pan) return; this.setState({ panX:this._pan.ox+(e.clientX-this._pan.sx), panY:this._pan.oy+(e.clientY-this._pan.sy) }); };
+  // End a main-canvas pan.
   onCanvasUp=()=>{ this._pan=null; this.setState({dragging:false}); window.removeEventListener('pointermove',this.onCanvasMove); window.removeEventListener('pointerup',this.onCanvasUp); };
 
+  // Card click selects it, unless the click was the tail of a drag.
   selectCard=(id)=>(e)=>{ if(this._justDragged){ this._justDragged=false; return; } this.select(id)(e); };
   // Double-click arms a card for moving (a trackpad-friendly equivalent of long-press).
   onCardDblClick=(id)=>(e)=>{ if(e&&e.preventDefault)e.preventDefault(); this.setState({armedCard:id, selectedId:id, selectedSet:[id], selectedSym:null}); };
@@ -518,6 +559,7 @@ class Component extends DCLogic {
     window.addEventListener('pointermove', this.onFrameMove);
     window.addEventListener('pointerup', this.onFrameUp);
   };
+  // Card gesture: below threshold pending; a plain drag pans; an armed/long-pressed card moves.
   onFrameMove=(e)=>{
     if(!this._nd) return;
     const dx=e.clientX-this._nd.sx, dy=e.clientY-this._nd.sy;
@@ -528,6 +570,7 @@ class Component extends DCLogic {
     if(this._nd.mode==='pan'){ this.setState({ panX:this._nd.pox+(e.clientX-this._nd.sx), panY:this._nd.poy+(e.clientY-this._nd.sy) }); return; }
     if(this._nd.mode==='card'){ const z=this._nd.z; this._nd.moved=true; this.setState(st=>({nodePos:{...st.nodePos,[this._nd.id]:{x:this._nd.ox+dx/z,y:this._nd.oy+dy/z}}})); }
   };
+  // End a card gesture; flag a drag so the trailing click doesn't re-select.
   onFrameUp=()=>{ clearTimeout(this._lp); if(this._nd&&(this._nd.mode==='card'||this._nd.mode==='pan'))this._justDragged=true; this._nd=null; this.setState({dragging:false, draggingCard:null}); window.removeEventListener('pointermove',this.onFrameMove); window.removeEventListener('pointerup',this.onFrameUp); };
 
   // func/ds empty-background pan (nodes handle their own pointer)
@@ -539,15 +582,24 @@ class Component extends DCLogic {
     window.addEventListener('pointermove', this.onSubPanMove);
     window.addEventListener('pointerup', this.onSubPanUp);
   };
+  // Pan the bottom panel via a transform translate.
   onSubPanMove=(e)=>{ if(!this._sp) return; this.setState({ subPanX:this._sp.ox+(e.clientX-this._sp.sx), subPanY:this._sp.oy+(e.clientY-this._sp.sy) }); };
+  // End a bottom-panel pan.
   onSubPanUp=()=>{ this._sp=null; this.setState({subPanning:false}); window.removeEventListener('pointermove',this.onSubPanMove); window.removeEventListener('pointerup',this.onSubPanUp); };
 
+  // Open the bottom panel on the Functions tab.
   openFns=()=>this.setState({bottomOpen:true, bottomTab:'functions', selectedSym:null});
+  // Open the bottom panel on the Data-structures tab.
   openStructs=()=>this.setState({bottomOpen:true, bottomTab:'structs', selectedSym:null});
+  // Close the bottom panel and exit full view.
   closeBottom=()=>this.setState({bottomOpen:false, subFullView:false, selectedSym:null});
+  // Promote the bottom panel to full view (controls merge into the top bar).
   doExpandFull=()=>this.setState({subFullView:true});
+  // Return the bottom panel from full view to docked.
   doCollapseFull=()=>this.setState({subFullView:false});
+  // Ref to the center column (used to detect the drag-to-fullscreen threshold).
   setCenterEl=(el)=>{ this._centerEl=el; };
+  // Begin dragging the bottom-panel divider to resize it.
   onResizeDown=(e)=>{
     e.preventDefault();
     this._rz={ sy:e.clientY, oh:this.state.bottomH };
@@ -570,6 +622,7 @@ class Component extends DCLogic {
     if(this.state.subFullView) this.setState({subFullView:false});
     this.setState({ bottomH:Math.max(120, Math.min(maxH-6, h)) });
   };
+  // Finish the divider drag.
   onResizeUp=()=>{ this._rz=null; window.removeEventListener('pointermove',this.onResizeMove); window.removeEventListener('pointerup',this.onResizeUp); };
 
   // left→right column layout: arrow = relation; entry node has no incoming edge
@@ -636,7 +689,9 @@ class Component extends DCLogic {
     return { nodes:[...onPath].map(k=>g[k]), edges:[...pe].map(s=>s.split('\u0001')) };
   }
 
+  // Display label for a file id.
   fileLabelOf(fid){ const n=this.NODES.find(x=>x.id===fid); return n?n.label:fid; }
+  // Inspector path for a file id.
   filePathOf(fid){ const d=this.DETAIL[fid]; return d?d.path:this.fileLabelOf(fid); }
 
   // Inspector detail for a selected function / data-structure node ('file:id').
@@ -659,8 +714,10 @@ class Component extends DCLogic {
       code:(it.code&&it.code.length)?it.code:[['// no source\n','c']],
       tests:[], callers:usedBy, callees:refs };
   }
+  // Label for a symbol id within a file.
   symLabelOf(file,id){ const sub=this.SUB[file]||{}; const it=(sub.fns||[]).concat(sub.structs||[]).find(x=>x.id===id); return it?it.label:id; }
 
+  // Inspector detail for the selected file (or an empty-state when no project).
   detail(id){
     const nodes=this.NODES;
     if(!nodes.length || id==null){
@@ -674,24 +731,37 @@ class Component extends DCLogic {
       code:[['// '+n.label+'\n','c']], tests:[],
       callers:this.EDGES.filter(e=>e[1]===n.id).map(e=>e[0]), callees:this.EDGES.filter(e=>e[0]===n.id).map(e=>e[1]) };
   }
+  // Centre and edge coordinates of a main-canvas node (for drawing edges).
   center(n){ return { x:n.x+this.W/2, y:n.y+this.H/2, l:n.x, r:n.x+this.W, t:n.y, b:n.y+this.H }; }
 
   // ── Project import flow ──
   // Two input paths (per current architecture): a scanner-output .json file, and
   // a local folder scanned by the Rust server at /api/scan.
   setFolderInput=(el)=>{ this.folderInput=el; if(el){ try{ el.setAttribute('webkitdirectory',''); el.setAttribute('directory',''); el.setAttribute('mozdirectory',''); el.multiple=true; }catch(e){} } };
+  // Ref to the hidden .json <input>.
   setJsonInput=(el)=>{ this.jsonInput=el; };
+  // Open the OS folder picker.
   onFolderPick=()=>{ if(this.folderInput) this.folderInput.click(); };
+  // Folder chosen -> scan its files.
   onFolderPicked=(e)=>{ const files=[...(e.target.files||[])]; e.target.value=''; if(files.length) this.ingestFiles(files); };
+  // Open the .json file picker.
   openFilePicker=()=>{ if(this.jsonInput) this.jsonInput.click(); };
+  // A .json file chosen -> parse and load it.
   onFileInput=(e)=>{ const f=(e.target.files||[])[0]; e.target.value=''; if(f) this._readJsonFile(f); };
+  // Allow a file to be dropped onto the import screen.
   onDragOver=(e)=>{ e.preventDefault(); };
+  // Load a .json file dropped onto the import screen.
   onFileDrop=(e)=>{ e.preventDefault(); const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) this._readJsonFile(f); };
+  // Dismiss the import error card.
   clearError=()=>this.setState({importError:null});
+  // Dismiss the scanner-version banner.
   dismissVersion=()=>this.setState({versionWarn:null});
+  // Return to the import screen.
   switchProject=()=>this.setState({appState:'import', importError:null});
+  // Update the (reserved) GitHub URL field.
   onGitHubUrlChange=(e)=>this.setState({githubUrl:e.target.value});
 
+  // Read a .json file, parse it, and load the model (or show an error).
   _readJsonFile(file){
     this.setState({importError:null});
     const r=new FileReader();
@@ -703,6 +773,7 @@ class Component extends DCLogic {
   SRC_EXT=new Set(['rs','py','pyi','js','jsx','mjs','cjs','ts','tsx','mts','cts','go','java','c','h','cpp','cc','cxx','hpp','hh','hxx']);
   IGNORE_DIR=new Set(['.git','node_modules','target','.venv','venv','dist','build','__pycache__','.next','.nuxt','vendor','.idea','.vscode']);
 
+  // Filter a picked folder to source files, upload them to the Rust scanner, and load the result (with a progress view).
   async ingestFiles(fileList){
     let repoName='project';
     const first=fileList[0] && (fileList[0].webkitRelativePath||'');
@@ -753,6 +824,7 @@ class Component extends DCLogic {
     return null;
   }
 
+  // Validate and adopt a model: select the entry, reset the view, set the version banner, and record it in Recent.
   loadModel(model, opts){
     opts=opts||{};
     const err=this.validateModel(model);
@@ -777,7 +849,9 @@ class Component extends DCLogic {
 
   // ── Recent projects (localStorage) ──
   _recentKey='cv_recent';
+  // Restore the recent-projects list from localStorage.
   _loadRecent(){ try{ const raw=localStorage.getItem(this._recentKey); if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)) this.setState({recentProjects:arr}); } }catch(e){} }
+  // Persist a project to localStorage and prepend it to Recent (max 5).
   _pushRecent(name, lang, model){
     try{
       let list=[]; try{ const raw=localStorage.getItem(this._recentKey); if(raw) list=JSON.parse(raw)||[]; }catch(e){ list=[]; }
@@ -790,12 +864,15 @@ class Component extends DCLogic {
       this.setState({recentProjects:list});
     }catch(e){}
   }
+  // Reload a recent project from localStorage without re-scanning.
   loadRecent=(r)=>()=>{
     try{ const raw=localStorage.getItem(r.key); if(!raw){ this.setState({importError:'Saved project data was cleared.'}); return; } const model=JSON.parse(raw); this.loadModel(model,{name:r.name,language:r.lang,addRecent:false}); }
     catch(e){ this.setState({importError:'Could not load saved project.'}); }
   };
+  // Format a timestamp as a short relative time (e.g. '5m ago').
   relTime(ts){ if(!ts) return ''; const s=Math.max(0,Math.round((Date.now()-ts)/1000)); if(s<60) return 'just now'; const m=Math.round(s/60); if(m<60) return m+'m ago'; const h=Math.round(m/60); if(h<24) return h+'h ago'; const d=Math.round(h/24); return d+'d ago'; }
 
+  // Theme CSS custom-property values for dark/light mode.
   tokens(dark){
     return dark ? {
       '--bg':'#1e1e1e','--grid':'#272727','--panel':'#252525','--panel2':'#313131','--border':'#3a3a3a',
@@ -813,12 +890,14 @@ class Component extends DCLogic {
       '--okbg':'rgba(22,163,92,.09)','--warn':'#c53030','--warnbg':'rgba(197,48,48,.08)',
     };
   }
+  // Render highlighted code spans into a React element for the inspector.
   codeEl(rows,dark){
     const C = dark ? {kw:'#c586c0',fn:'#dcdcaa',ty:'#4fc1ff',c:'#6a9955','':'#d4d4d4'}
                    : {kw:'#a626a4',fn:'#4078f2',ty:'#0184bc',c:'#a0a1a7','':'#383a42'};
     return React.createElement('span',null,rows.map((r,i)=>React.createElement('span',{key:i,style:{color:C[r[1]]||C['']}},r[0])));
   }
 
+  // Compute every value the template binds to for the current state (the render model).
   renderVals(){
     const st=this.state, dark=st.dark;
     const T=this.tokens(dark);
