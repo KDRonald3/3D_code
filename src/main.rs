@@ -9,6 +9,7 @@ use std::process;
 
 use codebase_visualizer::{analyze, scan_dir};
 
+/// CLI entry point: parse arguments, scan the directory, analyze it, and print or write the model JSON.
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut path: Option<PathBuf> = None;
@@ -74,6 +75,7 @@ fn main() {
     }
 }
 
+/// Print CLI usage to stderr.
 fn print_help() {
     eprintln!(
         "Codebase Visualizer — analyzer CLI\n\n\

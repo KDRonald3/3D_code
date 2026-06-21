@@ -182,6 +182,7 @@ pub fn scan_dir(root: &Path, max_file_bytes: u64) -> io::Result<(String, Vec<Inp
     Ok((repo_name, files))
 }
 
+/// Recursively walk `dir`, skipping ignored/hidden folders and oversized files, collecting readable source files as repo-relative `InputFile`s.
 fn collect(root: &Path, dir: &Path, max: u64, out: &mut Vec<InputFile>) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -561,6 +562,7 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
 
 // ── Classification ─────────────────────────────────────────────────────────
 
+/// Assign a file's dominant role (entry/struct/fn/file) in priority order per the card-type spec: entry, then type-dominated, then single-function, else plain file.
 fn classify(info: &FileInfo) -> String {
     if is_entry(info) {
         return "entry".into();
@@ -599,6 +601,7 @@ fn is_entry(info: &FileInfo) -> bool {
 
 // ── Summaries ────────────────────────────────────────────────────────────
 
+/// Build the inspector's plain-English summary for a file: prefer a real doc comment (file or first public symbol), else synthesise one from role, symbol counts and dependency degree.
 fn make_summary(
     info: &FileInfo,
     callees: &HashMap<String, Vec<String>>,
@@ -654,6 +657,7 @@ fn make_summary(
     parts.join(" ")
 }
 
+/// Pluralise a count into a phrase, e.g. 0 -> "no modules", 1 -> "1 module", 3 -> "3 modules".
 fn count_phrase(n: usize, one: &str, many: &str) -> String {
     match n {
         0 => format!("no {}", many),
@@ -662,6 +666,7 @@ fn count_phrase(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// Trim an over-long doc comment to ~300 chars, breaking on a sentence boundary and appending an ellipsis when truncated.
 fn clamp_sentence(s: &str) -> String {
     let s = s.trim();
     if s.len() <= 320 {
@@ -680,6 +685,7 @@ fn clamp_sentence(s: &str) -> String {
     out
 }
 
+/// Compose the architecture sticky-note paragraph: module/folder counts, languages, the entry point and most-depended-on hub, and the inferred link count.
 fn make_arch(
     repo: &str,
     infos: &[FileInfo],
@@ -728,6 +734,7 @@ fn make_arch(
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
+/// Map each file id to humanised descriptions of the test functions that reference its symbols (the inspector's "Tests as docs").
 fn build_test_index(infos: &[FileInfo]) -> HashMap<String, Vec<String>> {
     // Map symbol name -> owning file id.
     let mut owner: HashMap<String, String> = HashMap::new();
@@ -770,6 +777,7 @@ fn build_test_index(infos: &[FileInfo]) -> HashMap<String, Vec<String>> {
     out
 }
 
+/// Turn a test function name like `test_parses_args` into a readable description ("parses args").
 fn humanize(name: &str) -> String {
     let n = name
         .trim_start_matches("test_")
@@ -786,6 +794,7 @@ fn humanize(name: &str) -> String {
 
 // ── Folders ──────────────────────────────────────────────────────────────
 
+/// Group file ids by their parent directory into the left-panel folder tree (root-level files go under ".").
 fn build_folders(infos: &[FileInfo]) -> Vec<FolderOut> {
     let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for info in infos {
@@ -807,6 +816,7 @@ fn build_folders(infos: &[FileInfo]) -> Vec<FolderOut> {
 
 // ── Layout ─────────────────────────────────────────────────────────────────
 
+/// Place file nodes on the 1360x600 virtual canvas as a left->right layered pipeline: column = cycle-safe BFS depth from the entry/root nodes, rows centred per column.
 fn layout(
     infos: &[FileInfo],
     edges: &[[String; 2]],
@@ -886,12 +896,14 @@ fn layout(
     pos
 }
 
+/// Round to one decimal place to keep emitted coordinates compact.
 fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/// De-duplicate a list of node ids while preserving order (used for callers/callees).
 fn sorted_labels(ids: Option<&Vec<String>>, _infos: &[FileInfo]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
@@ -905,6 +917,7 @@ fn sorted_labels(ids: Option<&Vec<String>>, _infos: &[FileInfo]) -> Vec<String> 
     out
 }
 
+/// Derive a stable, unique node id from a file path: the file stem, disambiguated with the parent folder for ambiguous names (mod/index/__init__) and a numeric suffix on collision.
 fn unique_id(path: &str, used: &mut HashSet<String>) -> String {
     let stem = file_stem(path);
     let ambiguous = matches!(
@@ -936,12 +949,14 @@ fn unique_id(path: &str, used: &mut HashSet<String>) -> String {
     candidate
 }
 
+/// Replace any non-alphanumeric/underscore character with `_` so ids are safe map keys.
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
         .collect()
 }
 
+/// Return a path's filename without its extension.
 fn file_stem(path: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     match name.rsplit_once('.') {
@@ -950,6 +965,7 @@ fn file_stem(path: &str) -> String {
     }
 }
 
+/// Human-friendly node label: the filename, prefixed with its parent folder for ambiguous names like `mod.rs`/`index.js`.
 fn display_label(path: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     let stem = file_stem(path);
@@ -965,6 +981,7 @@ fn display_label(path: &str) -> String {
     name.to_string()
 }
 
+/// Return the directory portion of a repo-relative path (empty for root-level files).
 fn dir_of(path: &str) -> String {
     match path.rsplit_once('/') {
         Some((dir, _)) => dir.to_string(),
@@ -1004,6 +1021,7 @@ mod tests {
     }
 }
 
+/// Resolve an import/use hint to the id of the file it refers to: handles relative JS/TS paths and picks the deepest path segment (e.g. `crate::cli::Cli` -> `cli`) that maps to a scanned file.
 fn resolve_module(
     module: &str,
     from: &FileInfo,

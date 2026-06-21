@@ -19,10 +19,12 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// Detect the language from a filesystem path's extension.
     pub fn from_path(path: &Path) -> Option<Lang> {
         Lang::from_ext(&path.to_string_lossy())
     }
 
+    /// Detect the language from a path/extension string; `None` marks an unsupported file that is skipped.
     pub fn from_ext(path: &str) -> Option<Lang> {
         let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
         Some(match ext.as_str() {
@@ -38,6 +40,7 @@ impl Lang {
         })
     }
 
+    /// Human-readable language name, used in summaries and the project meta.
     pub fn name(self) -> &'static str {
         match self {
             Lang::Rust => "Rust",
@@ -51,6 +54,7 @@ impl Lang {
         }
     }
 
+    /// The language's line-comment marker (`#` for Python, `//` otherwise).
     fn line_comment(self) -> &'static str {
         match self {
             Lang::Python => "#",
@@ -58,10 +62,12 @@ impl Lang {
         }
     }
 
+    /// Whether the language delimits blocks with braces (vs. Python's indentation).
     fn brace_based(self) -> bool {
         !matches!(self, Lang::Python)
     }
 
+    /// Heuristic: does the source touch the filesystem, network or stdio? Drives the `IO` badge.
     pub fn has_io(self, text: &str) -> bool {
         const PATTERNS: &[&str] = &[
             "fs::", "File::", "std::io", "println!", "print!", "eprintln!",
@@ -257,6 +263,7 @@ impl Lang {
         (funcs, types)
     }
 
+    /// Try to read a function declaration off a single line, returning its name and signature (per language).
     fn decl_func(self, line: &str) -> Option<(String, String)> {
         let t = line.trim_start();
         match self {
@@ -375,6 +382,7 @@ impl Lang {
         }
     }
 
+    /// Try to read a type declaration (struct/enum/trait/class/interface) off a single line, returning its name and kind word.
     fn decl_type(self, line: &str) -> Option<(String, String)> {
         let t = line.trim_start();
         match self {
@@ -502,6 +510,7 @@ impl Lang {
         }
     }
 
+    /// Heuristic: is the function at `lines[idx]` a test? (Rust `#[test]`, Java `@Test`, names starting with `test`/`Test`.)
     fn is_test_fn(self, lines: &[&str], idx: usize, name: &str) -> bool {
         match self {
             Lang::Rust => {
@@ -578,6 +587,7 @@ impl Lang {
         out
     }
 
+    /// The language's keyword set, used by the syntax highlighter.
     fn keywords(self) -> &'static [&'static str] {
         match self {
             Lang::Rust => &[
@@ -623,6 +633,7 @@ impl Lang {
         }
     }
 
+    /// Primitive type names highlighted as types despite being lowercase (e.g. Rust `u32`, `bool`).
     fn primitives(self) -> &'static [&'static str] {
         match self {
             Lang::Rust => &[
@@ -828,10 +839,12 @@ const COMMON_WORDS: &[&str] = &[
     "with", "text", "line", "file", "size", "count", "index", "start", "stop", "next", "prev",
 ];
 
+/// Filter for very common identifiers that would otherwise create noisy mention edges.
 pub fn is_common_word(name: &str) -> bool {
     COMMON_WORDS.contains(&name.to_lowercase().as_str())
 }
 
+/// Tokenise a snippet into `[text, kind]` spans (kw/fn/ty/c/'') for the inspector, lexing comments, strings, identifiers and punctuation.
 fn highlight(src: &str, lang: Lang) -> Vec<(String, String)> {
     let kws: HashSet<&str> = lang.keywords().iter().copied().collect();
     let prims: HashSet<&str> = lang.primitives().iter().copied().collect();
@@ -937,6 +950,7 @@ fn highlight(src: &str, lang: Lang) -> Vec<(String, String)> {
 
 // ── small string helpers ───────────────────────────────────────────────────
 
+/// Return the first single/double-quoted (or `<...>` for #include) token on a line; used to pull import paths.
 fn extract_quoted(s: &str) -> Option<String> {
     let bytes: Vec<char> = s.chars().collect();
     for (i, &c) in bytes.iter().enumerate() {
@@ -956,6 +970,7 @@ fn extract_quoted(s: &str) -> Option<String> {
     None
 }
 
+/// Repeatedly strip any of the given leading prefixes from a string.
 fn strip_prefixes<'a>(mut s: &'a str, prefixes: &[&str]) -> &'a str {
     let mut changed = true;
     while changed {
@@ -970,6 +985,7 @@ fn strip_prefixes<'a>(mut s: &'a str, prefixes: &[&str]) -> &'a str {
     s
 }
 
+/// Read the leading identifier (letters/digits/_/$) from a string.
 fn first_ident(s: &str) -> String {
     s.trim_start()
         .chars()
@@ -977,6 +993,7 @@ fn first_ident(s: &str) -> String {
         .collect()
 }
 
+/// Normalise a captured signature: cut at `{`/`;`, collapse whitespace, drop a trailing `:`, and truncate if very long.
 fn clean_sig(after: &str) -> String {
     let mut s = after.trim().to_string();
     for cut in ['{', ';'] {
@@ -994,6 +1011,7 @@ fn clean_sig(after: &str) -> String {
     }
 }
 
+/// Collect the contiguous comment lines immediately above a declaration as its doc comment, skipping attributes/annotations.
 fn gather_doc(lines: &[&str], decl_idx: usize, lang: Lang) -> String {
     let prefixes: &[&str] = match lang {
         Lang::Python => &["#"],
@@ -1036,6 +1054,7 @@ fn gather_doc(lines: &[&str], decl_idx: usize, lang: Lang) -> String {
     docs.join(" ").trim().to_string()
 }
 
+/// Indentation width of a line in columns (a tab counts as 4).
 fn indent_of(line: &str) -> usize {
     line.chars()
         .take_while(|c| *c == ' ' || *c == '\t')
@@ -1043,6 +1062,7 @@ fn indent_of(line: &str) -> usize {
         .sum()
 }
 
+/// Return `name`, or `name_2`, `name_3`, ... so symbol ids are unique within a file.
 fn unique(name: &str, used: &mut HashSet<String>) -> String {
     if used.insert(name.to_string()) {
         return name.to_string();
@@ -1057,6 +1077,7 @@ fn unique(name: &str, used: &mut HashSet<String>) -> String {
     }
 }
 
+/// Reject language keywords that the line-based matchers could mistake for a symbol name.
 fn is_keyword(name: &str) -> bool {
     matches!(
         name,

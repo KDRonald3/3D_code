@@ -30,6 +30,7 @@ struct FileJson {
     text: String,
 }
 
+/// Bind the HTTP server and route requests: serve the UI (`/`), the runtime (`/support.js`), and the scan API (`POST /api/scan`, `GET /api/scan-path`).
 fn main() {
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -70,6 +71,7 @@ fn main() {
     }
 }
 
+/// Parse a `POST /api/scan` JSON body (the folder files the browser uploaded), run the analyzer, and return the model JSON.
 fn handle_scan(body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let req: ScanRequest = match serde_json::from_str(body) {
         Ok(r) => r,
@@ -94,6 +96,7 @@ fn handle_scan(body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     }
 }
 
+/// Scan a server-side directory given `?path=` -- a convenience endpoint for local and testing use.
 fn handle_scan_path(url: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let query = url.split('?').nth(1).unwrap_or("");
     let mut path = None;
@@ -121,30 +124,36 @@ fn handle_scan_path(url: &str) -> Response<std::io::Cursor<Vec<u8>>> {
 
 type Resp = Response<std::io::Cursor<Vec<u8>>>;
 
+/// Build an HTTP header from a name/value pair.
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
 }
 
+/// An `Access-Control-Allow-Origin: *` header.
 fn cors() -> Header {
     header("Access-Control-Allow-Origin", "*")
 }
 
+/// A 200 response carrying an HTML body.
 fn html(body: &str) -> Resp {
     Response::from_string(body)
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
 }
 
+/// A 200 response carrying a JavaScript body.
 fn js(body: &str) -> Resp {
     Response::from_string(body)
         .with_header(header("Content-Type", "text/javascript; charset=utf-8"))
 }
 
+/// A 200 response carrying a JSON body (with CORS).
 fn json(body: String) -> Resp {
     Response::from_string(body)
         .with_header(header("Content-Type", "application/json; charset=utf-8"))
         .with_header(cors())
 }
 
+/// A 400 response carrying a JSON `{error}` message.
 fn bad_request(msg: &str) -> Resp {
     let body = format!("{{\"error\":{}}}", json_string(msg));
     Response::from_string(body)
@@ -153,6 +162,7 @@ fn bad_request(msg: &str) -> Resp {
         .with_header(cors())
 }
 
+/// Minimal JSON string escaper for error messages.
 fn json_string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -170,6 +180,7 @@ fn json_string(s: &str) -> String {
     out
 }
 
+/// Percent-decode a query-string value.
 fn url_decode(s: &str) -> String {
     let bytes = s.replace('+', " ");
     let mut out = Vec::new();
