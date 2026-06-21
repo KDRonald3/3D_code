@@ -40,6 +40,29 @@
         <span style="font-size:13px;color:var(--text2)">Codebase Map</span>
       </sc-if>
     </div>
+    <sc-if value="{{ subFullView }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+        <div style="display:flex;gap:3px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px;flex:none">
+          <button onClick="{{ openFns }}" style="{{ subFnStyle }}">ƒ Functions</button>
+          <button onClick="{{ openStructs }}" style="{{ subDsStyle }}">⬚ Data structures</button>
+        </div>
+        <sc-if value="{{ subMulti }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px;flex:none">
+            <sc-for list="{{ subModes }}" as="m" hint-placeholder-count="4"><button onClick="{{ m.onClick }}" title="{{ m.title }}" style="{{ m.style }}">{{ m.label }}</button></sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ subShowPick }}" hint-placeholder-val="{{ false }}">
+          <select onChange="{{ onPickFile }}" value="{{ subPick }}" style="{{ subPickStyle }}"><sc-for list="{{ subPickOptions }}" as="o" hint-placeholder-count="2"><option value="{{ o.id }}">{{ o.label }}</option></sc-for></select>
+        </sc-if>
+        <span style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ subInfo }}</span>
+        <div style="display:flex;align-items:center;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:2px;flex:none">
+          <button onClick="{{ subZoomOut }}" style="width:24px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-size:15px">−</button>
+          <button onClick="{{ subZoomReset }}" style="min-width:42px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10.5px">{{ subZoomPct }}</button>
+          <button onClick="{{ subZoomIn }}" style="width:24px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-size:14px">+</button>
+        </div>
+        <button onClick="{{ doCollapseFull }}" title="Dock panel" style="width:28px;height:28px;flex:none;border:1px solid var(--border);background:var(--panel2);color:var(--text2);font-size:13px;cursor:pointer;border-radius:7px;display:flex;align-items:center;justify-content:center">⤡</button>
+      </div>
+    </sc-if>
     <div style="margin-left:auto;display:flex;align-items:center;gap:9px">
       <sc-if value="{{ isLoaded }}" hint-placeholder-val="{{ true }}">
         <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--text3);padding:4px 9px;border:1px solid var(--border);border-radius:7px">{{ frameStats }}</span>
@@ -153,7 +176,7 @@
     </aside>
 
     <!-- ░ CENTER — CANVAS + BOTTOM PANEL ░ -->
-    <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative">
+    <div ref="{{ setCenterEl }}" style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative">
     <main onPointerDown="{{ onCanvasDown }}" style="{{ canvasStyle }}">
 
       <div style="position:absolute;top:0;left:0;transform-origin:0 0;transform:translate({{ panX }}px,{{ panY }}px) scale({{ zoom }});width:1360px;height:600px">
@@ -221,6 +244,7 @@
     <!-- ░ BOTTOM — FUNCTIONS / DATA STRUCTURES ░ -->
     <sc-if value="{{ bottomOpen }}" hint-placeholder-val="{{ false }}">
       <div style="{{ bottomWrapStyle }}">
+        <sc-if value="{{ subDock }}" hint-placeholder-val="{{ true }}">
         <div onPointerDown="{{ onResizeDown }}" style="{{ resizeHandleStyle }}"><span style="width:32px;height:3px;border-radius:2px;background:var(--border)"></span></div>
         <div style="flex:none;display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--panel);border-bottom:1px solid var(--border)">
           <div style="display:flex;gap:3px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:3px">
@@ -245,9 +269,10 @@
             <button onClick="{{ subZoomReset }}" style="min-width:42px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:10.5px">{{ subZoomPct }}</button>
             <button onClick="{{ subZoomIn }}" style="width:24px;height:24px;border:none;background:transparent;color:var(--text2);border-radius:5px;cursor:pointer;font-size:14px">+</button>
           </div>
-          <button onClick="{{ fullToggle }}" title="{{ fullTitle }}" style="width:26px;height:26px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);font-size:13px;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center">{{ fullIcon }}</button>
+          <button onClick="{{ doExpandFull }}" title="Full view" style="width:26px;height:26px;border:1px solid var(--border);background:var(--panel2);color:var(--text2);font-size:13px;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center">⤢</button>
           <button onClick="{{ closeBottom }}" style="width:26px;height:26px;border:none;background:transparent;color:var(--text3);font-size:15px;cursor:pointer;border-radius:6px">✕</button>
         </div>
+        </sc-if>
         <div onPointerDown="{{ onSubPanDown }}" style="{{ subCanvasStyle }}">
           <sc-if value="{{ subEmpty }}" hint-placeholder-val="{{ false }}">
             <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12.5px;color:var(--text3)">{{ subEmptyText }}</div>
@@ -516,13 +541,29 @@ class Component extends DCLogic {
   closeBottom=()=>this.setState({bottomOpen:false, subFullView:false, selectedSym:null});
   doExpandFull=()=>this.setState({subFullView:true});
   doCollapseFull=()=>this.setState({subFullView:false});
+  setCenterEl=(el)=>{ this._centerEl=el; };
   onResizeDown=(e)=>{
     e.preventDefault();
     this._rz={ sy:e.clientY, oh:this.state.bottomH };
     window.addEventListener('pointermove', this.onResizeMove);
     window.addEventListener('pointerup', this.onResizeUp);
   };
-  onResizeMove=(e)=>{ if(!this._rz) return; const viewH=(this.root?this.root.offsetHeight:900); const h=this._rz.oh-(e.clientY-this._rz.sy); if(h>viewH*0.72){ this.setState({subFullView:true}); return; } if(this.state.subFullView) this.setState({subFullView:false}); this.setState({ bottomH:Math.max(120,Math.min(Math.round(viewH*0.7),h)) }); };
+  // Drag the func/ds panel up: it grows in-flow, replacing the center canvas.
+  // When its top reaches the bottom of the app top bar, switch to full view,
+  // which moves the func/ds controls up into the app top bar. Dragging back
+  // down (or the minimize button) brings them back to the panel header.
+  onResizeMove=(e)=>{
+    if(!this._rz) return;
+    const rect = (this._centerEl && this._centerEl.getBoundingClientRect) ? this._centerEl.getBoundingClientRect() : null;
+    const topY = rect ? rect.top : 88;
+    const maxH = rect ? rect.height : (this.root ? this.root.offsetHeight-100 : 600);
+    const h=this._rz.oh-(e.clientY-this._rz.sy);
+    // The panel top reaching the app top bar (or the panel filling the center)
+    // promotes it to full view, moving its controls into the app top bar.
+    if(e.clientY <= topY + 8 || h >= maxH - 8){ if(!this.state.subFullView) this.setState({subFullView:true}); return; }
+    if(this.state.subFullView) this.setState({subFullView:false});
+    this.setState({ bottomH:Math.max(120, Math.min(maxH-6, h)) });
+  };
   onResizeUp=()=>{ this._rz=null; window.removeEventListener('pointermove',this.onResizeMove); window.removeEventListener('pointerup',this.onResizeUp); };
 
   // left→right column layout: arrow = relation; entry node has no incoming edge
@@ -984,6 +1025,8 @@ class Component extends DCLogic {
       pageFnStyle:pageBase+((st.bottomOpen&&isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       pageDsStyle:pageBase+((st.bottomOpen&&!isFns)?'background:var(--selbg);color:var(--text);font-weight:500':'background:transparent;color:var(--text2)'),
       bottomOpen:st.bottomOpen, openFns:this.openFns, openStructs:this.openStructs, closeBottom:this.closeBottom, onResizeDown:this.onResizeDown,
+      setCenterEl:this.setCenterEl, subDock: st.bottomOpen && !st.subFullView,
+      doExpandFull:this.doExpandFull, doCollapseFull:this.doCollapseFull,
       fullToggle: st.subFullView?this.doCollapseFull:this.doExpandFull, fullIcon: st.subFullView?'\u2750':'\u2922', fullTitle: st.subFullView?'Dock panel':'Full view',
       resizeHandleStyle: st.subFullView
         ? 'display:none'
