@@ -993,10 +993,14 @@ fn dir_of(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Build an `InputFile` from a path and source text (test helper).
     fn f(path: &str, text: &str) -> InputFile {
         InputFile { path: path.into(), text: text.into() }
     }
 
+    /// Smoke test: a tiny Rust project classifies `main` as entry, `model` as a
+    /// type module and `util` as a single-fn module, links `main` to both, flags
+    /// the orphan, and exposes `model`'s types in the bottom-panel sub graph.
     #[test]
     fn classifies_and_links_a_small_rust_project() {
         let files = vec![
