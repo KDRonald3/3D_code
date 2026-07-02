@@ -27,6 +27,7 @@
 
   <!-- hidden inputs (always present so refs exist) -->
   <input ref="{{ setFolderInput }}" onChange="{{ onFolderPicked }}" type="file" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
+  <input ref="{{ setSrcInput }}" onChange="{{ onSrcPicked }}" type="file" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
   <input ref="{{ setJsonInput }}" onChange="{{ onFileInput }}" type="file" accept=".json,application/json" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none" />
 
   <!-- ░ TOP BAR ░ -->
@@ -77,15 +78,19 @@
   <sc-if value="{{ isImport }}" hint-placeholder-val="{{ false }}">
     <div onDrop="{{ onFileDrop }}" onDragOver="{{ onDragOver }}" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;overflow-y:auto;background:var(--bg)">
       <div style="font-size:22px;font-weight:700;color:var(--text);margin-bottom:6px;letter-spacing:-.4px">Open a codebase</div>
-      <div style="font-size:13px;color:var(--text3);margin-bottom:32px">Pick a folder to scan, or load a scanner-output <span style="font-family:'JetBrains Mono',monospace">.json</span> file.</div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:32px">Pick a folder or source file to scan, or load a scanner-output <span style="font-family:'JetBrains Mono',monospace">.json</span> file.</div>
       <div style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:480px">
         <button onClick="{{ onFolderPick }}" style="display:flex;align-items:flex-start;gap:14px;padding:16px 18px;background:var(--panel);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:left">
           <span style="font-size:22px;margin-top:1px">📁</span>
           <div><div style="font-weight:600;font-size:13.5px;color:var(--text);margin-bottom:3px">Open local folder</div><div style="font-size:12px;color:var(--text3)">Scanned by the Rust analyzer (Rust, Python, JS, TS, Go, Java, C/C++)</div></div>
         </button>
-        <button onClick="{{ openFilePicker }}" style="display:flex;align-items:flex-start;gap:14px;padding:16px 18px;background:var(--panel);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:left">
+        <button onClick="{{ onSrcPick }}" style="display:flex;align-items:flex-start;gap:14px;padding:16px 18px;background:var(--panel);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:left">
           <span style="font-size:22px;margin-top:1px">📄</span>
-          <div><div style="font-weight:600;font-size:13.5px;color:var(--text);margin-bottom:3px">Open scanner output (.json)</div><div style="font-size:12px;color:var(--text3)">Drop a file anywhere, or click to browse</div></div>
+          <div><div style="font-weight:600;font-size:13.5px;color:var(--text);margin-bottom:3px">Open source file(s)</div><div style="font-size:12px;color:var(--text3)">Visualize one or more standalone files — no folder needed</div></div>
+        </button>
+        <button onClick="{{ openFilePicker }}" style="display:flex;align-items:flex-start;gap:14px;padding:16px 18px;background:var(--panel);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;text-align:left">
+          <span style="font-size:22px;margin-top:1px">🧾</span>
+          <div><div style="font-weight:600;font-size:13.5px;color:var(--text);margin-bottom:3px">Open scanner output (.json)</div><div style="font-size:12px;color:var(--text3)">Drop any file anywhere, or click to browse</div></div>
         </button>
       </div>
       <sc-if value="{{ importError }}" hint-placeholder-val="{{ false }}">
@@ -779,8 +784,8 @@ class Component extends DCLogic {
     const nodes=this.NODES;
     if(!nodes.length || id==null){
       return { id:null, label:'No project', kind:'file', path:'\u2014',
-        summary:'Add a folder to visualize its files, dependencies, functions and data structures.',
-        code:[['// add a folder to begin\n','c']], loc:0, tests:[], callers:[], callees:[] };
+        summary:'Add a folder or source file to visualize its files, dependencies, functions and data structures.',
+        code:[['// add a folder or file to begin\n','c']], loc:0, tests:[], callers:[], callees:[] };
     }
     const n=nodes.find(x=>x.id===id)||nodes[0]; const d=this.DETAIL[n.id];
     if(d) return {...n,...d};
@@ -792,23 +797,40 @@ class Component extends DCLogic {
   center(n){ return { x:n.x+this.W/2, y:n.y+this.H/2, l:n.x, r:n.x+this.W, t:n.y, b:n.y+this.H }; }
 
   // ── Project import flow ──
-  // Two input paths (per current architecture): a scanner-output .json file, and
-  // a local folder scanned by the Rust server at /api/scan.
+  // Three input paths (per current architecture): a local folder or individual
+  // source file(s) scanned by the Rust server at /api/scan, and a
+  // scanner-output .json file loaded directly.
   setFolderInput=(el)=>{ this.folderInput=el; if(el){ try{ el.setAttribute('webkitdirectory',''); el.setAttribute('directory',''); el.setAttribute('mozdirectory',''); el.multiple=true; }catch(e){} } };
+  // Ref to the hidden source-file <input> (multiple standalone files allowed).
+  setSrcInput=(el)=>{ this.srcInput=el; if(el){ try{ el.multiple=true; el.setAttribute('accept',[...this.SRC_EXT].map(x=>'.'+x).join(',')); }catch(e){} } };
   // Ref to the hidden .json <input>.
   setJsonInput=(el)=>{ this.jsonInput=el; };
   // Open the OS folder picker.
   onFolderPick=()=>{ if(this.folderInput) this.folderInput.click(); };
   // Folder chosen -> scan its files.
   onFolderPicked=(e)=>{ const files=[...(e.target.files||[])]; e.target.value=''; if(files.length) this.ingestFiles(files); };
+  // Open the source-file picker.
+  onSrcPick=()=>{ if(this.srcInput) this.srcInput.click(); };
+  // Source file(s) chosen -> scan them.
+  onSrcPicked=(e)=>{ const files=[...(e.target.files||[])]; e.target.value=''; if(files.length) this.ingestFiles(files); };
   // Open the .json file picker.
   openFilePicker=()=>{ if(this.jsonInput) this.jsonInput.click(); };
   // A .json file chosen -> parse and load it.
   onFileInput=(e)=>{ const f=(e.target.files||[])[0]; e.target.value=''; if(f) this._readJsonFile(f); };
   // Allow a file to be dropped onto the import screen.
   onDragOver=(e)=>{ e.preventDefault(); };
-  // Load a .json file dropped onto the import screen.
-  onFileDrop=(e)=>{ e.preventDefault(); const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) this._readJsonFile(f); };
+  // Files dropped onto the import screen: a .json loads as a saved model;
+  // anything else is treated as source files and sent to the scanner.
+  onFileDrop=(e)=>{
+    e.preventDefault();
+    const files=[...((e.dataTransfer&&e.dataTransfer.files)||[])];
+    if(!files.length) return;
+    const json=files.find(f=>/\.json$/i.test(f.name));
+    if(json){ this._readJsonFile(json); return; }
+    const src=files.filter(f=>this.SRC_EXT.has((f.name.split('.').pop()||'').toLowerCase()));
+    if(src.length){ this.ingestFiles(src); return; }
+    this.setState({appState:'import', importError:'Unsupported file type — drop source files (.rs .py .js .ts .go .java .c .cpp …) or a scanner-output .json.'});
+  };
   // Dismiss the import error card.
   clearError=()=>this.setState({importError:null});
   // Dismiss the scanner-version banner.
@@ -832,11 +854,14 @@ class Component extends DCLogic {
   // Directory names skipped (deps, build output, VCS, editor metadata) during folder ingest.
   IGNORE_DIR=new Set(['.git','node_modules','target','.venv','venv','dist','build','__pycache__','.next','.nuxt','vendor','.idea','.vscode']);
 
-  // Filter a picked folder to source files, upload them to the Rust scanner, and load the result (with a progress view).
+  // Filter picked files (a folder's contents or standalone source files) to
+  // supported sources, upload them to the Rust scanner, and load the result
+  // (with a progress view).
   async ingestFiles(fileList){
     let repoName='project';
     const first=fileList[0] && (fileList[0].webkitRelativePath||'');
     if(first && first.includes('/')) repoName=first.split('/')[0];
+    else if(fileList.length===1 && fileList[0]) repoName=fileList[0].name;
     const picked=[];
     for(const f of fileList){
       const rel=f.webkitRelativePath||f.name;
@@ -847,7 +872,7 @@ class Component extends DCLogic {
       if(f.size>500000) continue;
       picked.push(f);
     }
-    if(!picked.length){ this.setState({appState:'import', importError:'No source files found in that folder.'}); return; }
+    if(!picked.length){ this.setState({appState:'import', importError:'No supported source files in that selection.'}); return; }
     const MAX=5000; const slice=picked.slice(0,MAX);
     this.setState({appState:'scanning', importError:null, scanProgress:{current:0,total:slice.length,file:'',name:repoName}});
     try{
@@ -860,7 +885,7 @@ class Component extends DCLogic {
         payload.push({ path: relPath||rel, text });
         if(i%8===0||i===slice.length-1) this.setState({scanProgress:{current:i+1,total:slice.length,file:relPath||rel,name:repoName}});
       }
-      if(!payload.length){ this.setState({appState:'import', importError:'No readable source files in that folder.'}); return; }
+      if(!payload.length){ this.setState({appState:'import', importError:'No readable source files in that selection.'}); return; }
       const res=await fetch('/api/scan',{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ name:repoName, files:payload }) });
       if(!res.ok){ const t=await res.text().catch(()=>''); throw new Error('scan failed ('+res.status+') '+t); }
       const model=await res.json();
@@ -870,7 +895,9 @@ class Component extends DCLogic {
     }
   }
 
-  // Validate a loaded payload (edges/fnx/fieldx reference real ids; has an entry).
+  // Validate a loaded payload (edges/fnx/fieldx reference real ids). A model
+  // with no entry-point node is fine — single files and library-only folders
+  // often have no main(); loadModel falls back to selecting the first node.
   validateModel(model){
     if(!model||typeof model!=='object') return 'Not a valid scanner output object.';
     if(!Array.isArray(model.nodes)||!model.nodes.length) return 'Scanner output has no nodes.';
@@ -879,7 +906,6 @@ class Component extends DCLogic {
     const sub=model.sub||{};
     const checkX=(arr,nm)=>{ if(Array.isArray(arr)) for(let i=0;i<arr.length;i++){ const x=arr[i]||[]; if(!sub[x[0]]) return nm+'['+i+']: unknown file id "'+x[0]+'"'; if(!sub[x[2]]) return nm+'['+i+']: unknown file id "'+x[2]+'"'; } return null; };
     let er=checkX(model.fnx,'fnx'); if(er) return er; er=checkX(model.fieldx,'fieldx'); if(er) return er;
-    if(!model.nodes.some(n=>n&&n.kind==='entry')) return 'No entry-point node (kind:"entry") in scanner output.';
     return null;
   }
 
@@ -1152,6 +1178,7 @@ class Component extends DCLogic {
       scanBarStyle:`height:100%;width:${pct}%;background:var(--sel);border-radius:4px;transition:width .15s`,
       hasRecent:!!(st.recentProjects&&st.recentProjects.length), recentRows,
       setJsonInput:this.setJsonInput, openFilePicker:this.openFilePicker, onFileInput:this.onFileInput,
+      setSrcInput:this.setSrcInput, onSrcPick:this.onSrcPick, onSrcPicked:this.onSrcPicked,
       onFileDrop:this.onFileDrop, onDragOver:this.onDragOver, onFolderPick:this.onFolderPick,
       githubUrl:st.githubUrl, onGitHubUrlChange:this.onGitHubUrlChange,
       subFullView:st.subFullView, doExpandFull:this.doExpandFull, doCollapseFull:this.doCollapseFull,

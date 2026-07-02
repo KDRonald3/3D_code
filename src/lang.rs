@@ -631,34 +631,30 @@ impl Lang {
     /// are de-duplicated while preserving first-seen order.
     pub fn calls_in(self, body: &str) -> Vec<String> {
         let mut out = Vec::new();
-        let mut seen = HashSet::new();
-        let chars: Vec<char> = body.chars().collect();
-        let n = chars.len();
-        let mut i = 0;
-        while i < n {
-            let c = chars[i];
-            if c.is_alphabetic() || c == '_' {
-                // Consume a full identifier.
-                let start = i;
-                while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                    i += 1;
-                }
-                let ident: String = chars[start..i].iter().collect();
-                // Look past whitespace for a `(` that marks a call site.
-                let mut j = i;
-                while j < n && chars[j].is_whitespace() {
-                    j += 1;
-                }
-                if j < n && chars[j] == '(' && !is_keyword(&ident) {
-                    if seen.insert(ident.clone()) {
-                        out.push(ident);
-                    }
-                }
-            } else {
-                i += 1;
+        let mut seen: HashSet<&str> = HashSet::new();
+        for (start, end) in ident_ranges(body) {
+            let ident = &body[start..end];
+            // Look past whitespace for a `(` that marks a call site.
+            let next = body[end..].chars().find(|c| !c.is_whitespace());
+            if next == Some('(') && !is_keyword(ident) && seen.insert(ident) {
+                out.push(ident.to_string());
             }
         }
         out
+    }
+
+    /// Stable dense index for per-language cached lookup tables.
+    fn index(self) -> usize {
+        match self {
+            Lang::Rust => 0,
+            Lang::Python => 1,
+            Lang::JavaScript => 2,
+            Lang::TypeScript => 3,
+            Lang::Go => 4,
+            Lang::Java => 5,
+            Lang::C => 6,
+            Lang::Cpp => 7,
+        }
     }
 
     /// The language's keyword set, used by the syntax highlighter.
@@ -723,9 +719,9 @@ impl Lang {
     }
 
     /// A representative source snippet (for a whole file), highlighted.
-    pub fn snippet(self, info: &FileInfo) -> Vec<(String, String)> {
+    pub fn snippet(self, info: &FileInfo) -> Vec<(String, &'static str)> {
         if info.text.lines().next().is_none() {
-            return vec![("// empty file\n".into(), "c".into())];
+            return vec![("// empty file\n".into(), "c")];
         }
         // Pick the most informative starting symbol: `main`, else the first
         // public function, else the first function, else the first type, else
@@ -750,30 +746,37 @@ impl Lang {
     /// A highlighted source snippet starting at `start_line` (1-based), spanning
     /// at most `max_lines`. For a single function or data structure pass a large
     /// `max_lines` so the *whole* symbol body is shown, not a truncated preview.
-    pub fn snippet_at(self, text: &str, start_line: usize, max_lines: usize) -> Vec<(String, String)> {
+    pub fn snippet_at(self, text: &str, start_line: usize, max_lines: usize) -> Vec<(String, &'static str)> {
         let lines: Vec<&str> = text.lines().collect();
+        self.snippet_at_lines(&lines, start_line, max_lines)
+    }
+
+    /// Like [`Lang::snippet_at`] but over pre-split lines, so callers emitting
+    /// many snippets from one file split it once instead of per symbol.
+    pub fn snippet_at_lines(self, lines: &[&str], start_line: usize, max_lines: usize) -> Vec<(String, &'static str)> {
         if lines.is_empty() || start_line == 0 {
-            return vec![("// no source\n".into(), "c".into())];
+            return vec![("// no source\n".into(), "c")];
         }
         let start = (start_line - 1).min(lines.len() - 1);
         let mut snippet_lines: Vec<&str> = Vec::new();
         if self.brace_based() {
             // Brace matcher that ignores braces inside strings, char literals
             // (and Rust lifetimes) and comments, so `format!("{}")` etc. don't
-            // throw off the depth count.
+            // throw off the depth count. All markers are ASCII, so this scans
+            // raw bytes (multi-byte UTF-8 units never match ASCII values).
             let mut depth: i32 = 0;
             let mut started = false;
             let mut in_block = false; // inside /* ... */ (may span lines)
             for line in &lines[start..] {
                 snippet_lines.push(line);
-                let ch: Vec<char> = line.chars().collect();
+                let ch = line.as_bytes();
                 let n = ch.len();
-                let mut in_str: Option<char> = None;
+                let mut in_str: Option<u8> = None;
                 let mut i = 0;
                 while i < n {
                     let c = ch[i];
                     if in_block {
-                        if c == '*' && i + 1 < n && ch[i + 1] == '/' {
+                        if c == b'*' && i + 1 < n && ch[i + 1] == b'/' {
                             in_block = false;
                             i += 2;
                             continue;
@@ -782,7 +785,7 @@ impl Lang {
                         continue;
                     }
                     if let Some(q) = in_str {
-                        if c == '\\' {
+                        if c == b'\\' {
                             i += 2;
                             continue;
                         }
@@ -792,34 +795,34 @@ impl Lang {
                         i += 1;
                         continue;
                     }
-                    if c == '/' && i + 1 < n && ch[i + 1] == '/' {
+                    if c == b'/' && i + 1 < n && ch[i + 1] == b'/' {
                         break; // rest of line is a comment
                     }
-                    if c == '/' && i + 1 < n && ch[i + 1] == '*' {
+                    if c == b'/' && i + 1 < n && ch[i + 1] == b'*' {
                         in_block = true;
                         i += 2;
                         continue;
                     }
-                    if c == '"' || c == '`' {
+                    if c == b'"' || c == b'`' {
                         in_str = Some(c);
                         i += 1;
                         continue;
                     }
-                    if c == '\'' {
+                    if c == b'\'' {
                         // Rust: distinguish a char literal from a lifetime/label.
                         let is_char_lit = self != Lang::Rust
-                            || (i + 2 < n && ch[i + 2] == '\'')
-                            || (i + 1 < n && ch[i + 1] == '\\');
+                            || (i + 2 < n && ch[i + 2] == b'\'')
+                            || (i + 1 < n && ch[i + 1] == b'\\');
                         if is_char_lit {
-                            in_str = Some('\'');
+                            in_str = Some(b'\'');
                         }
                         i += 1;
                         continue;
                     }
-                    if c == '{' {
+                    if c == b'{' {
                         depth += 1;
                         started = true;
-                    } else if c == '}' {
+                    } else if c == b'}' {
                         depth -= 1;
                     }
                     i += 1;
@@ -853,26 +856,37 @@ impl Lang {
 
 // ── Module-level helpers ───────────────────────────────────────────────────
 
+/// Byte ranges of every identifier (`[A-Za-z_][A-Za-z0-9_]*`, Unicode-aware) in
+/// `text`. Borrowing ranges instead of materialising a `Vec<char>` per call
+/// keeps the identifier lexers allocation-free for duplicate hits.
+fn ident_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut it = text.char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        if c.is_alphabetic() || c == '_' {
+            let mut end = text.len();
+            while let Some(&(j, c2)) = it.peek() {
+                if c2.is_alphanumeric() || c2 == '_' {
+                    it.next();
+                } else {
+                    end = j;
+                    break;
+                }
+            }
+            out.push((i, end));
+        }
+    }
+    out
+}
+
 /// All distinct identifiers appearing in `text`.
 pub fn idents(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut i = 0;
-    while i < n {
-        let c = chars[i];
-        if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let ident: String = chars[start..i].iter().collect();
-            if seen.insert(ident.clone()) {
-                out.push(ident);
-            }
-        } else {
-            i += 1;
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (start, end) in ident_ranges(text) {
+        let ident = &text[start..end];
+        if seen.insert(ident) {
+            out.push(ident.to_string());
         }
     }
     out
@@ -881,28 +895,14 @@ pub fn idents(text: &str) -> Vec<String> {
 /// PascalCase identifiers referenced inside a type body (field types).
 pub fn type_refs(body: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let chars: Vec<char> = body.chars().collect();
-    let n = chars.len();
-    let mut i = 0;
-    while i < n {
-        let c = chars[i];
-        if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let ident: String = chars[start..i].iter().collect();
-            // Keep only multi-char Capitalised names (a PascalCase type-name
-            // heuristic), excluding keywords; de-duplicate.
-            let first = ident.chars().next().unwrap();
-            if first.is_uppercase() && ident.len() >= 2 && !is_keyword(&ident) {
-                if seen.insert(ident.clone()) {
-                    out.push(ident);
-                }
-            }
-        } else {
-            i += 1;
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (start, end) in ident_ranges(body) {
+        let ident = &body[start..end];
+        // Keep only multi-char Capitalised names (a PascalCase type-name
+        // heuristic), excluding keywords; de-duplicate.
+        let first = ident.chars().next().unwrap();
+        if first.is_uppercase() && ident.len() >= 2 && !is_keyword(ident) && seen.insert(ident) {
+            out.push(ident.to_string());
         }
     }
     out
@@ -926,114 +926,132 @@ pub fn is_common_word(name: &str) -> bool {
 }
 
 /// Tokenise a snippet into `[text, kind]` spans (kw/fn/ty/c/'') for the inspector, lexing comments, strings, identifiers and punctuation.
-fn highlight(src: &str, lang: Lang) -> Vec<(String, String)> {
-    // Per-language lexing context: keyword/primitive sets, the line-comment
-    // marker (1 or 2 chars), and whether `/* */` block comments apply.
-    let kws: HashSet<&str> = lang.keywords().iter().copied().collect();
-    let prims: HashSet<&str> = lang.primitives().iter().copied().collect();
+///
+/// Scans byte offsets over the source and pushes `&str` slices directly (all
+/// branch markers are ASCII, so byte comparisons are UTF-8 safe), avoiding the
+/// `Vec<char>` materialisation this used to do for every snippet.
+fn highlight(src: &str, lang: Lang) -> Vec<(String, &'static str)> {
+    // Per-language lexing context: keyword/primitive sets (hashed once per
+    // process, not once per snippet), the line-comment marker (1 or 2 chars),
+    // and whether `/* */` block comments apply.
+    let (kws, prims) = highlight_sets(lang);
     let line_comment = lang.line_comment();
-    let lc0 = line_comment.chars().next().unwrap();
+    let lc0 = line_comment.as_bytes()[0];
     let lc_double = line_comment.len() == 2;
     let block = !matches!(lang, Lang::Python);
 
-    let chars: Vec<char> = src.chars().collect();
-    let n = chars.len();
-    let mut out: Vec<(String, String)> = Vec::new();
+    let bytes = src.as_bytes();
+    let n = src.len();
+    let mut out: Vec<(String, &'static str)> = Vec::new();
     // Append a span, coalescing with the previous one when it has the same kind
     // so the output isn't fragmented into many tiny spans.
-    let mut push = |s: String, k: &str| {
+    let mut push = |s: &str, k: &'static str| {
         if let Some(last) = out.last_mut() {
             if last.1 == k {
-                last.0.push_str(&s);
+                last.0.push_str(s);
                 return;
             }
         }
-        out.push((s, k.to_string()));
+        out.push((s.to_string(), k));
     };
 
     let mut i = 0;
     while i < n {
-        let c = chars[i];
+        let b = bytes[i];
         // block comment
-        if block && c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            let start = i;
-            i += 2;
-            while i < n && !(chars[i] == '*' && i + 1 < n && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-            push(chars[start..i].iter().collect(), "c");
+        if block && b == b'/' && i + 1 < n && bytes[i + 1] == b'*' {
+            let end = src[i + 2..].find("*/").map(|p| i + 4 + p).unwrap_or(n);
+            push(&src[i..end], "c");
+            i = end;
             continue;
         }
         // line comment
         let is_line_comment = if lc_double {
-            c == lc0 && i + 1 < n && chars[i + 1] == lc0
+            b == lc0 && i + 1 < n && bytes[i + 1] == lc0
         } else {
-            c == lc0
+            b == lc0
         };
         if is_line_comment {
-            let start = i;
-            while i < n && chars[i] != '\n' {
-                i += 1;
-            }
-            push(chars[start..i].iter().collect(), "c");
+            let end = src[i..].find('\n').map(|p| i + p).unwrap_or(n);
+            push(&src[i..end], "c");
+            i = end;
             continue;
         }
         // string / char literal
-        if c == '"' || c == '\'' || c == '`' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < n {
-                if chars[i] == '\\' {
-                    i += 2;
+        if b == b'"' || b == b'\'' || b == b'`' {
+            let quote = b as char;
+            let mut end = n;
+            let mut it = src[i + 1..].char_indices();
+            while let Some((j, c)) = it.next() {
+                if c == '\\' {
+                    it.next(); // skip the escaped character
                     continue;
                 }
-                if chars[i] == quote {
-                    i += 1;
+                if c == quote {
+                    end = i + 1 + j + 1;
                     break;
                 }
-                i += 1;
             }
-            push(chars[start..i.min(n)].iter().collect(), "");
+            push(&src[i..end], "");
+            i = end;
             continue;
         }
+        let c = src[i..].chars().next().unwrap();
         // identifier
         if c.is_alphabetic() || c == '_' || c == '$' {
-            let start = i;
-            while i < n && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
-                i += 1;
+            let mut end = n;
+            for (j, c2) in src[i..].char_indices().skip(1) {
+                if !(c2.is_alphanumeric() || c2 == '_' || c2 == '$') {
+                    end = i + j;
+                    break;
+                }
             }
-            let ident: String = chars[start..i].iter().collect();
+            let ident = &src[i..end];
             // Peek past spaces/tabs to see if a `(` follows (call site).
-            let mut j = i;
-            while j < n && (chars[j] == ' ' || chars[j] == '\t') {
+            let mut j = end;
+            while j < n && (bytes[j] == b' ' || bytes[j] == b'\t') {
                 j += 1;
             }
             // Classify: keyword, known primitive, function (followed by `(`),
             // type (Capitalised), else a plain identifier.
-            let kind = if kws.contains(ident.as_str()) {
+            let kind = if kws.contains(ident) {
                 "kw"
-            } else if prims.contains(ident.as_str()) {
+            } else if prims.contains(ident) {
                 "ty"
-            } else if j < n && chars[j] == '(' {
+            } else if j < n && bytes[j] == b'(' {
                 "fn"
-            } else if ident.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            } else if c.is_uppercase() {
                 "ty"
             } else {
                 ""
             };
             push(ident, kind);
+            i = end;
             continue;
         }
-        // default
-        push(c.to_string(), "");
-        i += 1;
+        // default: a single non-identifier character
+        let l = c.len_utf8();
+        push(&src[i..i + l], "");
+        i += l;
     }
     if out.is_empty() {
-        out.push(("\n".into(), "".into()));
+        out.push(("\n".into(), ""));
     }
     out
+}
+
+/// Lazily-built, process-cached keyword/primitive hash sets per language, so
+/// `highlight` (called once per emitted snippet) doesn't rebuild them each time.
+fn highlight_sets(lang: Lang) -> &'static (HashSet<&'static str>, HashSet<&'static str>) {
+    use std::sync::OnceLock;
+    static SETS: [OnceLock<(HashSet<&'static str>, HashSet<&'static str>)>; 8] =
+        [const { OnceLock::new() }; 8];
+    SETS[lang.index()].get_or_init(|| {
+        (
+            lang.keywords().iter().copied().collect(),
+            lang.primitives().iter().copied().collect(),
+        )
+    })
 }
 
 // ── small string helpers ───────────────────────────────────────────────────

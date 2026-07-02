@@ -90,7 +90,7 @@ pub struct DetailOut {
     /// Plain-English summary of the file's role.
     pub summary: String,
     /// Syntax-highlighted code snippet as `(token_class, text)` pairs.
-    pub code: Vec<(String, String)>,
+    pub code: Vec<(String, &'static str)>,
     /// Lines of code in the file.
     pub loc: usize,
     /// Humanised descriptions of tests that exercise this file.
@@ -141,7 +141,7 @@ pub struct FnOut {
     /// Ids of sibling functions in the same file that this one calls.
     pub calls: Vec<String>,
     /// Syntax-highlighted snippet as `(token_class, text)` pairs.
-    pub code: Vec<(String, String)>,
+    pub code: Vec<(String, &'static str)>,
     /// Lines of code in the function body.
     pub loc: usize,
     /// Doc comment, if any.
@@ -161,7 +161,7 @@ pub struct StructOut {
     /// Ids of sibling types in the same file that this one references.
     pub fields: Vec<String>,
     /// Syntax-highlighted snippet as `(token_class, text)` pairs.
-    pub code: Vec<(String, String)>,
+    pub code: Vec<(String, &'static str)>,
     /// Lines of code in the type body.
     pub loc: usize,
     /// Doc comment, if any.
@@ -261,6 +261,36 @@ const IGNORED_DIRS: &[&str] = &[
     ".vscode",
 ];
 
+/// Scan a filesystem path that may be either a single source file or a
+/// directory tree, returning the project display name and the collected files.
+pub fn scan_path(root: &Path, max_file_bytes: u64) -> io::Result<(String, Vec<InputFile>)> {
+    let meta = fs::metadata(root)?;
+    if !meta.is_file() {
+        return scan_dir(root, max_file_bytes);
+    }
+    // Single file: the project is named after the file itself.
+    let name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .to_string();
+    if Lang::from_path(root).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name}: unsupported file type (expected a source file: .rs .py .js .ts .go .java .c .cpp …)"),
+        ));
+    }
+    if meta.len() > max_file_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name}: file exceeds the {max_file_bytes}-byte limit"),
+        ));
+    }
+    let text = fs::read_to_string(root)?;
+    let files = vec![InputFile { path: name.clone(), text }];
+    Ok((name, files))
+}
+
 /// Walk a directory tree on disk and collect readable source files.
 pub fn scan_dir(root: &Path, max_file_bytes: u64) -> io::Result<(String, Vec<InputFile>)> {
     // Use the root directory's own name as the repository display name.
@@ -316,10 +346,11 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
     files.retain(|f| Lang::from_ext(&f.path).is_some() && !f.text.is_empty());
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // First pass: per-file symbol extraction.
+    // First pass: per-file symbol extraction. Consumes `files` so each file's
+    // text is moved (not copied) into the working record.
     let mut used_ids: HashSet<String> = HashSet::new();
     let mut infos: Vec<FileInfo> = Vec::new();
-    for f in &files {
+    for f in files {
         let lang = Lang::from_ext(&f.path).unwrap();
         let id = unique_id(&f.path, &mut used_ids);
         let label = display_label(&f.path);
@@ -336,10 +367,10 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
         infos.push(FileInfo {
             id,
             label,
-            path: f.path.clone(),
+            path: f.path,
             dir,
             lang,
-            text: f.text.clone(),
+            text: f.text,
             loc,
             funcs,
             types,
@@ -387,23 +418,29 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
     }
 
     // (b) symbol-mention edges: this file references a symbol owned elsewhere.
+    // Pre-filter and lowercase the project symbol table once, instead of
+    // re-lowercasing every symbol for every file (was O(files × symbols)
+    // allocations).
     let id_to_idx: HashMap<String, usize> =
         infos.iter().enumerate().map(|(i, f)| (f.id.clone(), i)).collect();
+    let mention_syms: Vec<(String, &String)> = type_owner
+        .iter()
+        .chain(fn_owner.iter())
+        .filter(|(name, _)| name.len() >= 4 && !lang::is_common_word(name))
+        .map(|(name, owner)| (name.to_lowercase(), owner))
+        .collect();
     for info in &infos {
-        let mut targets: BTreeSet<String> = BTreeSet::new();
-        for (name, owner) in type_owner.iter().chain(fn_owner.iter()) {
-            if owner == &info.id {
+        let mut targets: BTreeSet<&String> = BTreeSet::new();
+        for (lower, owner) in &mention_syms {
+            if *owner == &info.id {
                 continue;
             }
-            if name.len() < 4 || lang::is_common_word(name) {
-                continue;
-            }
-            if info.idents.contains(&name.to_lowercase()) {
-                targets.insert(owner.clone());
+            if info.idents.contains(lower) {
+                targets.insert(owner);
             }
         }
         for t in targets {
-            edge_set.insert((info.id.clone(), t));
+            edge_set.insert((info.id.clone(), t.to_string()));
         }
     }
 
@@ -431,20 +468,32 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
     // ── Layout (layered, left → right pipeline) ──
     let positions = layout(&infos, &edges, &indeg);
 
+    // Per-function call lists and per-type reference lists, lexed once here and
+    // shared by the cross-file pass below and the per-file sub-graphs (each
+    // body was previously re-lexed in both places).
+    let calls_per_file: Vec<Vec<Vec<String>>> = infos
+        .iter()
+        .map(|info| info.funcs.iter().map(|f| info.lang.calls_in(&f.body)).collect())
+        .collect();
+    let refs_per_file: Vec<Vec<Vec<String>>> = infos
+        .iter()
+        .map(|info| info.types.iter().map(|t| lang::type_refs(&t.body)).collect())
+        .collect();
+
     // ── Cross-file edges for the bottom panel ──
     let mut fnx: BTreeSet<[String; 4]> = BTreeSet::new();
     let mut fieldx: BTreeSet<[String; 4]> = BTreeSet::new();
-    for info in &infos {
+    for (fidx, info) in infos.iter().enumerate() {
         let local_fns: HashSet<&str> = info.funcs.iter().map(|f| f.name.as_str()).collect();
-        for f in &info.funcs {
-            for callee in info.lang.calls_in(&f.body) {
+        for (f, calls) in info.funcs.iter().zip(&calls_per_file[fidx]) {
+            for callee in calls {
                 if local_fns.contains(callee.as_str()) {
                     continue;
                 }
-                if let Some(owner) = fn_owner.get(&callee) {
+                if let Some(owner) = fn_owner.get(callee) {
                     if owner != &info.id {
                         if let Some(oidx) = id_to_idx.get(owner) {
-                            if infos[*oidx].funcs.iter().any(|x| x.name == callee) {
+                            if infos[*oidx].funcs.iter().any(|x| &x.name == callee) {
                                 fnx.insert([
                                     info.id.clone(),
                                     f.id.clone(),
@@ -458,12 +507,12 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
             }
         }
         let local_types: HashSet<&str> = info.types.iter().map(|t| t.name.as_str()).collect();
-        for t in &info.types {
-            for refd in lang::type_refs(&t.body) {
+        for (t, refs) in info.types.iter().zip(&refs_per_file[fidx]) {
+            for refd in refs {
                 if local_types.contains(refd.as_str()) {
                     continue;
                 }
-                if let Some(owner) = type_owner.get(&refd) {
+                if let Some(owner) = type_owner.get(refd) {
                     if owner != &info.id {
                         fieldx.insert([
                             info.id.clone(),
@@ -485,7 +534,7 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
     // Test descriptions: associate test fns project-wide to the files they exercise.
     let test_index = build_test_index(&infos);
 
-    for info in &infos {
+    for (fidx, info) in infos.iter().enumerate() {
         let pos = positions.get(&info.id).copied().unwrap_or((60.0, 60.0));
         let orphan = indeg.get(&info.id).copied().unwrap_or(0) == 0 && info.kind != "entry";
 
@@ -567,29 +616,38 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
             },
         );
 
+        // Split the file into lines once; every symbol snippet below reuses it
+        // (previously each snippet re-split the whole file).
+        let file_lines: Vec<&str> = info.text.lines().collect();
+
         // Per-function sub-graph: resolve each call to a sibling function in the
-        // same file (skip self-calls, external calls and duplicates).
+        // same file (skip self-calls, external calls and duplicates). The
+        // name->id map is built once per file, not per function.
+        let mut fn_name_to_id: HashMap<&str, &str> = HashMap::new();
+        for x in &info.funcs {
+            fn_name_to_id.entry(x.name.as_str()).or_insert(x.id.as_str());
+        }
         let fns = info
             .funcs
             .iter()
-            .map(|f| {
-                let local: HashSet<&str> =
-                    info.funcs.iter().map(|x| x.name.as_str()).collect();
+            .zip(&calls_per_file[fidx])
+            .map(|(f, body_calls)| {
                 let mut calls: Vec<String> = Vec::new();
                 let mut seen = HashSet::new();
-                for c in info.lang.calls_in(&f.body) {
-                    if c != f.name && local.contains(c.as_str()) && seen.insert(c.clone()) {
-                        if let Some(t) = info.funcs.iter().find(|x| x.name == c) {
-                            calls.push(t.id.clone());
+                for c in body_calls {
+                    if c != &f.name && seen.insert(c.as_str()) {
+                        if let Some(t) = fn_name_to_id.get(c.as_str()) {
+                            calls.push(t.to_string());
                         }
                     }
                 }
+                let code = info.lang.snippet_at_lines(&file_lines, f.line, 4000);
                 FnOut {
                     id: f.id.clone(),
                     label: f.name.clone(),
                     sig: if f.sig.is_empty() { "()".into() } else { f.sig.clone() },
                     calls,
-                    code: info.lang.snippet_at(&info.text, f.line, 4000),
+                    code,
                     loc: f.body.lines().count().max(1),
                     doc: f.doc.clone(),
                 }
@@ -598,18 +656,21 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
 
         // Per-type sub-graph: link each type to sibling types it references in
         // the same file (skip self-references, external types and duplicates).
+        let mut ty_name_to_id: HashMap<&str, &str> = HashMap::new();
+        for x in &info.types {
+            ty_name_to_id.entry(x.name.as_str()).or_insert(x.id.as_str());
+        }
         let structs = info
             .types
             .iter()
-            .map(|t| {
-                let local: HashSet<&str> =
-                    info.types.iter().map(|x| x.name.as_str()).collect();
+            .zip(&refs_per_file[fidx])
+            .map(|(t, body_refs)| {
                 let mut fields: Vec<String> = Vec::new();
                 let mut seen = HashSet::new();
-                for r in lang::type_refs(&t.body) {
-                    if r != t.name && local.contains(r.as_str()) && seen.insert(r.clone()) {
-                        if let Some(o) = info.types.iter().find(|x| x.name == r) {
-                            fields.push(o.id.clone());
+                for r in body_refs {
+                    if r != &t.name && seen.insert(r.as_str()) {
+                        if let Some(o) = ty_name_to_id.get(r.as_str()) {
+                            fields.push(o.to_string());
                         }
                     }
                 }
@@ -618,7 +679,7 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
                     label: t.name.clone(),
                     sig: t.sig.clone(),
                     fields,
-                    code: info.lang.snippet_at(&info.text, t.line, 4000),
+                    code: info.lang.snippet_at_lines(&file_lines, t.line, 4000),
                     loc: t.body.lines().count().max(1),
                     doc: t.doc.clone(),
                 }
@@ -639,9 +700,10 @@ pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
     for info in &infos {
         *lang_counts.entry(info.lang.name()).or_insert(0) += 1;
     }
+    // Ties broken alphabetically so the result is deterministic across runs.
     let language = lang_counts
         .into_iter()
-        .max_by_key(|(_, c)| *c)
+        .max_by(|(na, ca), (nb, cb)| ca.cmp(cb).then(nb.cmp(na)))
         .map(|(n, _)| n.to_lowercase())
         .unwrap_or_default();
 
@@ -854,12 +916,16 @@ fn build_test_index(infos: &[FileInfo]) -> HashMap<String, Vec<String>> {
                 continue;
             }
             let desc = humanize(&f.name);
-            // attach the test to files whose symbols it references
+            // Attach the test to files whose symbols it references. Lexing the
+            // body once and probing the identifier set is both faster than a
+            // substring scan per symbol and immune to accidental
+            // inside-a-longer-identifier matches.
+            let body_idents: HashSet<String> = lang::idents(&f.body).into_iter().collect();
             let mut attached: BTreeSet<String> = BTreeSet::new();
             for (name, oid) in &owner {
                 if name.len() >= 4
                     && !lang::is_common_word(name)
-                    && f.body.contains(name.as_str())
+                    && body_idents.contains(name.as_str())
                 {
                     attached.insert(oid.clone());
                 }
@@ -1127,6 +1193,63 @@ mod tests {
         // model.rs exposes its types in the bottom-panel sub graph
         let model_sub = &m.sub["model"];
         assert!(model_sub.structs.iter().any(|s| s.label == "Cfg"));
+    }
+
+    /// A single standalone file (with no `main`, so no entry node) still
+    /// analyzes into a complete one-node model with its symbols extracted.
+    #[test]
+    fn analyzes_a_single_file_without_entry_point() {
+        let files = vec![f(
+            "utils.py",
+            "\"\"\"Small helpers.\"\"\"\n\
+             def slugify(s):\n    return s.lower()\n\n\
+             def shout(s):\n    return slugify(s).upper()\n\n\
+             class Cache:\n    pass\n",
+        )];
+        let m = analyze("utils.py", files);
+        assert_eq!(m.nodes.len(), 1);
+        let node = &m.nodes[0];
+        assert_eq!(node.label, "utils.py");
+        assert_ne!(node.kind, "entry");
+        assert!(m.edges.is_empty());
+        // Symbols and the local call graph are still extracted.
+        let sub = &m.sub[&node.id];
+        assert!(sub.fns.iter().any(|f| f.label == "slugify"));
+        assert!(sub.fns.iter().any(|f| f.label == "shout" && f.calls == ["slugify"]));
+        assert!(sub.structs.iter().any(|s| s.label == "Cache"));
+        // The doc comment drives the summary.
+        assert!(m.detail[&node.id].summary.contains("Small helpers"));
+    }
+
+    /// `scan_path` accepts a single source file (naming the project after it),
+    /// still handles directories, and rejects unsupported/oversized files.
+    #[test]
+    fn scan_path_handles_files_and_directories() {
+        let dir = std::env::temp_dir().join(format!("cv_scan_path_test_{}", std::process::id()));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(dir.join("sub/util.rs"), "pub fn helper() {}\n").unwrap();
+        fs::write(dir.join("notes.txt"), "not source\n").unwrap();
+
+        // Single file: project named after the file, one input collected.
+        let (name, files) = scan_path(&dir.join("main.rs"), 500_000).unwrap();
+        assert_eq!(name, "main.rs");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "main.rs");
+        assert!(files[0].text.contains("fn main"));
+
+        // Directory: recursive scan unchanged (the .txt file is skipped).
+        let (name, files) = scan_path(&dir, 500_000).unwrap();
+        assert_eq!(name, dir.file_name().unwrap().to_str().unwrap());
+        let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["main.rs", "sub/util.rs"]);
+
+        // Unsupported extension and oversized files are rejected with errors.
+        assert!(scan_path(&dir.join("notes.txt"), 500_000).is_err());
+        assert!(scan_path(&dir.join("main.rs"), 4).is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
 

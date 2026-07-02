@@ -1,20 +1,21 @@
 //! Command-line entry point.
 //!
-//! Scans a codebase directory and prints the analysis model as JSON, or writes
-//! it to a file. The interactive app is served by the `server` binary; this CLI
-//! is handy for inspecting what the analyzer produces for a given tree.
+//! Scans a codebase directory — or a single source file — and prints the
+//! analysis model as JSON, or writes it to a file. The interactive app is
+//! served by the `server` binary; this CLI is handy for inspecting what the
+//! analyzer produces for a given tree or file.
 
 use std::path::PathBuf;
 use std::process;
 
-use codebase_visualizer::{analyze, scan_dir};
+use codebase_visualizer::{analyze, scan_path};
 
 /// CLI entry point.
 ///
-/// Parses command-line arguments (the target `<PATH>`, plus `-o/--output`,
-/// `--pretty`, `--max-file-bytes`, and `-h/--help`), scans the directory with
-/// [`scan_dir`], analyzes the result with [`analyze`], and serializes the model
-/// to JSON. The JSON is written to the `--output` file when given, otherwise
+/// Parses command-line arguments (the target `<PATH>` — a directory or a
+/// single source file — plus `-o/--output`, `--pretty`, `--max-file-bytes`,
+/// and `-h/--help`), scans it with [`scan_path`], analyzes the result with
+/// [`analyze`], and serializes the model to JSON. The JSON is written to the `--output` file when given, otherwise
 /// printed to stdout. Exits with a non-zero status on a missing path, an
 /// unknown option, or a scan/write failure.
 fn main() {
@@ -56,8 +57,8 @@ fn main() {
         process::exit(2);
     };
 
-    // Scan the directory for source files, exiting on I/O or traversal failure.
-    let (repo_name, files) = match scan_dir(&path, max_file_bytes) {
+    // Scan the file or directory for source files, exiting on I/O failure.
+    let (repo_name, files) = match scan_path(&path, max_file_bytes) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: failed to scan {}: {e}", path.display());
@@ -95,6 +96,7 @@ fn print_help() {
     eprintln!(
         "Codebase Visualizer — analyzer CLI\n\n\
          USAGE:\n    codebase_visualizer <PATH> [OPTIONS]\n\n\
+         <PATH> may be a project directory or a single source file.\n\n\
          OPTIONS:\n\
          \x20   -o, --output FILE       write model JSON to FILE (default: stdout)\n\
          \x20   --pretty                pretty-print the JSON\n\

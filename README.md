@@ -1,11 +1,13 @@
 # Codebase Visualizer
 
-An interactive, Figma-style map of a codebase. Add a folder and a Rust analyzer
-scans the source tree, classifies each file, infers dependencies, extracts the
-functions and data structures inside each file, and renders it all into a
-single-page app for 10× faster understanding of unfamiliar (or AI-written) code.
+An interactive, Figma-style map of a codebase. Add a folder — or a single
+source file — and a Rust analyzer scans the source, classifies each file,
+infers dependencies, extracts the functions and data structures inside each
+file, and renders it all into a single-page app for 10× faster understanding
+of unfamiliar (or AI-written) code.
 
-The app **opens empty** — nothing is shown until you add a project folder.
+The app **opens empty** — nothing is shown until you add a project folder or
+source file.
 
 ## Architecture
 
@@ -28,15 +30,20 @@ The app **opens empty** — nothing is shown until you add a project folder.
 cargo run --bin server
 ```
 
-Then open <http://localhost:8787> and click **＋ Add folder** to pick a project
-directory. (Set `PORT` to change the port.)
+Then open <http://localhost:8787> and pick a project directory with
+**Open local folder**, or one or more standalone files with
+**Open source file(s)** — you can also drag source files straight onto the
+page. (Set `PORT` to change the port. The server listens on `127.0.0.1` only;
+set `HOST` to expose it, e.g. `HOST=0.0.0.0`.)
 
 ## CLI
 
-Inspect the analysis model for a directory without the browser:
+Inspect the analysis model for a directory — or a single source file —
+without the browser:
 
 ```sh
 cargo run --bin codebase_visualizer -- path/to/project --pretty
+cargo run --bin codebase_visualizer -- path/to/file.py --pretty
 ```
 
 Options:
