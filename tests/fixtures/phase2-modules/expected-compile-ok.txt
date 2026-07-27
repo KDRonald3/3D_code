@@ -1,0 +1,2 @@
+cargo check --manifest-path tests/fixtures/phase2-modules/Cargo.toml
+exit 0

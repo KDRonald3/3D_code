@@ -1,0 +1,29 @@
+# cargo check --manifest-path tests/fixtures/impl-free-globs/Cargo.toml
+# Exit code: 0
+#
+# Verbatim cargo/rustc output (warnings only; builds successfully):
+
+warning: unused import: `crate::text::*`
+ --> app.rs:7:5
+  |
+7 | use crate::text::*;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `shout` is never used
+   --> app.rs:112:12
+    |
+112 |     pub fn shout(s: &str) -> String {
+    |            ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `measure` is never used
+   --> app.rs:117:12
+    |
+117 |     pub fn measure(s: &str) -> usize {
+    |            ^^^^^^^
+
+warning: `impl-free-globs` (lib) generated 3 warnings (run `cargo fix --lib -p impl-free-globs` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in <time>

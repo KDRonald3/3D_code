@@ -1,27 +1,35 @@
 [package]
-name = "codebase_visualizer"
-version = "0.2.0"
+name = "horizon"
+version = "0.1.0"
 edition = "2021"
-description = "Scan a codebase and render an interactive, Figma-style map of its structure."
+description = "Build a navigable function map of a Rust repository."
 license = "MIT"
-default-run = "server"
+exclude = ["tests/fixtures"]
+
+[workspace]
+resolver = "2"
+members = ["."]
+exclude = ["tests/fixtures"]
 
 [lib]
-name = "codebase_visualizer"
+name = "horizon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "codebase_visualizer"
-path = "src/main.rs"
+name = "horizon"
+path = "src/bin/horizon.rs"
 
 [[bin]]
-name = "server"
-path = "src/bin/server.rs"
+name = "measure_correctness"
+path = "src/bin/measure_correctness.rs"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tiny_http = "0.12"
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+ra_ap_syntax = "0.0.343"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
 
 [profile.release]
 opt-level = 2

@@ -1,1295 +1,244 @@
-//! Codebase analyzer.
+//! Horizon — build a navigable function map of a Rust repository.
 //!
-//! Walks a set of source files and produces a [`Model`] that serialises to the
-//! exact JSON shape the Codebase Visualizer front-end consumes:
-//! `nodes`, `edges`, `detail`, `folders`, `sub`, `fnx`, `fieldx`, plus a
-//! repository name and a plain-English architecture summary.
+//! Pipeline stages (each in its own module):
 //!
-//! The extraction is heuristic and line/brace based (no heavy parser
-//! dependency) so it works across Rust, Python, JavaScript/TypeScript, Go,
-//! Java and C/C++.
+//! 1. [`discover`] — `cargo metadata` → crates, roots, dependencies
+//! 2. [`modules`] — `mod` walk → files in the crate and their module paths
+//! 3. [`parse`] — thin wrapper over `ra_ap_syntax`
+//! 4. [`extract`] — per-file facts (definitions, calls, imports, docs)
+//! 5. [`resolve`] — call site → [`map::CallTarget`] (resolved, conflict, or unresolved)
+//! 6. [`map`] / [`json`] — node types and JSON emission
+//!
+//! [`pipeline`] shares extract → resolve-index construction between
+//! [`build_function_map`] and the correctness harness so they cannot drift.
+//!
+//! # Phase 4
+//!
+//! Multi-crate end-to-end: every workspace member and path-dependency
+//! library-like target (including `proc-macro`) plus each binary is walked.
+//! Cross-crate edges resolve only along the declared dependency graph, and
+//! only to `pub` items behind an all-`pub` module chain. Registry / git
+//! dependencies stay dropped.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
-use std::io;
+pub mod correctness;
+pub mod discover;
+pub mod extract;
+pub mod json;
+pub mod map;
+pub mod modules;
+pub mod parse;
+pub(crate) mod pipeline;
+pub mod resolve;
+
+pub use json::{
+    map_from_slice, map_to_string, write_map, write_map_compact, write_map_compact_to_file,
+    write_map_to_file,
+};
+pub use map::{
+    CallSite, CallTarget, Conflict, Crate, Dependency, DependencyKind, DocComment, DocCommentKind,
+    File, Folder, Function, FunctionId, MapSummary, Repository, UnresolvedCall,
+};
+
+use anyhow::Result;
+use extract::{CallOwnerKind, FileFacts, PendingCall};
+use pipeline::{extract_repository, resolve_index_for};
+use resolve::{ExclusionKind, ResolveResult, resolve_call};
+use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Serialize;
+/// Analyse `repo_root` and return its function map.
+///
+/// Never refuses to produce output: a codebase mid-edit still yields a map
+/// (conflicts mark what could not be resolved).
+pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
+    let root = discover::normalize_path(repo_root.as_ref());
+    let extracted = extract_repository(&root)?;
 
-/// Per-language helpers: extension detection, symbol extraction, import/call
-/// scanning, identifier listing and syntax-highlight snippeting.
-mod lang;
-use lang::Lang;
+    let mut summary = MapSummary::empty();
+    let mut crates = Vec::with_capacity(extracted.len());
 
-/// A source file handed to the analyzer (path is repo-relative).
-#[derive(Debug, Clone)]
-pub struct InputFile {
-    /// Repo-relative path to the file (forward-slash separated).
-    pub path: String,
-    /// Full UTF-8 contents of the file.
-    pub text: String,
+    for i in 0..extracted.len() {
+        let index = resolve_index_for(&extracted, i);
+
+        let mut built_files = Vec::new();
+        for (path, module_path, facts) in &extracted[i].file_facts {
+            let (functions, file_calls) =
+                attach_resolved_calls(facts.clone(), &index, &mut summary)?;
+            built_files.push(File {
+                path: path.clone(),
+                module_path: module_path.clone(),
+                functions,
+                call_sites: file_calls,
+                doc_comments: facts.doc_comments.clone(),
+            });
+        }
+
+        let src_root = extracted[i]
+            .krate
+            .roots
+            .first()
+            .and_then(|r| r.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.clone());
+        let (folders, root_files) = build_folder_tree(&src_root, built_files);
+
+        let mut krate = extracted[i].krate.clone();
+        krate.folders = folders;
+        krate.files = root_files;
+        crates.push(krate);
+    }
+
+    Ok(Repository {
+        root,
+        crates,
+        summary,
+    })
 }
 
-// ── Serialised output model (matches the front-end data contract) ──────────
-
-/// Top-level analysis result; serialises to the exact JSON the front-end consumes.
-#[derive(Debug, Serialize)]
-pub struct Model {
-    /// Schema version of the emitted JSON.
-    pub version: &'static str,
-    /// Repository / project display name.
-    #[serde(rename = "repoName")]
-    pub repo_name: String,
-    /// Dominant language (by file count), lowercased.
-    pub language: String,
-    /// Plain-English architecture summary paragraph.
-    pub arch: String,
-    /// File nodes with their canvas positions and metadata.
-    pub nodes: Vec<NodeOut>,
-    /// Directed file-to-file dependency edges as `[from_id, to_id]`.
-    pub edges: Vec<[String; 2]>,
-    /// Per-file inspector detail, keyed by node id.
-    pub detail: BTreeMap<String, DetailOut>,
-    /// Folder grouping for the left-panel tree.
-    pub folders: Vec<FolderOut>,
-    /// Per-file function/struct sub-graphs, keyed by node id.
-    pub sub: BTreeMap<String, SubOut>,
-    /// Cross-file function-call edges as `[from_file, from_fn, to_file, to_fn]`.
-    pub fnx: Vec<[String; 4]>,
-    /// Cross-file type-reference edges as `[from_file, from_type, to_file, to_type]`.
-    pub fieldx: Vec<[String; 4]>,
-}
-
-/// A single file node positioned on the visualizer canvas.
-#[derive(Debug, Serialize)]
-pub struct NodeOut {
-    /// Stable unique node id.
-    pub id: String,
-    /// Human-friendly node label (filename).
-    pub label: String,
-    /// Classified role: `entry`, `struct`, `fn` or `file`.
-    pub kind: String,
-    /// Canvas x coordinate.
-    pub x: f64,
-    /// Canvas y coordinate.
-    pub y: f64,
-    /// Lines of code in the file.
-    pub loc: usize,
-    /// Optional diff marker (unused by the analyzer; reserved for the front-end).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diff: Option<String>,
-    /// True when no live callers reach this module (possible dead code).
-    pub orphan: bool,
-}
-
-/// Inspector panel detail for one file.
-#[derive(Debug, Serialize)]
-pub struct DetailOut {
-    /// Repo-relative path.
-    pub path: String,
-    /// Plain-English summary of the file's role.
-    pub summary: String,
-    /// Syntax-highlighted code snippet as `(token_class, text)` pairs.
-    pub code: Vec<(String, &'static str)>,
-    /// Lines of code in the file.
-    pub loc: usize,
-    /// Humanised descriptions of tests that exercise this file.
-    pub tests: Vec<String>,
-    /// Labels of files that depend on this one.
-    pub callers: Vec<String>,
-    /// Labels of files this one depends on.
-    pub callees: Vec<String>,
-    /// Risk notes (large module, high fan-in, orphan, unsafe, …).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub risks: Vec<String>,
-    /// UI badges as `(label, severity)` pairs (`r` = risk, `n` = neutral).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub badges: Vec<(String, String)>,
-}
-
-/// A folder grouping of file ids for the left-panel tree.
-#[derive(Debug, Serialize)]
-pub struct FolderOut {
-    /// Directory name (`.` for the repo root).
-    pub name: String,
-    /// File node ids contained in this folder.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub files: Option<Vec<String>>,
-    /// Vendored/third-party file ids (reserved; currently always `None`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vendor: Option<Vec<String>>,
-}
-
-/// The bottom-panel sub-graph for one file: its functions and types.
-#[derive(Debug, Serialize)]
-pub struct SubOut {
-    /// Functions defined in the file.
-    pub fns: Vec<FnOut>,
-    /// Types (structs/enums) defined in the file.
-    pub structs: Vec<StructOut>,
-}
-
-/// A function node within a file's sub-graph.
-#[derive(Debug, Serialize)]
-pub struct FnOut {
-    /// Unique function symbol id.
-    pub id: String,
-    /// Function name.
-    pub label: String,
-    /// Signature (defaults to `()` when unknown).
-    pub sig: String,
-    /// Ids of sibling functions in the same file that this one calls.
-    pub calls: Vec<String>,
-    /// Syntax-highlighted snippet as `(token_class, text)` pairs.
-    pub code: Vec<(String, &'static str)>,
-    /// Lines of code in the function body.
-    pub loc: usize,
-    /// Doc comment, if any.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub doc: String,
-}
-
-/// A type (struct/enum) node within a file's sub-graph.
-#[derive(Debug, Serialize)]
-pub struct StructOut {
-    /// Unique type symbol id.
-    pub id: String,
-    /// Type name.
-    pub label: String,
-    /// Signature / declaration line.
-    pub sig: String,
-    /// Ids of sibling types in the same file that this one references.
-    pub fields: Vec<String>,
-    /// Syntax-highlighted snippet as `(token_class, text)` pairs.
-    pub code: Vec<(String, &'static str)>,
-    /// Lines of code in the type body.
-    pub loc: usize,
-    /// Doc comment, if any.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub doc: String,
-}
-
-// ── Internal working types ─────────────────────────────────────────────────
-
-/// A function/method symbol extracted from a file during the first pass.
-#[derive(Debug, Clone)]
-struct FuncSym {
-    /// Unique id (file id + function name based).
-    id: String,
-    /// Function name.
-    name: String,
-    /// 1-based line where the function starts.
-    line: usize,
-    /// Extracted signature text.
-    sig: String,
-    /// Doc comment preceding the function.
-    doc: String,
-    /// Source of the function body (used for call extraction).
-    body: String,
-    /// True when this is a test function.
-    is_test: bool,
-    /// True when the function is public.
-    is_pub: bool,
-}
-
-/// A type (struct/enum/alias) symbol extracted from a file during the first pass.
-#[derive(Debug, Clone)]
-struct TypeSym {
-    /// Unique id (file id + type name based).
-    id: String,
-    /// Type name.
-    name: String,
-    /// 1-based line where the type starts.
-    line: usize,
-    /// Extracted signature / declaration text.
-    sig: String,
-    /// Doc comment preceding the type.
-    doc: String,
-    /// Source of the type body (used for type-reference extraction).
-    body: String,
-}
-
-/// All analyzer state computed for a single file (the central working record).
-#[derive(Debug)]
-struct FileInfo {
-    /// Stable unique node id.
-    id: String,
-    /// Human-friendly display label.
-    label: String,
-    /// Repo-relative path.
-    path: String,
-    /// Parent directory (empty for root-level files).
-    dir: String,
-    /// Detected language.
-    lang: Lang,
-    /// Full file contents.
-    text: String,
-    /// Lines of code.
-    loc: usize,
-    /// Functions defined in the file.
-    funcs: Vec<FuncSym>,
-    /// Types defined in the file.
-    types: Vec<TypeSym>,
-    /// File-level doc comment, if any.
-    file_doc: String,
-    /// Classified role: `entry`, `struct`, `fn` or `file`.
-    kind: String,
-    /// True when the file performs I/O.
-    has_io: bool,
-    /// True when the file contains `unsafe` blocks.
-    has_unsafe: bool,
-    /// Lowercased set of identifiers appearing in this file (used to infer
-    /// symbol-mention dependency edges).
-    idents: HashSet<String>,
-}
-
-/// Directory names skipped while walking the source tree (vendored deps, build
-/// output, VCS metadata, editor settings).
-const IGNORED_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    "__pycache__",
-    ".next",
-    ".nuxt",
-    "vendor",
-    ".idea",
-    ".vscode",
-];
-
-/// Scan a filesystem path that may be either a single source file or a
-/// directory tree, returning the project display name and the collected files.
-pub fn scan_path(root: &Path, max_file_bytes: u64) -> io::Result<(String, Vec<InputFile>)> {
-    let meta = fs::metadata(root)?;
-    if !meta.is_file() {
-        return scan_dir(root, max_file_bytes);
-    }
-    // Single file: the project is named after the file itself.
-    let name = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file")
-        .to_string();
-    if Lang::from_path(root).is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{name}: unsupported file type (expected a source file: .rs .py .js .ts .go .java .c .cpp …)"),
-        ));
-    }
-    if meta.len() > max_file_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{name}: file exceeds the {max_file_bytes}-byte limit"),
-        ));
-    }
-    let text = fs::read_to_string(root)?;
-    let files = vec![InputFile { path: name.clone(), text }];
-    Ok((name, files))
-}
-
-/// Walk a directory tree on disk and collect readable source files.
-pub fn scan_dir(root: &Path, max_file_bytes: u64) -> io::Result<(String, Vec<InputFile>)> {
-    // Use the root directory's own name as the repository display name.
-    let repo_name = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("project")
-        .to_string();
-    let mut files = Vec::new();
-    collect(root, root, max_file_bytes, &mut files)?;
-    Ok((repo_name, files))
-}
-
-/// Recursively walk `dir`, skipping ignored/hidden folders and oversized files, collecting readable source files as repo-relative `InputFile`s.
-fn collect(root: &Path, dir: &Path, max: u64, out: &mut Vec<InputFile>) -> io::Result<()> {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(()),
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
-            // Skip vendored/build/VCS folders and any hidden directory; recurse otherwise.
-            if IGNORED_DIRS.contains(&name.as_str()) || name.starts_with('.') {
-                continue;
-            }
-            collect(root, &path, max, out)?;
-        } else if Lang::from_path(&path).is_some() {
-            // Only consider files with a recognised source extension.
-            // Skip files larger than the byte budget (generated/minified blobs).
-            if let Ok(meta) = entry.metadata() {
-                if meta.len() > max {
-                    continue;
-                }
-            }
-            // Read as UTF-8 and store with a forward-slash repo-relative path.
-            if let Ok(text) = fs::read_to_string(&path) {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.push(InputFile { path: rel, text });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Analyze a set of files into the front-end model.
-pub fn analyze(repo_name: &str, mut files: Vec<InputFile>) -> Model {
-    files.retain(|f| Lang::from_ext(&f.path).is_some() && !f.text.is_empty());
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-
-    // First pass: per-file symbol extraction. Consumes `files` so each file's
-    // text is moved (not copied) into the working record.
-    let mut used_ids: HashSet<String> = HashSet::new();
-    let mut infos: Vec<FileInfo> = Vec::new();
-    for f in files {
-        let lang = Lang::from_ext(&f.path).unwrap();
-        let id = unique_id(&f.path, &mut used_ids);
-        let label = display_label(&f.path);
-        let dir = dir_of(&f.path);
-        let loc = f.text.lines().count();
-        let (funcs, types) = lang.extract(&f.text);
-        let file_doc = lang.file_doc(&f.text);
-        let has_io = lang.has_io(&f.text);
-        let has_unsafe = f.text.contains("unsafe ") || f.text.contains("unsafe{");
-        let mut idents = HashSet::new();
-        for w in lang::idents(&f.text) {
-            idents.insert(w.to_lowercase());
-        }
-        infos.push(FileInfo {
-            id,
-            label,
-            path: f.path,
-            dir,
-            lang,
-            text: f.text,
-            loc,
-            funcs,
-            types,
-            file_doc,
-            kind: String::new(),
-            has_io,
-            has_unsafe,
-            idents,
-        });
-    }
-
-    // Classify each file's dominant role.
-    for info in &mut infos {
-        info.kind = classify(info);
-    }
-
-    // Ownership maps: symbol name -> owning file id (first definer wins).
-    let mut type_owner: HashMap<String, String> = HashMap::new();
-    let mut fn_owner: HashMap<String, String> = HashMap::new();
-    let mut name_to_file: HashMap<String, String> = HashMap::new();
-    for info in &infos {
-        name_to_file
-            .entry(file_stem(&info.path))
-            .or_insert_with(|| info.id.clone());
-        for t in &info.types {
-            type_owner.entry(t.name.clone()).or_insert(info.id.clone());
-        }
-        for f in &info.funcs {
-            fn_owner.entry(f.name.clone()).or_insert(info.id.clone());
-        }
-    }
-
-    // ── File-level edges (dependencies) ──
-    let mut edge_set: BTreeSet<(String, String)> = BTreeSet::new();
-
-    // (a) import / use based edges.
-    for info in &infos {
-        for module in info.lang.imports(&info.text) {
-            if let Some(target) = resolve_module(&module, info, &infos, &name_to_file) {
-                if target != info.id {
-                    edge_set.insert((info.id.clone(), target));
-                }
-            }
-        }
-    }
-
-    // (b) symbol-mention edges: this file references a symbol owned elsewhere.
-    // Pre-filter and lowercase the project symbol table once, instead of
-    // re-lowercasing every symbol for every file (was O(files × symbols)
-    // allocations).
-    let id_to_idx: HashMap<String, usize> =
-        infos.iter().enumerate().map(|(i, f)| (f.id.clone(), i)).collect();
-    let mention_syms: Vec<(String, &String)> = type_owner
-        .iter()
-        .chain(fn_owner.iter())
-        .filter(|(name, _)| name.len() >= 4 && !lang::is_common_word(name))
-        .map(|(name, owner)| (name.to_lowercase(), owner))
-        .collect();
-    for info in &infos {
-        let mut targets: BTreeSet<&String> = BTreeSet::new();
-        for (lower, owner) in &mention_syms {
-            if *owner == &info.id {
-                continue;
-            }
-            if info.idents.contains(lower) {
-                targets.insert(owner);
-            }
-        }
-        for t in targets {
-            edge_set.insert((info.id.clone(), t.to_string()));
-        }
-    }
-
-    let edges: Vec<[String; 2]> = edge_set
-        .into_iter()
-        .map(|(a, b)| [a, b])
-        .collect();
-
-    // Indegree / fan-in.
-    let mut indeg: HashMap<String, usize> = infos.iter().map(|f| (f.id.clone(), 0)).collect();
-    let mut callers_of: HashMap<String, Vec<String>> = HashMap::new();
-    let mut callees_of: HashMap<String, Vec<String>> = HashMap::new();
-    for e in &edges {
-        *indeg.entry(e[1].clone()).or_insert(0) += 1;
-        callers_of.entry(e[1].clone()).or_default().push(e[0].clone());
-        callees_of.entry(e[0].clone()).or_default().push(e[1].clone());
-    }
-    let max_fanin = indeg.values().copied().max().unwrap_or(0);
-    let avg_loc = if infos.is_empty() {
-        0.0
-    } else {
-        infos.iter().map(|f| f.loc).sum::<usize>() as f64 / infos.len() as f64
-    };
-
-    // ── Layout (layered, left → right pipeline) ──
-    let positions = layout(&infos, &edges, &indeg);
-
-    // Per-function call lists and per-type reference lists, lexed once here and
-    // shared by the cross-file pass below and the per-file sub-graphs (each
-    // body was previously re-lexed in both places).
-    let calls_per_file: Vec<Vec<Vec<String>>> = infos
-        .iter()
-        .map(|info| info.funcs.iter().map(|f| info.lang.calls_in(&f.body)).collect())
-        .collect();
-    let refs_per_file: Vec<Vec<Vec<String>>> = infos
-        .iter()
-        .map(|info| info.types.iter().map(|t| lang::type_refs(&t.body)).collect())
-        .collect();
-
-    // ── Cross-file edges for the bottom panel ──
-    let mut fnx: BTreeSet<[String; 4]> = BTreeSet::new();
-    let mut fieldx: BTreeSet<[String; 4]> = BTreeSet::new();
-    for (fidx, info) in infos.iter().enumerate() {
-        let local_fns: HashSet<&str> = info.funcs.iter().map(|f| f.name.as_str()).collect();
-        for (f, calls) in info.funcs.iter().zip(&calls_per_file[fidx]) {
-            for callee in calls {
-                if local_fns.contains(callee.as_str()) {
-                    continue;
-                }
-                if let Some(owner) = fn_owner.get(callee) {
-                    if owner != &info.id {
-                        if let Some(oidx) = id_to_idx.get(owner) {
-                            if infos[*oidx].funcs.iter().any(|x| &x.name == callee) {
-                                fnx.insert([
-                                    info.id.clone(),
-                                    f.id.clone(),
-                                    owner.clone(),
-                                    callee.clone(),
-                                ]);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let local_types: HashSet<&str> = info.types.iter().map(|t| t.name.as_str()).collect();
-        for (t, refs) in info.types.iter().zip(&refs_per_file[fidx]) {
-            for refd in refs {
-                if local_types.contains(refd.as_str()) {
-                    continue;
-                }
-                if let Some(owner) = type_owner.get(refd) {
-                    if owner != &info.id {
-                        fieldx.insert([
-                            info.id.clone(),
-                            t.id.clone(),
-                            owner.clone(),
-                            refd.clone(),
-                        ]);
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Build outputs ──
-    let mut nodes = Vec::new();
-    let mut detail = BTreeMap::new();
-    let mut sub = BTreeMap::new();
-
-    // Test descriptions: associate test fns project-wide to the files they exercise.
-    let test_index = build_test_index(&infos);
-
-    for (fidx, info) in infos.iter().enumerate() {
-        let pos = positions.get(&info.id).copied().unwrap_or((60.0, 60.0));
-        let orphan = indeg.get(&info.id).copied().unwrap_or(0) == 0 && info.kind != "entry";
-
-        // risks + badges
-        let mut risks: Vec<String> = Vec::new();
-        let mut badges: Vec<(String, String)> = Vec::new();
-        if info.loc > 300 {
-            risks.push(format!(
-                "{} lines — large module; consider splitting into smaller units.",
-                info.loc
-            ));
-            badges.push(("LARGE".into(), "r".into()));
-        } else if avg_loc > 0.0 && info.loc as f64 > avg_loc * 3.0 {
-            risks.push(format!(
-                "{} lines — about {}× the average module; a candidate for extraction.",
-                info.loc,
-                (info.loc as f64 / avg_loc).round() as usize
-            ));
-        }
-        if max_fanin >= 3 && indeg.get(&info.id).copied().unwrap_or(0) == max_fanin {
-            risks.push("Highest fan-in in the graph — changes here ripple widely.".into());
-            badges.push(("high fan-in".into(), "n".into()));
-        }
-        if orphan {
-            risks.push("No live callers reach this module — possible dead code.".into());
-            badges.push(("ORPHAN".into(), "r".into()));
-        }
-        if info.has_unsafe {
-            risks.push("Contains `unsafe` blocks — review memory-safety assumptions.".into());
-        }
-        if info.has_io {
-            badges.push(("IO".into(), "n".into()));
-        }
-        if info.kind == "struct" {
-            badges.push(("core type".into(), "n".into()));
-        }
-
-        let tests = test_index.get(&info.id).cloned().unwrap_or_default();
-        if tests.is_empty() && info.loc > 60 {
-            badges.push(("no tests".into(), "n".into()));
-        }
-        if !risks.is_empty() {
-            // hotspot marker badge first
-            badges.insert(0, ("HOTSPOT".into(), "r".into()));
-        }
-        // de-dup badges by label
-        let mut seen = HashSet::new();
-        badges.retain(|b| seen.insert(b.0.clone()));
-
-        let summary = make_summary(info, &callees_of, &callers_of, orphan);
-        let code = info.lang.snippet(info);
-
-        let callers = sorted_labels(callers_of.get(&info.id), &infos);
-        let callees = sorted_labels(callees_of.get(&info.id), &infos);
-
-        nodes.push(NodeOut {
-            id: info.id.clone(),
-            label: info.label.clone(),
-            kind: info.kind.clone(),
-            x: pos.0,
-            y: pos.1,
-            loc: info.loc,
-            diff: None,
-            orphan,
-        });
-
-        detail.insert(
-            info.id.clone(),
-            DetailOut {
-                path: info.path.clone(),
-                summary,
-                code,
-                loc: info.loc,
-                tests,
-                callers,
-                callees,
-                risks,
-                badges,
-            },
-        );
-
-        // Split the file into lines once; every symbol snippet below reuses it
-        // (previously each snippet re-split the whole file).
-        let file_lines: Vec<&str> = info.text.lines().collect();
-
-        // Per-function sub-graph: resolve each call to a sibling function in the
-        // same file (skip self-calls, external calls and duplicates). The
-        // name->id map is built once per file, not per function.
-        let mut fn_name_to_id: HashMap<&str, &str> = HashMap::new();
-        for x in &info.funcs {
-            fn_name_to_id.entry(x.name.as_str()).or_insert(x.id.as_str());
-        }
-        let fns = info
-            .funcs
-            .iter()
-            .zip(&calls_per_file[fidx])
-            .map(|(f, body_calls)| {
-                let mut calls: Vec<String> = Vec::new();
-                let mut seen = HashSet::new();
-                for c in body_calls {
-                    if c != &f.name && seen.insert(c.as_str()) {
-                        if let Some(t) = fn_name_to_id.get(c.as_str()) {
-                            calls.push(t.to_string());
-                        }
-                    }
-                }
-                let code = info.lang.snippet_at_lines(&file_lines, f.line, 4000);
-                FnOut {
-                    id: f.id.clone(),
-                    label: f.name.clone(),
-                    sig: if f.sig.is_empty() { "()".into() } else { f.sig.clone() },
-                    calls,
-                    code,
-                    loc: f.body.lines().count().max(1),
-                    doc: f.doc.clone(),
-                }
-            })
-            .collect();
-
-        // Per-type sub-graph: link each type to sibling types it references in
-        // the same file (skip self-references, external types and duplicates).
-        let mut ty_name_to_id: HashMap<&str, &str> = HashMap::new();
-        for x in &info.types {
-            ty_name_to_id.entry(x.name.as_str()).or_insert(x.id.as_str());
-        }
-        let structs = info
-            .types
-            .iter()
-            .zip(&refs_per_file[fidx])
-            .map(|(t, body_refs)| {
-                let mut fields: Vec<String> = Vec::new();
-                let mut seen = HashSet::new();
-                for r in body_refs {
-                    if r != &t.name && seen.insert(r.as_str()) {
-                        if let Some(o) = ty_name_to_id.get(r.as_str()) {
-                            fields.push(o.to_string());
-                        }
-                    }
-                }
-                StructOut {
-                    id: t.id.clone(),
-                    label: t.name.clone(),
-                    sig: t.sig.clone(),
-                    fields,
-                    code: info.lang.snippet_at_lines(&file_lines, t.line, 4000),
-                    loc: t.body.lines().count().max(1),
-                    doc: t.doc.clone(),
-                }
-            })
-            .collect();
-
-        sub.insert(info.id.clone(), SubOut { fns, structs });
-    }
-
-    // ── Folders ──
-    let folders = build_folders(&infos);
-
-    // ── Architecture summary ──
-    let arch = make_arch(repo_name, &infos, &edges, &indeg);
-
-    // Dominant language (by file count) for the project meta.
-    let mut lang_counts: HashMap<&str, usize> = HashMap::new();
-    for info in &infos {
-        *lang_counts.entry(info.lang.name()).or_insert(0) += 1;
-    }
-    // Ties broken alphabetically so the result is deterministic across runs.
-    let language = lang_counts
-        .into_iter()
-        .max_by(|(na, ca), (nb, cb)| ca.cmp(cb).then(nb.cmp(na)))
-        .map(|(n, _)| n.to_lowercase())
-        .unwrap_or_default();
-
-    Model {
-        version: "1",
-        repo_name: repo_name.to_string(),
-        language,
-        arch,
-        nodes,
-        edges,
-        detail,
-        folders,
-        sub,
-        fnx: fnx.into_iter().collect(),
-        fieldx: fieldx.into_iter().collect(),
-    }
-}
-
-// ── Classification ─────────────────────────────────────────────────────────
-
-/// Assign a file's dominant role (entry/struct/fn/file) in priority order per the card-type spec: entry, then type-dominated, then single-function, else plain file.
-fn classify(info: &FileInfo) -> String {
-    if is_entry(info) {
-        return "entry".into();
-    }
-    let nf = info.funcs.len();
-    let nt = info.types.len();
-    // type-dominated
-    if nt >= 1 && (nf == 0 || (nt >= nf && nf <= 2)) {
-        return "struct".into();
-    }
-    // single function / tiny helper
-    if nt == 0 && nf >= 1 && nf <= 2 {
-        return "fn".into();
-    }
-    "file".into()
-}
-
-/// Detect whether a file is a program entry point (line/symbol based, so it is
-/// not fooled by the string `"fn main("` appearing inside a literal).
-fn is_entry(info: &FileInfo) -> bool {
-    let stem = file_stem(&info.path);
-    let has_main = info.funcs.iter().any(|f| f.name == "main" || f.name == "Main");
-    match info.lang {
-        Lang::Rust | Lang::Go | Lang::C | Lang::Cpp => has_main,
-        Lang::Java => has_main || info.text.contains("static void main"),
-        Lang::Python => {
-            has_main
-                || info.text.contains("if __name__")
-                || stem == "__main__"
-        }
-        Lang::JavaScript | Lang::TypeScript => {
-            matches!(stem.as_str(), "index" | "main" | "app" | "server" | "cli")
-        }
-    }
-}
-
-// ── Summaries ────────────────────────────────────────────────────────────
-
-/// Build the inspector's plain-English summary for a file: prefer a real doc comment (file or first public symbol), else synthesise one from role, symbol counts and dependency degree.
-fn make_summary(
-    info: &FileInfo,
-    callees: &HashMap<String, Vec<String>>,
-    callers: &HashMap<String, Vec<String>>,
-    orphan: bool,
-) -> String {
-    if !info.file_doc.is_empty() {
-        return clamp_sentence(&info.file_doc);
-    }
-    // doc of first public function/type
-    if let Some(f) = info.funcs.iter().find(|f| f.is_pub && !f.doc.is_empty()) {
-        return clamp_sentence(&f.doc);
-    }
-    if let Some(f) = info.funcs.iter().find(|f| !f.doc.is_empty()) {
-        return clamp_sentence(&f.doc);
-    }
-    if let Some(t) = info.types.iter().find(|t| !t.doc.is_empty()) {
-        return clamp_sentence(&t.doc);
-    }
-    // generated description
-    let role = match info.kind.as_str() {
-        "entry" => "the entry point",
-        "struct" => "a data-structure module",
-        "fn" => "a small helper module",
-        _ => "a source module",
-    };
-    let mut parts = vec![format!(
-        "{} — {} written in {}.",
-        info.label,
-        role,
-        info.lang.name()
-    )];
-    let nf = info.funcs.len();
-    let nt = info.types.len();
-    if nf > 0 || nt > 0 {
-        parts.push(format!(
-            "Defines {} and {}.",
-            count_phrase(nf, "function", "functions"),
-            count_phrase(nt, "type", "types")
-        ));
-    }
-    let out_deg = callees.get(&info.id).map(|v| v.len()).unwrap_or(0);
-    let in_deg = callers.get(&info.id).map(|v| v.len()).unwrap_or(0);
-    if orphan {
-        parts.push("Nothing in the graph depends on it.".into());
-    } else {
-        parts.push(format!(
-            "Depended on by {} and reaches out to {}.",
-            count_phrase(in_deg, "module", "modules"),
-            count_phrase(out_deg, "module", "modules")
-        ));
-    }
-    parts.join(" ")
-}
-
-/// Pluralise a count into a phrase, e.g. 0 -> "no modules", 1 -> "1 module", 3 -> "3 modules".
-fn count_phrase(n: usize, one: &str, many: &str) -> String {
-    match n {
-        0 => format!("no {}", many),
-        1 => format!("1 {}", one),
-        _ => format!("{} {}", n, many),
-    }
-}
-
-/// Trim an over-long doc comment to ~300 chars, breaking on a sentence boundary and appending an ellipsis when truncated.
-fn clamp_sentence(s: &str) -> String {
-    let s = s.trim();
-    if s.len() <= 320 {
-        return s.to_string();
-    }
-    // Accumulate characters until we pass ~300 bytes and hit a sentence end.
-    let mut out = String::new();
-    for ch in s.chars() {
-        out.push(ch);
-        if out.len() >= 300 && (ch == '.' || ch == '!' || ch == '?') {
-            break;
-        }
-    }
-    if out.len() < s.len() && !out.ends_with('.') {
-        out.push('…');
-    }
-    out
-}
-
-/// Compose the architecture sticky-note paragraph: module/folder counts, languages, the entry point and most-depended-on hub, and the inferred link count.
-fn make_arch(
-    repo: &str,
-    infos: &[FileInfo],
-    edges: &[[String; 2]],
-    indeg: &HashMap<String, usize>,
-) -> String {
-    if infos.is_empty() {
-        return String::new();
-    }
-    let mut langs: BTreeSet<&str> = BTreeSet::new();
-    for i in infos {
-        langs.insert(i.lang.name());
-    }
-    let mut dirs: BTreeSet<&str> = BTreeSet::new();
-    for i in infos {
-        dirs.insert(if i.dir.is_empty() { "." } else { i.dir.as_str() });
-    }
-    let entry = infos
-        .iter()
-        .find(|i| i.kind == "entry")
-        .or_else(|| infos.iter().min_by_key(|i| indeg.get(&i.id).copied().unwrap_or(0)));
-    let langs_list = langs.into_iter().collect::<Vec<_>>().join(", ");
-    let mut s = format!(
-        "{}: {} across {}. Languages: {}.",
-        repo,
-        count_phrase(infos.len(), "module", "modules"),
-        count_phrase(dirs.len(), "folder", "folders"),
-        langs_list
-    );
-    if let Some(e) = entry {
-        s.push_str(&format!(" Execution flows from {}", e.label));
-        // most-depended-on module
-        if let Some(hub) = infos
-            .iter()
-            .max_by_key(|i| indeg.get(&i.id).copied().unwrap_or(0))
-        {
-            if indeg.get(&hub.id).copied().unwrap_or(0) > 0 && hub.id != e.id {
-                s.push_str(&format!(" toward the most-depended-on module {}", hub.label));
-            }
-        }
-        s.push('.');
-    }
-    s.push_str(&format!(" {} dependency links inferred.", edges.len()));
-    s
-}
-
-// ── Tests ──────────────────────────────────────────────────────────────────
-
-/// Map each file id to humanised descriptions of the test functions that reference its symbols (the inspector's "Tests as docs").
-fn build_test_index(infos: &[FileInfo]) -> HashMap<String, Vec<String>> {
-    // Map symbol name -> owning file id.
-    let mut owner: HashMap<String, String> = HashMap::new();
-    for info in infos {
-        for f in &info.funcs {
-            owner.entry(f.name.clone()).or_insert(info.id.clone());
-        }
-        for t in &info.types {
-            owner.entry(t.name.clone()).or_insert(info.id.clone());
-        }
-    }
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for info in infos {
-        for f in &info.funcs {
-            if !f.is_test {
-                continue;
-            }
-            let desc = humanize(&f.name);
-            // Attach the test to files whose symbols it references. Lexing the
-            // body once and probing the identifier set is both faster than a
-            // substring scan per symbol and immune to accidental
-            // inside-a-longer-identifier matches.
-            let body_idents: HashSet<String> = lang::idents(&f.body).into_iter().collect();
-            let mut attached: BTreeSet<String> = BTreeSet::new();
-            for (name, oid) in &owner {
-                if name.len() >= 4
-                    && !lang::is_common_word(name)
-                    && body_idents.contains(name.as_str())
-                {
-                    attached.insert(oid.clone());
-                }
-            }
-            if attached.is_empty() {
-                attached.insert(info.id.clone());
-            }
-            for fid in attached {
-                let v = out.entry(fid).or_default();
-                if v.len() < 5 && !v.contains(&desc) {
-                    v.push(desc.clone());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Turn a test function name like `test_parses_args` into a readable description ("parses args").
-fn humanize(name: &str) -> String {
-    let n = name
-        .trim_start_matches("test_")
-        .trim_start_matches("test");
-    let n = n.trim_start_matches('_');
-    let spaced = n.replace('_', " ");
-    let spaced = spaced.trim();
-    if spaced.is_empty() {
-        name.to_string()
-    } else {
-        spaced.to_string()
-    }
-}
-
-// ── Folders ──────────────────────────────────────────────────────────────
-
-/// Group file ids by their parent directory into the left-panel folder tree (root-level files go under ".").
-fn build_folders(infos: &[FileInfo]) -> Vec<FolderOut> {
-    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for info in infos {
-        let dir = if info.dir.is_empty() {
-            ".".to_string()
-        } else {
-            info.dir.clone()
-        };
-        map.entry(dir).or_default().push(info.id.clone());
-    }
-    map.into_iter()
-        .map(|(name, files)| FolderOut {
-            name,
-            files: Some(files),
-            vendor: None,
-        })
-        .collect()
-}
-
-// ── Layout ─────────────────────────────────────────────────────────────────
-
-/// Place file nodes on the 1360x600 virtual canvas as a left->right layered pipeline: column = cycle-safe BFS depth from the entry/root nodes, rows centred per column.
-fn layout(
-    infos: &[FileInfo],
-    edges: &[[String; 2]],
-    indeg: &HashMap<String, usize>,
-) -> HashMap<String, (f64, f64)> {
-    let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
-    // adjacency for BFS
-    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
-    for e in edges {
-        adj.entry(e[0].as_str()).or_default().push(e[1].as_str());
-    }
-    // roots = indegree 0 (or entry); fall back to first node
-    let mut depth: HashMap<String, i32> = HashMap::new();
-    let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
-    for i in infos {
-        if indeg.get(&i.id).copied().unwrap_or(0) == 0 || i.kind == "entry" {
-            depth.insert(i.id.clone(), 0);
-            queue.push_back(i.id.as_str());
-        }
-    }
-    if depth.is_empty() {
-        if let Some(first) = ids.first() {
-            depth.insert(first.to_string(), 0);
-            queue.push_back(first);
-        }
-    }
-    // multi-source BFS (shortest path) — stable even when the graph has cycles
-    while let Some(cur) = queue.pop_front() {
-        let d = depth.get(cur).copied().unwrap_or(0);
-        if let Some(next) = adj.get(cur) {
-            for &nx in next {
-                if !depth.contains_key(nx) {
-                    depth.insert(nx.to_string(), d + 1);
-                    queue.push_back(nx);
-                }
-            }
-        }
-    }
-    for i in infos {
-        depth.entry(i.id.clone()).or_insert(0);
-    }
-    let max_depth = depth.values().copied().max().unwrap_or(0).max(0);
-
-    // group by column
-    let mut cols: BTreeMap<i32, Vec<&str>> = BTreeMap::new();
-    for i in infos {
-        let d = depth.get(&i.id).copied().unwrap_or(0);
-        cols.entry(d).or_default().push(i.id.as_str());
-    }
-
-    const CANVAS_W: f64 = 1360.0;
-    const CANVAS_H: f64 = 600.0;
-    const NW: f64 = 150.0;
-    const NH: f64 = 84.0;
-    let col_gap = if max_depth > 0 {
-        ((CANVAS_W - NW - 80.0) / max_depth as f64).min(210.0)
-    } else {
-        0.0
-    };
-    let row_gap = 132.0;
-
-    let mut pos = HashMap::new();
-    for (d, members) in &cols {
-        let x = 50.0 + (*d as f64) * col_gap;
-        let n = members.len();
-        let total_h = (n.saturating_sub(1)) as f64 * row_gap + NH;
-        let start_y = if total_h < CANVAS_H {
-            ((CANVAS_H - total_h) / 2.0).max(20.0)
-        } else {
-            20.0
-        };
-        for (i, id) in members.iter().enumerate() {
-            let y = start_y + i as f64 * row_gap;
-            pos.insert(id.to_string(), (round1(x), round1(y)));
-        }
-    }
-    pos
-}
-
-/// Round to one decimal place to keep emitted coordinates compact.
-fn round1(v: f64) -> f64 {
-    (v * 10.0).round() / 10.0
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/// De-duplicate a list of node ids while preserving order (used for callers/callees).
-fn sorted_labels(ids: Option<&Vec<String>>, _infos: &[FileInfo]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen = HashSet::new();
-    if let Some(v) = ids {
-        for id in v {
-            if seen.insert(id.clone()) {
-                out.push(id.clone());
-            }
-        }
-    }
-    out
-}
-
-/// Derive a stable, unique node id from a file path: the file stem, disambiguated with the parent folder for ambiguous names (mod/index/__init__) and a numeric suffix on collision.
-fn unique_id(path: &str, used: &mut HashSet<String>) -> String {
-    let stem = file_stem(path);
-    // Generic stems (mod.rs, index.js, …) collide across folders, so prefix the
-    // parent directory to keep ids meaningful and distinct.
-    let ambiguous = matches!(
-        stem.as_str(),
-        "mod" | "index" | "main" | "lib" | "__init__" | "__main__"
-    );
-    let mut base = if ambiguous {
-        let parent = dir_of(path);
-        let parent = parent.rsplit('/').next().unwrap_or("");
-        if parent.is_empty() || stem == "main" || stem == "lib" {
-            stem.clone()
-        } else {
-            format!("{}_{}", parent, stem)
-        }
-    } else {
-        stem.clone()
-    };
-    base = sanitize(&base);
-    if base.is_empty() {
-        base = "mod".into();
-    }
-    // Append an incrementing numeric suffix until the id is unique.
-    let mut candidate = base.clone();
-    let mut n = 1;
-    while used.contains(&candidate) {
-        n += 1;
-        candidate = format!("{}{}", base, n);
-    }
-    used.insert(candidate.clone());
-    candidate
-}
-
-/// Replace any non-alphanumeric/underscore character with `_` so ids are safe map keys.
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-        .collect()
-}
-
-/// Return a path's filename without its extension.
-fn file_stem(path: &str) -> String {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    match name.rsplit_once('.') {
-        Some((stem, _)) => stem.to_string(),
-        None => name.to_string(),
-    }
-}
-
-/// Human-friendly node label: the filename, prefixed with its parent folder for ambiguous names like `mod.rs`/`index.js`.
-fn display_label(path: &str) -> String {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let stem = file_stem(path);
-    if matches!(stem.as_str(), "mod" | "index" | "__init__" | "__main__") {
-        // include parent dir for clarity
-        let dir = dir_of(path);
-        if let Some(parent) = dir.rsplit('/').next() {
-            if !parent.is_empty() {
-                return format!("{}/{}", parent, name);
-            }
-        }
-    }
-    name.to_string()
-}
-
-/// Return the directory portion of a repo-relative path (empty for root-level files).
-fn dir_of(path: &str) -> String {
-    match path.rsplit_once('/') {
-        Some((dir, _)) => dir.to_string(),
-        None => String::new(),
-    }
-}
-
-/// Unit tests exercising the end-to-end analysis on small synthetic projects.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Build an `InputFile` from a path and source text (test helper).
-    fn f(path: &str, text: &str) -> InputFile {
-        InputFile { path: path.into(), text: text.into() }
-    }
-
-    /// Smoke test: a tiny Rust project classifies `main` as entry, `model` as a
-    /// type module and `util` as a single-fn module, links `main` to both, flags
-    /// the orphan, and exposes `model`'s types in the bottom-panel sub graph.
-    #[test]
-    fn classifies_and_links_a_small_rust_project() {
-        let files = vec![
-            f("src/main.rs", "//! Entry.\nuse crate::model;\nuse crate::util;\nfn main() { util::run(model::Cfg::new()); }"),
-            f("src/util.rs", "//! Helper.\nuse crate::model;\npub fn run(c: model::Cfg) {}"),
-            f("src/model.rs", "//! Types.\npub struct Cfg { pub n: u32 }\npub enum Mode { A, B }"),
-            f("src/dead.rs", "fn unused() {}"),
-        ];
-        let m = analyze("demo", files);
-        let kind = |id: &str| m.nodes.iter().find(|n| n.id == id).map(|n| n.kind.as_str());
-        assert_eq!(kind("main"), Some("entry"));
-        assert_eq!(kind("model"), Some("struct"));
-        assert_eq!(kind("util"), Some("fn"));
-        // main depends on model and util
-        assert!(m.edges.contains(&["main".into(), "util".into()]));
-        assert!(m.edges.contains(&["main".into(), "model".into()]));
-        // dead.rs has no callers -> orphan
-        assert!(m.nodes.iter().any(|n| n.id == "dead" && n.orphan));
-        // model.rs exposes its types in the bottom-panel sub graph
-        let model_sub = &m.sub["model"];
-        assert!(model_sub.structs.iter().any(|s| s.label == "Cfg"));
-    }
-
-    /// A single standalone file (with no `main`, so no entry node) still
-    /// analyzes into a complete one-node model with its symbols extracted.
-    #[test]
-    fn analyzes_a_single_file_without_entry_point() {
-        let files = vec![f(
-            "utils.py",
-            "\"\"\"Small helpers.\"\"\"\n\
-             def slugify(s):\n    return s.lower()\n\n\
-             def shout(s):\n    return slugify(s).upper()\n\n\
-             class Cache:\n    pass\n",
-        )];
-        let m = analyze("utils.py", files);
-        assert_eq!(m.nodes.len(), 1);
-        let node = &m.nodes[0];
-        assert_eq!(node.label, "utils.py");
-        assert_ne!(node.kind, "entry");
-        assert!(m.edges.is_empty());
-        // Symbols and the local call graph are still extracted.
-        let sub = &m.sub[&node.id];
-        assert!(sub.fns.iter().any(|f| f.label == "slugify"));
-        assert!(sub.fns.iter().any(|f| f.label == "shout" && f.calls == ["slugify"]));
-        assert!(sub.structs.iter().any(|s| s.label == "Cache"));
-        // The doc comment drives the summary.
-        assert!(m.detail[&node.id].summary.contains("Small helpers"));
-    }
-
-    /// `scan_path` accepts a single source file (naming the project after it),
-    /// still handles directories, and rejects unsupported/oversized files.
-    #[test]
-    fn scan_path_handles_files_and_directories() {
-        let dir = std::env::temp_dir().join(format!("cv_scan_path_test_{}", std::process::id()));
-        fs::create_dir_all(dir.join("sub")).unwrap();
-        fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
-        fs::write(dir.join("sub/util.rs"), "pub fn helper() {}\n").unwrap();
-        fs::write(dir.join("notes.txt"), "not source\n").unwrap();
-
-        // Single file: project named after the file, one input collected.
-        let (name, files) = scan_path(&dir.join("main.rs"), 500_000).unwrap();
-        assert_eq!(name, "main.rs");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "main.rs");
-        assert!(files[0].text.contains("fn main"));
-
-        // Directory: recursive scan unchanged (the .txt file is skipped).
-        let (name, files) = scan_path(&dir, 500_000).unwrap();
-        assert_eq!(name, dir.file_name().unwrap().to_str().unwrap());
-        let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-        paths.sort();
-        assert_eq!(paths, ["main.rs", "sub/util.rs"]);
-
-        // Unsupported extension and oversized files are rejected with errors.
-        assert!(scan_path(&dir.join("notes.txt"), 500_000).is_err());
-        assert!(scan_path(&dir.join("main.rs"), 4).is_err());
-
-        fs::remove_dir_all(&dir).unwrap();
-    }
-}
-
-/// Resolve an import/use hint to the id of the file it refers to: handles relative JS/TS paths and picks the deepest path segment (e.g. `crate::cli::Cli` -> `cli`) that maps to a scanned file.
-fn resolve_module(
-    module: &str,
-    from: &FileInfo,
-    _infos: &[FileInfo],
-    name_to_file: &HashMap<String, String>,
-) -> Option<String> {
-    // relative path resolution for JS/TS imports like ./foo or ../bar/baz
-    if module.starts_with('.') {
-        if let Some(base) = Path::new(&from.path).parent() {
-            let joined = base.join(module.trim_start_matches("./"));
-            let target = joined.to_string_lossy().replace('\\', "/");
-            let tstem = file_stem(&target);
-            if let Some(id) = name_to_file.get(&tstem) {
-                return Some(id.clone());
-            }
-            // last segment of the relative path
-            if let Some(seg) = module.rsplit(['/', '.']).find(|s| !s.is_empty()) {
-                if let Some(id) = name_to_file.get(seg) {
-                    return Some(id.clone());
-                }
-            }
-        }
-    }
-    // Module/symbol path like `crate::cli::Cli` or `pkg.module.Symbol`:
-    // pick the deepest segment that maps to a known file (the module name sits
-    // just before the imported symbol, so prefer the last matching segment).
-    let mut found: Option<String> = None;
-    for seg in module.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-        if seg.is_empty() {
+fn attach_resolved_calls(
+    facts: FileFacts,
+    index: &resolve::ResolveIndex,
+    summary: &mut MapSummary,
+) -> Result<(Vec<Function>, Vec<CallSite>)> {
+    let mut calls_by_owner: HashMap<String, Vec<CallSite>> = HashMap::new();
+    let mut file_calls = Vec::new();
+
+    for pending in &facts.call_sites {
+        let site = resolve_pending(pending, index, summary)?;
+        let Some(site) = site else {
             continue;
-        }
-        if let Some(id) = name_to_file.get(seg) {
-            if id != &from.id {
-                found = Some(id.clone());
+        };
+
+        match pending.owner {
+            CallOwnerKind::Function => {
+                if let Some(owner) = pending.enclosing_function.as_ref() {
+                    calls_by_owner
+                        .entry(owner.as_str().to_string())
+                        .or_default()
+                        .push(site);
+                }
             }
+            CallOwnerKind::File => file_calls.push(site),
         }
     }
-    found
+
+    let mut functions = facts.functions;
+    for func in &mut functions {
+        if let Some(sites) = calls_by_owner.remove(func.id.as_str()) {
+            func.call_sites = sites;
+        }
+    }
+
+    Ok((functions, file_calls))
+}
+
+fn resolve_pending(
+    pending: &PendingCall,
+    index: &resolve::ResolveIndex,
+    summary: &mut MapSummary,
+) -> Result<Option<CallSite>> {
+    let target = match resolve_call(pending, index)? {
+        ResolveResult::Target(t) => t,
+        ResolveResult::External => {
+            summary.record_external_dropped();
+            return Ok(None);
+        }
+        ResolveResult::Excluded(ExclusionKind::VariantOrConstructor) => {
+            summary.record_constructor_dropped();
+            return Ok(None);
+        }
+        ResolveResult::Excluded(ExclusionKind::AssociatedFunction) => {
+            summary.record_associated_dropped();
+            return Ok(None);
+        }
+    };
+
+    match &target {
+        CallTarget::Conflict(_) => summary.record_conflict(),
+        CallTarget::Unresolved(_) => summary.record_unresolved(),
+        CallTarget::Resolved(_) => {}
+    }
+
+    Ok(Some(CallSite {
+        call_path: pending.call_path.clone(),
+        line: pending.line,
+        byte_start: pending.byte_start,
+        byte_end: pending.byte_end,
+        target,
+        from_macro: pending.from_macro,
+    }))
+}
+
+/// Place discovered files into `Crate.files` / `Folder` nodes from their paths
+/// relative to the crate source root. Only files the module walk found — never
+/// a filesystem directory listing.
+fn build_folder_tree(src_root: &Path, files: Vec<File>) -> (Vec<Folder>, Vec<File>) {
+    let src_root = discover::normalize_path(src_root);
+    let mut root_files = Vec::new();
+    let mut tree = FolderTree::default();
+
+    for file in files {
+        let rel = match file.path.strip_prefix(&src_root) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => {
+                root_files.push(file);
+                continue;
+            }
+        };
+        let parent = rel.parent();
+        if parent.is_none() || parent.is_some_and(|p| p.as_os_str().is_empty()) {
+            root_files.push(file);
+        } else if let Some(parent) = parent {
+            tree.insert_file(parent, file);
+        }
+    }
+
+    root_files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut folders = tree.into_folders(&src_root);
+    folders.sort_by(|a, b| a.path.cmp(&b.path));
+    (folders, root_files)
+}
+
+/// Nested directory → files, built only from module-walk paths.
+#[derive(Debug, Default)]
+struct FolderTree {
+    files: Vec<File>,
+    children: HashMap<String, FolderTree>,
+}
+
+impl FolderTree {
+    fn insert_file(&mut self, rel_dir: &Path, file: File) {
+        let mut cursor = self;
+        for component in rel_dir.components() {
+            let Some(name) = component.as_os_str().to_str() else {
+                continue;
+            };
+            cursor = cursor.children.entry(name.to_string()).or_default();
+        }
+        cursor.files.push(file);
+    }
+
+    fn into_folders(mut self, abs_dir: &Path) -> Vec<Folder> {
+        let mut names: Vec<String> = self.children.keys().cloned().collect();
+        names.sort();
+        let mut folders = Vec::with_capacity(names.len());
+        for name in names {
+            let child_tree = self.children.remove(&name).unwrap_or_default();
+            let path = abs_dir.join(&name);
+            let mut files = child_tree.files;
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            // Recurse into grandchildren via a fresh tree holding only children.
+            let nested = FolderTree {
+                files: Vec::new(),
+                children: child_tree.children,
+            }
+            .into_folders(&path);
+            folders.push(Folder {
+                path,
+                folders: nested,
+                files,
+            });
+        }
+        folders
+    }
 }

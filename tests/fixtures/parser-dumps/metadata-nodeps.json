@@ -1,0 +1,136 @@
+{
+    "packages":  [
+                     {
+                         "name":  "horizon",
+                         "version":  "0.2.0",
+                         "id":  "path+file:///C:/Users/kouat/code/Horizon#horizon@0.2.0",
+                         "license":  "MIT",
+                         "license_file":  null,
+                         "description":  "Scan a codebase and render an interactive, Figma-style map of its structure.",
+                         "source":  null,
+                         "dependencies":  [
+                                              {
+                                                  "name":  "serde",
+                                                  "source":  "registry+https://github.com/rust-lang/crates.io-index",
+                                                  "req":  "^1",
+                                                  "kind":  null,
+                                                  "rename":  null,
+                                                  "optional":  false,
+                                                  "uses_default_features":  true,
+                                                  "features":  [
+                                                                   "derive"
+                                                               ],
+                                                  "target":  null,
+                                                  "registry":  null
+                                              },
+                                              {
+                                                  "name":  "serde_json",
+                                                  "source":  "registry+https://github.com/rust-lang/crates.io-index",
+                                                  "req":  "^1",
+                                                  "kind":  null,
+                                                  "rename":  null,
+                                                  "optional":  false,
+                                                  "uses_default_features":  true,
+                                                  "features":  [
+
+                                                               ],
+                                                  "target":  null,
+                                                  "registry":  null
+                                              },
+                                              {
+                                                  "name":  "tiny_http",
+                                                  "source":  "registry+https://github.com/rust-lang/crates.io-index",
+                                                  "req":  "^0.12",
+                                                  "kind":  null,
+                                                  "rename":  null,
+                                                  "optional":  false,
+                                                  "uses_default_features":  true,
+                                                  "features":  [
+
+                                                               ],
+                                                  "target":  null,
+                                                  "registry":  null
+                                              }
+                                          ],
+                         "targets":  [
+                                         {
+                                             "kind":  [
+                                                          "lib"
+                                                      ],
+                                             "crate_types":  [
+                                                                 "lib"
+                                                             ],
+                                             "name":  "horizon",
+                                             "src_path":  "C:\\Users\\kouat\\code\\Horizon\\src\\lib.rs",
+                                             "edition":  "2021",
+                                             "doc":  true,
+                                             "doctest":  true,
+                                             "test":  true
+                                         },
+                                         {
+                                             "kind":  [
+                                                          "bin"
+                                                      ],
+                                             "crate_types":  [
+                                                                 "bin"
+                                                             ],
+                                             "name":  "horizon",
+                                             "src_path":  "C:\\Users\\kouat\\code\\Horizon\\src\\main.rs",
+                                             "edition":  "2021",
+                                             "doc":  true,
+                                             "doctest":  false,
+                                             "test":  true
+                                         },
+                                         {
+                                             "kind":  [
+                                                          "bin"
+                                                      ],
+                                             "crate_types":  [
+                                                                 "bin"
+                                                             ],
+                                             "name":  "server",
+                                             "src_path":  "C:\\Users\\kouat\\code\\Horizon\\src\\bin\\server.rs",
+                                             "edition":  "2021",
+                                             "doc":  true,
+                                             "doctest":  false,
+                                             "test":  true
+                                         }
+                                     ],
+                         "features":  {
+
+                                      },
+                         "manifest_path":  "C:\\Users\\kouat\\code\\Horizon\\Cargo.toml",
+                         "metadata":  null,
+                         "publish":  null,
+                         "authors":  [
+
+                                     ],
+                         "categories":  [
+
+                                        ],
+                         "keywords":  [
+
+                                      ],
+                         "readme":  "README.md",
+                         "repository":  null,
+                         "homepage":  null,
+                         "documentation":  null,
+                         "edition":  "2021",
+                         "links":  null,
+                         "default_run":  "server",
+                         "rust_version":  null
+                     }
+                 ],
+    "workspace_members":  [
+                              "path+file:///C:/Users/kouat/code/Horizon#horizon@0.2.0"
+                          ],
+    "workspace_default_members":  [
+                                      "path+file:///C:/Users/kouat/code/Horizon#horizon@0.2.0"
+                                  ],
+    "resolve":  null,
+    "target_directory":  "C:\\Users\\kouat\\AppData\\Local\\Temp\\cursor-sandbox-cache\\3dafb701822ad5a32219aa8dbf187767\\cargo-target",
+    "build_directory":  "C:\\Users\\kouat\\AppData\\Local\\Temp\\cursor-sandbox-cache\\3dafb701822ad5a32219aa8dbf187767\\cargo-target",
+    "version":  1,
+    "workspace_root":  "C:\\Users\\kouat\\code\\Horizon",
+    "metadata":  null
+}

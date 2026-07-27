@@ -1,0 +1,60 @@
+FILE
+  DOC COMMENT [parent SOURCE_FILE] L1 "//! Module-level doc comment for the sample."
+  comment [parent USE] L3 "// A free-floating TODO that documents nothing in particular…"
+  struct Item   L7-13
+    DOC COMMENT [parent STRUCT] L7 "/// A cached item."
+    attr #[derive(Debug, Clone)]
+    field payload : String   L10-11
+      DOC COMMENT [parent RECORD_FIELD] L10 "/// The stored payload."
+    field hits : u32   L12
+  enum Eviction   L15-19
+    DOC COMMENT [parent ENUM] L15 "/// Kinds of eviction policy."
+    variant Lru   L17
+    variant Ttl   L18
+      field seconds : u64   L18
+  trait Store   L21-30
+    DOC COMMENT [parent TRAIT] L21 "/// Anything that can store items."
+    fn get   L23-24
+      DOC COMMENT [parent FN] L23 "/// Required: fetch by key."
+    fn get_or_panic   L26-29
+      DOC COMMENT [parent FN] L26 "/// Provided: fetch or panic."
+      METHOD CALL -> .expect
+        METHOD CALL -> .get
+  struct Cache   L32-36
+    DOC COMMENT [parent STRUCT] L32 "/// An in-memory cache."
+    field map : HashMap<String, Item>   L34
+    field eviction : Eviction   L35
+  impl impl Cache   L38-64
+    fn pub new   L39-42
+      DOC COMMENT [parent FN] L39 "/// Build an empty cache."
+      CALL -> HashMap::new
+    fn pub async warm   L44-49
+      comment [parent FN] L44 "// Not a doc comment, just an ordinary note."
+      METHOD CALL -> .touch
+    fn const capacity   L51-53
+    fn unsafe raw   L55-57
+      CALL -> std::ptr::null
+    fn touch   L59-63
+      METHOD CALL -> .get_mut
+  impl impl Store for Cache   L66-70
+    fn get   L67-69
+      METHOD CALL -> .get
+  fn pub count_hits   L72-75
+    DOC COMMENT [parent FN] L72 "/// A free function that uses a closure."
+    METHOD CALL -> .sum
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L74
+  fn outer   L77-83
+    DOC COMMENT [parent FN] L77 "/// A function containing a nested function."
+    fn inner   L79-81
+    CALL -> inner
+  fn apply   L85-88
+    DOC COMMENT [parent FN] L85 "/// Takes a function pointer: `fn` here is a TYPE, not a def…"
+    CALL -> f
+  mod tests   L90-99
+    attr #[cfg(test)]
+    fn cache_counts_hits   L94-98
+      attr #[test]
+      CALL -> Cache::new
+      MACRO CALL -> assert_eq!

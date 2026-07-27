@@ -1,0 +1,15 @@
+FILE
+  DOC COMMENT [parent SOURCE_FILE] L1 "//! Pure free functions. Zero impls."
+  fn pub sum_all   L3-6
+    DOC COMMENT [parent FN] L3 "/// Unique name across the project."
+    METHOD CALL -> v.iter().sum()
+      METHOD CALL -> v.iter()
+  fn pub mean   L8-14
+    DOC COMMENT [parent FN] L8 "/// Calls a sibling free function in the SAME file."
+    METHOD CALL -> v.is_empty()
+    CALL -> sum_all()
+    METHOD CALL -> v.len()
+  fn pub report   L16-19
+    DOC COMMENT [parent FN] L16 "/// Cross-file, fully qualified, and nests a within-file cal…"
+    CALL -> crate::text::upper()
+      MACRO CALL -> format!

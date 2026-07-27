@@ -1,0 +1,1083 @@
+FILE
+  DOC COMMENT [parent SOURCE_FILE] L1 "//! Codebase analyzer."
+  DOC COMMENT [parent SOURCE_FILE] L2 "//!"
+  DOC COMMENT [parent SOURCE_FILE] L3 "//! Walks a set of source files and produces a [`Model`] tha…"
+  DOC COMMENT [parent SOURCE_FILE] L4 "//! exact JSON shape the Horizon front-end consumes:"
+  DOC COMMENT [parent SOURCE_FILE] L5 "//! `nodes`, `edges`, `detail`, `folders`, `sub`, `fnx`, `fi…"
+  DOC COMMENT [parent SOURCE_FILE] L6 "//! repository name and a plain-English architecture summary…"
+  DOC COMMENT [parent SOURCE_FILE] L7 "//!"
+  DOC COMMENT [parent SOURCE_FILE] L8 "//! The extraction is heuristic and line/brace based (no hea…"
+  DOC COMMENT [parent SOURCE_FILE] L9 "//! dependency) so it works across Rust, Python, JavaScript/…"
+  DOC COMMENT [parent SOURCE_FILE] L10 "//! Java and C/C++."
+  mod lang   L19-21
+    DOC COMMENT [parent MODULE] L19 "/// Per-language helpers: extension detection, symbol extrac…"
+    DOC COMMENT [parent MODULE] L20 "/// scanning, identifier listing and syntax-highlight snippe…"
+  struct InputFile   L24-31
+    DOC COMMENT [parent STRUCT] L24 "/// A source file handed to the analyzer (path is repo-relat…"
+    attr #[derive(Debug, Clone)]
+    field path : String   L27-28
+      DOC COMMENT [parent RECORD_FIELD] L27 "/// Repo-relative path to the file (forward-slash separated)…"
+    field text : String   L29-30
+      DOC COMMENT [parent RECORD_FIELD] L29 "/// Full UTF-8 contents of the file."
+  struct Model   L33-61
+    comment [parent STRUCT] L33 "// ── Serialised output model (matches the front-end data co…"
+    DOC COMMENT [parent STRUCT] L35 "/// Top-level analysis result; serialises to the exact JSON …"
+    attr #[derive(Debug, Serialize)]
+    field version : &'static str   L38-39
+      DOC COMMENT [parent RECORD_FIELD] L38 "/// Schema version of the emitted JSON."
+    field repo_name : String   L40-42
+      DOC COMMENT [parent RECORD_FIELD] L40 "/// Repository / project display name."
+      attr #[serde(rename = "repoName")]
+    field language : String   L43-44
+      DOC COMMENT [parent RECORD_FIELD] L43 "/// Dominant language (by file count), lowercased."
+    field arch : String   L45-46
+      DOC COMMENT [parent RECORD_FIELD] L45 "/// Plain-English architecture summary paragraph."
+    field nodes : Vec<NodeOut>   L47-48
+      DOC COMMENT [parent RECORD_FIELD] L47 "/// File nodes with their canvas positions and metadata."
+    field edges : Vec<[String; 2]>   L49-50
+      DOC COMMENT [parent RECORD_FIELD] L49 "/// Directed file-to-file dependency edges as `[from_id, to_…"
+    field detail : BTreeMap<String, DetailOut>   L51-52
+      DOC COMMENT [parent RECORD_FIELD] L51 "/// Per-file inspector detail, keyed by node id."
+    field folders : Vec<FolderOut>   L53-54
+      DOC COMMENT [parent RECORD_FIELD] L53 "/// Folder grouping for the left-panel tree."
+    field sub : BTreeMap<String, SubOut>   L55-56
+      DOC COMMENT [parent RECORD_FIELD] L55 "/// Per-file function/struct sub-graphs, keyed by node id."
+    field fnx : Vec<[String; 4]>   L57-58
+      DOC COMMENT [parent RECORD_FIELD] L57 "/// Cross-file function-call edges as `[from_file, from_fn, …"
+    field fieldx : Vec<[String; 4]>   L59-60
+      DOC COMMENT [parent RECORD_FIELD] L59 "/// Cross-file type-reference edges as `[from_file, from_typ…"
+  struct NodeOut   L63-83
+    DOC COMMENT [parent STRUCT] L63 "/// A single file node positioned on the visualizer canvas."
+    attr #[derive(Debug, Serialize)]
+    field id : String   L66-67
+      DOC COMMENT [parent RECORD_FIELD] L66 "/// Stable unique node id."
+    field label : String   L68-69
+      DOC COMMENT [parent RECORD_FIELD] L68 "/// Human-friendly node label (filename)."
+    field kind : String   L70-71
+      DOC COMMENT [parent RECORD_FIELD] L70 "/// Classified role: `entry`, `struct`, `fn` or `file`."
+    field x : f64   L72-73
+      DOC COMMENT [parent RECORD_FIELD] L72 "/// Canvas x coordinate."
+    field y : f64   L74-75
+      DOC COMMENT [parent RECORD_FIELD] L74 "/// Canvas y coordinate."
+    field loc : usize   L76-77
+      DOC COMMENT [parent RECORD_FIELD] L76 "/// Lines of code in the file."
+    field diff : Option<String>   L78-80
+      DOC COMMENT [parent RECORD_FIELD] L78 "/// Optional diff marker (unused by the analyzer; reserved f…"
+      attr #[serde(skip_serializing_if = "Option::is_none")]
+    field orphan : bool   L81-82
+      DOC COMMENT [parent RECORD_FIELD] L81 "/// True when no live callers reach this module (possible de…"
+  struct DetailOut   L85-108
+    DOC COMMENT [parent STRUCT] L85 "/// Inspector panel detail for one file."
+    attr #[derive(Debug, Serialize)]
+    field path : String   L88-89
+      DOC COMMENT [parent RECORD_FIELD] L88 "/// Repo-relative path."
+    field summary : String   L90-91
+      DOC COMMENT [parent RECORD_FIELD] L90 "/// Plain-English summary of the file's role."
+    field code : Vec<(String, &'static str)>   L92-93
+      DOC COMMENT [parent RECORD_FIELD] L92 "/// Syntax-highlighted code snippet as `(token_class, text)`…"
+    field loc : usize   L94-95
+      DOC COMMENT [parent RECORD_FIELD] L94 "/// Lines of code in the file."
+    field tests : Vec<String>   L96-97
+      DOC COMMENT [parent RECORD_FIELD] L96 "/// Humanised descriptions of tests that exercise this file."
+    field callers : Vec<String>   L98-99
+      DOC COMMENT [parent RECORD_FIELD] L98 "/// Labels of files that depend on this one."
+    field callees : Vec<String>   L100-101
+      DOC COMMENT [parent RECORD_FIELD] L100 "/// Labels of files this one depends on."
+    field risks : Vec<String>   L102-104
+      DOC COMMENT [parent RECORD_FIELD] L102 "/// Risk notes (large module, high fan-in, orphan, unsafe, ……"
+      attr #[serde(skip_serializing_if = "Vec::is_empty")]
+    field badges : Vec<(String, String)>   L105-107
+      DOC COMMENT [parent RECORD_FIELD] L105 "/// UI badges as `(label, severity)` pairs (`r` = risk, `n` …"
+      attr #[serde(skip_serializing_if = "Vec::is_empty")]
+  struct FolderOut   L110-121
+    DOC COMMENT [parent STRUCT] L110 "/// A folder grouping of file ids for the left-panel tree."
+    attr #[derive(Debug, Serialize)]
+    field name : String   L113-114
+      DOC COMMENT [parent RECORD_FIELD] L113 "/// Directory name (`.` for the repo root)."
+    field files : Option<Vec<String>>   L115-117
+      DOC COMMENT [parent RECORD_FIELD] L115 "/// File node ids contained in this folder."
+      attr #[serde(skip_serializing_if = "Option::is_none")]
+    field vendor : Option<Vec<String>>   L118-120
+      DOC COMMENT [parent RECORD_FIELD] L118 "/// Vendored/third-party file ids (reserved; currently alway…"
+      attr #[serde(skip_serializing_if = "Option::is_none")]
+  struct SubOut   L123-130
+    DOC COMMENT [parent STRUCT] L123 "/// The bottom-panel sub-graph for one file: its functions a…"
+    attr #[derive(Debug, Serialize)]
+    field fns : Vec<FnOut>   L126-127
+      DOC COMMENT [parent RECORD_FIELD] L126 "/// Functions defined in the file."
+    field structs : Vec<StructOut>   L128-129
+      DOC COMMENT [parent RECORD_FIELD] L128 "/// Types (structs/enums) defined in the file."
+  struct FnOut   L132-150
+    DOC COMMENT [parent STRUCT] L132 "/// A function node within a file's sub-graph."
+    attr #[derive(Debug, Serialize)]
+    field id : String   L135-136
+      DOC COMMENT [parent RECORD_FIELD] L135 "/// Unique function symbol id."
+    field label : String   L137-138
+      DOC COMMENT [parent RECORD_FIELD] L137 "/// Function name."
+    field sig : String   L139-140
+      DOC COMMENT [parent RECORD_FIELD] L139 "/// Signature (defaults to `()` when unknown)."
+    field calls : Vec<String>   L141-142
+      DOC COMMENT [parent RECORD_FIELD] L141 "/// Ids of sibling functions in the same file that this one …"
+    field code : Vec<(String, &'static str)>   L143-144
+      DOC COMMENT [parent RECORD_FIELD] L143 "/// Syntax-highlighted snippet as `(token_class, text)` pair…"
+    field loc : usize   L145-146
+      DOC COMMENT [parent RECORD_FIELD] L145 "/// Lines of code in the function body."
+    field doc : String   L147-149
+      DOC COMMENT [parent RECORD_FIELD] L147 "/// Doc comment, if any."
+      attr #[serde(skip_serializing_if = "String::is_empty")]
+  struct StructOut   L152-170
+    DOC COMMENT [parent STRUCT] L152 "/// A type (struct/enum) node within a file's sub-graph."
+    attr #[derive(Debug, Serialize)]
+    field id : String   L155-156
+      DOC COMMENT [parent RECORD_FIELD] L155 "/// Unique type symbol id."
+    field label : String   L157-158
+      DOC COMMENT [parent RECORD_FIELD] L157 "/// Type name."
+    field sig : String   L159-160
+      DOC COMMENT [parent RECORD_FIELD] L159 "/// Signature / declaration line."
+    field fields : Vec<String>   L161-162
+      DOC COMMENT [parent RECORD_FIELD] L161 "/// Ids of sibling types in the same file that this one refe…"
+    field code : Vec<(String, &'static str)>   L163-164
+      DOC COMMENT [parent RECORD_FIELD] L163 "/// Syntax-highlighted snippet as `(token_class, text)` pair…"
+    field loc : usize   L165-166
+      DOC COMMENT [parent RECORD_FIELD] L165 "/// Lines of code in the type body."
+    field doc : String   L167-169
+      DOC COMMENT [parent RECORD_FIELD] L167 "/// Doc comment, if any."
+      attr #[serde(skip_serializing_if = "String::is_empty")]
+  struct FuncSym   L172-193
+    comment [parent STRUCT] L172 "// ── Internal working types ───────────────────────────────…"
+    DOC COMMENT [parent STRUCT] L174 "/// A function/method symbol extracted from a file during th…"
+    attr #[derive(Debug, Clone)]
+    field id : String   L177-178
+      DOC COMMENT [parent RECORD_FIELD] L177 "/// Unique id (file id + function name based)."
+    field name : String   L179-180
+      DOC COMMENT [parent RECORD_FIELD] L179 "/// Function name."
+    field line : usize   L181-182
+      DOC COMMENT [parent RECORD_FIELD] L181 "/// 1-based line where the function starts."
+    field sig : String   L183-184
+      DOC COMMENT [parent RECORD_FIELD] L183 "/// Extracted signature text."
+    field doc : String   L185-186
+      DOC COMMENT [parent RECORD_FIELD] L185 "/// Doc comment preceding the function."
+    field body : String   L187-188
+      DOC COMMENT [parent RECORD_FIELD] L187 "/// Source of the function body (used for call extraction)."
+    field is_test : bool   L189-190
+      DOC COMMENT [parent RECORD_FIELD] L189 "/// True when this is a test function."
+    field is_pub : bool   L191-192
+      DOC COMMENT [parent RECORD_FIELD] L191 "/// True when the function is public."
+  struct TypeSym   L195-210
+    DOC COMMENT [parent STRUCT] L195 "/// A type (struct/enum/alias) symbol extracted from a file …"
+    attr #[derive(Debug, Clone)]
+    field id : String   L198-199
+      DOC COMMENT [parent RECORD_FIELD] L198 "/// Unique id (file id + type name based)."
+    field name : String   L200-201
+      DOC COMMENT [parent RECORD_FIELD] L200 "/// Type name."
+    field line : usize   L202-203
+      DOC COMMENT [parent RECORD_FIELD] L202 "/// 1-based line where the type starts."
+    field sig : String   L204-205
+      DOC COMMENT [parent RECORD_FIELD] L204 "/// Extracted signature / declaration text."
+    field doc : String   L206-207
+      DOC COMMENT [parent RECORD_FIELD] L206 "/// Doc comment preceding the type."
+    field body : String   L208-209
+      DOC COMMENT [parent RECORD_FIELD] L208 "/// Source of the type body (used for type-reference extract…"
+  struct FileInfo   L212-244
+    DOC COMMENT [parent STRUCT] L212 "/// All analyzer state computed for a single file (the centr…"
+    attr #[derive(Debug)]
+    field id : String   L215-216
+      DOC COMMENT [parent RECORD_FIELD] L215 "/// Stable unique node id."
+    field label : String   L217-218
+      DOC COMMENT [parent RECORD_FIELD] L217 "/// Human-friendly display label."
+    field path : String   L219-220
+      DOC COMMENT [parent RECORD_FIELD] L219 "/// Repo-relative path."
+    field dir : String   L221-222
+      DOC COMMENT [parent RECORD_FIELD] L221 "/// Parent directory (empty for root-level files)."
+    field lang : Lang   L223-224
+      DOC COMMENT [parent RECORD_FIELD] L223 "/// Detected language."
+    field text : String   L225-226
+      DOC COMMENT [parent RECORD_FIELD] L225 "/// Full file contents."
+    field loc : usize   L227-228
+      DOC COMMENT [parent RECORD_FIELD] L227 "/// Lines of code."
+    field funcs : Vec<FuncSym>   L229-230
+      DOC COMMENT [parent RECORD_FIELD] L229 "/// Functions defined in the file."
+    field types : Vec<TypeSym>   L231-232
+      DOC COMMENT [parent RECORD_FIELD] L231 "/// Types defined in the file."
+    field file_doc : String   L233-234
+      DOC COMMENT [parent RECORD_FIELD] L233 "/// File-level doc comment, if any."
+    field kind : String   L235-236
+      DOC COMMENT [parent RECORD_FIELD] L235 "/// Classified role: `entry`, `struct`, `fn` or `file`."
+    field has_io : bool   L237-238
+      DOC COMMENT [parent RECORD_FIELD] L237 "/// True when the file performs I/O."
+    field has_unsafe : bool   L239-240
+      DOC COMMENT [parent RECORD_FIELD] L239 "/// True when the file contains `unsafe` blocks."
+    field idents : HashSet<String>   L241-243
+      DOC COMMENT [parent RECORD_FIELD] L241 "/// Lowercased set of identifiers appearing in this file (us…"
+      DOC COMMENT [parent RECORD_FIELD] L242 "/// symbol-mention dependency edges)."
+  const IGNORED_DIRS   L246-262
+    DOC COMMENT [parent CONST] L246 "/// Directory names skipped while walking the source tree (v…"
+    DOC COMMENT [parent CONST] L247 "/// output, VCS metadata, editor settings)."
+  fn pub scan_path   L264-292
+    DOC COMMENT [parent FN] L264 "/// Scan a filesystem path that may be either a single sourc…"
+    DOC COMMENT [parent FN] L265 "/// directory tree, returning the project display name and t…"
+    CALL -> fs::metadata
+    METHOD CALL -> .is_file
+    CALL -> scan_dir
+    comment [parent STMT_LIST] L271 "// Single file: the project is named after the file itself."
+    METHOD CALL -> .to_string
+      METHOD CALL -> .unwrap_or
+        METHOD CALL -> .and_then
+          METHOD CALL -> .file_name
+          closure   L274
+            METHOD CALL -> .to_str
+    METHOD CALL -> .is_none
+      CALL -> Lang::from_path
+    CALL -> Err
+      CALL -> io::Error::new
+        MACRO CALL -> format!
+    METHOD CALL -> .len
+    CALL -> Err
+      CALL -> io::Error::new
+        MACRO CALL -> format!
+    CALL -> fs::read_to_string
+    MACRO CALL -> vec!
+    CALL -> Ok
+  fn pub scan_dir   L294-305
+    DOC COMMENT [parent FN] L294 "/// Walk a directory tree on disk and collect readable sourc…"
+    comment [parent STMT_LIST] L296 "// Use the root directory's own name as the repository displ…"
+    METHOD CALL -> .to_string
+      METHOD CALL -> .unwrap_or
+        METHOD CALL -> .and_then
+          METHOD CALL -> .file_name
+          closure   L299
+            METHOD CALL -> .to_str
+    CALL -> Vec::new
+    CALL -> collect
+    CALL -> Ok
+  fn collect   L307-342
+    DOC COMMENT [parent FN] L307 "/// Recursively walk `dir`, skipping ignored/hidden folders …"
+    CALL -> fs::read_dir
+    CALL -> Ok
+    METHOD CALL -> .flatten
+    METHOD CALL -> .path
+    METHOD CALL -> .to_string
+      METHOD CALL -> .to_string_lossy
+        METHOD CALL -> .file_name
+    METHOD CALL -> .is_dir
+    comment [parent STMT_LIST] L317 "// Skip vendored/build/VCS folders and any hidden directory;…"
+    METHOD CALL -> .contains
+      METHOD CALL -> .as_str
+    METHOD CALL -> .starts_with
+    CALL -> collect
+    METHOD CALL -> .is_some
+      CALL -> Lang::from_path
+    comment [parent STMT_LIST] L323 "// Only consider files with a recognised source extension."
+    comment [parent STMT_LIST] L324 "// Skip files larger than the byte budget (generated/minifie…"
+    METHOD CALL -> .metadata
+    METHOD CALL -> .len
+    comment [parent STMT_LIST] L330 "// Read as UTF-8 and store with a forward-slash repo-relativ…"
+    CALL -> fs::read_to_string
+    METHOD CALL -> .replace
+      METHOD CALL -> .to_string_lossy
+        METHOD CALL -> .unwrap_or
+          METHOD CALL -> .strip_prefix
+    METHOD CALL -> .push
+    CALL -> Ok
+  fn pub analyze   L344-723
+    DOC COMMENT [parent FN] L344 "/// Analyze a set of files into the front-end model."
+    METHOD CALL -> .retain
+      closure   L346
+        METHOD CALL -> .is_some
+          CALL -> Lang::from_ext
+        METHOD CALL -> .is_empty
+    METHOD CALL -> .sort_by
+      closure   L347
+        METHOD CALL -> .cmp
+    comment [parent STMT_LIST] L349 "// First pass: per-file symbol extraction. Consumes `files` …"
+    comment [parent STMT_LIST] L350 "// text is moved (not copied) into the working record."
+    CALL -> HashSet::new
+    CALL -> Vec::new
+    METHOD CALL -> .unwrap
+      CALL -> Lang::from_ext
+    CALL -> unique_id
+    CALL -> display_label
+    CALL -> dir_of
+    METHOD CALL -> .count
+      METHOD CALL -> .lines
+    METHOD CALL -> .extract
+    METHOD CALL -> .file_doc
+    METHOD CALL -> .has_io
+    METHOD CALL -> .contains
+    METHOD CALL -> .contains
+    CALL -> HashSet::new
+    CALL -> lang::idents
+    METHOD CALL -> .insert
+      METHOD CALL -> .to_lowercase
+    METHOD CALL -> .push
+      CALL -> String::new
+    comment [parent STMT_LIST] L385 "// Classify each file's dominant role."
+    CALL -> classify
+    comment [parent STMT_LIST] L390 "// Ownership maps: symbol name -> owning file id (first defi…"
+    CALL -> HashMap::new
+    CALL -> HashMap::new
+    CALL -> HashMap::new
+    METHOD CALL -> .or_insert_with
+      METHOD CALL -> .entry
+        CALL -> file_stem
+      closure   L397
+        METHOD CALL -> .clone
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L406 "// ── File-level edges (dependencies) ──"
+    CALL -> BTreeSet::new
+    comment [parent STMT_LIST] L409 "// (a) import / use based edges."
+    METHOD CALL -> .imports
+    CALL -> resolve_module
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L420 "// (b) symbol-mention edges: this file references a symbol o…"
+    comment [parent STMT_LIST] L421 "// Pre-filter and lowercase the project symbol table once, i…"
+    comment [parent STMT_LIST] L422 "// re-lowercasing every symbol for every file (was O(files ×…"
+    comment [parent STMT_LIST] L423 "// allocations)."
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .enumerate
+          METHOD CALL -> .iter
+        closure   L425
+          METHOD CALL -> .clone
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .filter
+          METHOD CALL -> .chain
+            METHOD CALL -> .iter
+            METHOD CALL -> .iter
+          closure   L429
+            METHOD CALL -> .len
+            CALL -> lang::is_common_word
+        closure   L430
+          METHOD CALL -> .to_lowercase
+    CALL -> BTreeSet::new
+    METHOD CALL -> .contains
+    METHOD CALL -> .insert
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+      METHOD CALL -> .to_string
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .into_iter
+        closure   L449
+    comment [parent STMT_LIST] L452 "// Indegree / fan-in."
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L453
+          METHOD CALL -> .clone
+    CALL -> HashMap::new
+    CALL -> HashMap::new
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .clone
+    METHOD CALL -> .push
+      METHOD CALL -> .or_default
+        METHOD CALL -> .entry
+          METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    METHOD CALL -> .push
+      METHOD CALL -> .or_default
+        METHOD CALL -> .entry
+          METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .max
+        METHOD CALL -> .copied
+          METHOD CALL -> .values
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .sum
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L465
+    METHOD CALL -> .len
+    comment [parent STMT_LIST] L468 "// ── Layout (layered, left → right pipeline) ──"
+    CALL -> layout
+    comment [parent STMT_LIST] L471 "// Per-function call lists and per-type reference lists, lex…"
+    comment [parent STMT_LIST] L472 "// shared by the cross-file pass below and the per-file sub-…"
+    comment [parent STMT_LIST] L473 "// body was previously re-lexed in both places)."
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L476
+          METHOD CALL -> .collect
+            METHOD CALL -> .map
+              METHOD CALL -> .iter
+              closure   L476
+                METHOD CALL -> .calls_in
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L480
+          METHOD CALL -> .collect
+            METHOD CALL -> .map
+              METHOD CALL -> .iter
+              closure   L480
+                CALL -> lang::type_refs
+    comment [parent STMT_LIST] L483 "// ── Cross-file edges for the bottom panel ──"
+    CALL -> BTreeSet::new
+    CALL -> BTreeSet::new
+    METHOD CALL -> .enumerate
+      METHOD CALL -> .iter
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L487
+          METHOD CALL -> .as_str
+    METHOD CALL -> .zip
+      METHOD CALL -> .iter
+    METHOD CALL -> .contains
+      METHOD CALL -> .as_str
+    METHOD CALL -> .get
+    METHOD CALL -> .get
+    METHOD CALL -> .any
+      METHOD CALL -> .iter
+      closure   L496
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L509
+          METHOD CALL -> .as_str
+    METHOD CALL -> .zip
+      METHOD CALL -> .iter
+    METHOD CALL -> .contains
+      METHOD CALL -> .as_str
+    METHOD CALL -> .get
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L529 "// ── Build outputs ──"
+    CALL -> Vec::new
+    CALL -> BTreeMap::new
+    CALL -> BTreeMap::new
+    comment [parent STMT_LIST] L534 "// Test descriptions: associate test fns project-wide to the…"
+    CALL -> build_test_index
+    METHOD CALL -> .enumerate
+      METHOD CALL -> .iter
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    comment [parent STMT_LIST] L541 "// risks + badges"
+    CALL -> Vec::new
+    CALL -> Vec::new
+    METHOD CALL -> .push
+      MACRO CALL -> format!
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      MACRO CALL -> format!
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    METHOD CALL -> .unwrap_or_default
+      METHOD CALL -> .cloned
+        METHOD CALL -> .get
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    METHOD CALL -> .is_empty
+    comment [parent STMT_LIST] L580 "// hotspot marker badge first"
+    METHOD CALL -> .insert
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    comment [parent STMT_LIST] L583 "// de-dup badges by label"
+    CALL -> HashSet::new
+    METHOD CALL -> .retain
+      closure   L585
+        METHOD CALL -> .insert
+          METHOD CALL -> .clone
+    CALL -> make_summary
+    METHOD CALL -> .snippet
+    CALL -> sorted_labels
+      METHOD CALL -> .get
+    CALL -> sorted_labels
+      METHOD CALL -> .get
+    METHOD CALL -> .push
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L619 "// Split the file into lines once; every symbol snippet belo…"
+    comment [parent STMT_LIST] L620 "// (previously each snippet re-split the whole file)."
+    METHOD CALL -> .collect
+      METHOD CALL -> .lines
+    comment [parent STMT_LIST] L623 "// Per-function sub-graph: resolve each call to a sibling fu…"
+    comment [parent STMT_LIST] L624 "// same file (skip self-calls, external calls and duplicates…"
+    comment [parent STMT_LIST] L625 "// name->id map is built once per file, not per function."
+    CALL -> HashMap::new
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .as_str
+      METHOD CALL -> .as_str
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .zip
+          METHOD CALL -> .iter
+        closure   L634-654
+          CALL -> Vec::new
+          CALL -> HashSet::new
+          METHOD CALL -> .insert
+            METHOD CALL -> .as_str
+          METHOD CALL -> .get
+            METHOD CALL -> .as_str
+          METHOD CALL -> .push
+            METHOD CALL -> .to_string
+          METHOD CALL -> .snippet_at_lines
+          METHOD CALL -> .clone
+          METHOD CALL -> .clone
+          METHOD CALL -> .is_empty
+          METHOD CALL -> .into
+          METHOD CALL -> .clone
+          METHOD CALL -> .max
+            METHOD CALL -> .count
+              METHOD CALL -> .lines
+          METHOD CALL -> .clone
+    comment [parent STMT_LIST] L657 "// Per-type sub-graph: link each type to sibling types it re…"
+    comment [parent STMT_LIST] L658 "// the same file (skip self-references, external types and d…"
+    CALL -> HashMap::new
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .as_str
+      METHOD CALL -> .as_str
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .zip
+          METHOD CALL -> .iter
+        closure   L667-686
+          CALL -> Vec::new
+          CALL -> HashSet::new
+          METHOD CALL -> .insert
+            METHOD CALL -> .as_str
+          METHOD CALL -> .get
+            METHOD CALL -> .as_str
+          METHOD CALL -> .push
+            METHOD CALL -> .to_string
+          METHOD CALL -> .clone
+          METHOD CALL -> .clone
+          METHOD CALL -> .clone
+          METHOD CALL -> .snippet_at_lines
+          METHOD CALL -> .max
+            METHOD CALL -> .count
+              METHOD CALL -> .lines
+          METHOD CALL -> .clone
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L692 "// ── Folders ──"
+    CALL -> build_folders
+    comment [parent STMT_LIST] L695 "// ── Architecture summary ──"
+    CALL -> make_arch
+    comment [parent STMT_LIST] L698 "// Dominant language (by file count) for the project meta."
+    CALL -> HashMap::new
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .name
+    comment [parent STMT_LIST] L703 "// Ties broken alphabetically so the result is deterministic…"
+    METHOD CALL -> .unwrap_or_default
+      METHOD CALL -> .map
+        METHOD CALL -> .max_by
+          METHOD CALL -> .into_iter
+          closure   L706
+            METHOD CALL -> .then
+              METHOD CALL -> .cmp
+              METHOD CALL -> .cmp
+        closure   L707
+          METHOD CALL -> .to_lowercase
+    METHOD CALL -> .to_string
+    METHOD CALL -> .collect
+      METHOD CALL -> .into_iter
+    METHOD CALL -> .collect
+      METHOD CALL -> .into_iter
+  fn classify   L725-743
+    comment [parent FN] L725 "// ── Classification ───────────────────────────────────────…"
+    DOC COMMENT [parent FN] L727 "/// Assign a file's dominant role (entry/struct/fn/file) in …"
+    CALL -> is_entry
+    METHOD CALL -> .into
+    METHOD CALL -> .len
+    METHOD CALL -> .len
+    comment [parent STMT_LIST] L734 "// type-dominated"
+    METHOD CALL -> .into
+    comment [parent STMT_LIST] L738 "// single function / tiny helper"
+    METHOD CALL -> .into
+    METHOD CALL -> .into
+  fn is_entry   L745-762
+    DOC COMMENT [parent FN] L745 "/// Detect whether a file is a program entry point (line/sym…"
+    DOC COMMENT [parent FN] L746 "/// not fooled by the string `\"fn main(\"` appearing inside a…"
+    CALL -> file_stem
+    METHOD CALL -> .any
+      METHOD CALL -> .iter
+      closure   L749
+    METHOD CALL -> .contains
+    METHOD CALL -> .contains
+    MACRO CALL -> matches!
+  fn make_summary   L764-820
+    comment [parent FN] L764 "// ── Summaries ────────────────────────────────────────────…"
+    DOC COMMENT [parent FN] L766 "/// Build the inspector's plain-English summary for a file: …"
+    METHOD CALL -> .is_empty
+    CALL -> clamp_sentence
+    comment [parent STMT_LIST] L776 "// doc of first public function/type"
+    METHOD CALL -> .find
+      METHOD CALL -> .iter
+      closure   L777
+        METHOD CALL -> .is_empty
+    CALL -> clamp_sentence
+    METHOD CALL -> .find
+      METHOD CALL -> .iter
+      closure   L780
+        METHOD CALL -> .is_empty
+    CALL -> clamp_sentence
+    METHOD CALL -> .find
+      METHOD CALL -> .iter
+      closure   L783
+        METHOD CALL -> .is_empty
+    CALL -> clamp_sentence
+    comment [parent STMT_LIST] L786 "// generated description"
+    METHOD CALL -> .as_str
+    MACRO CALL -> vec!
+    METHOD CALL -> .len
+    METHOD CALL -> .len
+    METHOD CALL -> .push
+      MACRO CALL -> format!
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .map
+        METHOD CALL -> .get
+        closure   L808
+          METHOD CALL -> .len
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .map
+        METHOD CALL -> .get
+        closure   L809
+          METHOD CALL -> .len
+    METHOD CALL -> .push
+      METHOD CALL -> .into
+    METHOD CALL -> .push
+      MACRO CALL -> format!
+    METHOD CALL -> .join
+  fn count_phrase   L822-829
+    DOC COMMENT [parent FN] L822 "/// Pluralise a count into a phrase, e.g. 0 -> \"no modules\",…"
+    MACRO CALL -> format!
+    MACRO CALL -> format!
+    MACRO CALL -> format!
+  fn clamp_sentence   L831-849
+    DOC COMMENT [parent FN] L831 "/// Trim an over-long doc comment to ~300 chars, breaking on…"
+    METHOD CALL -> .trim
+    METHOD CALL -> .len
+    METHOD CALL -> .to_string
+    comment [parent STMT_LIST] L837 "// Accumulate characters until we pass ~300 bytes and hit a …"
+    CALL -> String::new
+    METHOD CALL -> .chars
+    METHOD CALL -> .push
+    METHOD CALL -> .len
+    METHOD CALL -> .len
+    METHOD CALL -> .len
+    METHOD CALL -> .ends_with
+    METHOD CALL -> .push
+  fn make_arch   L851-896
+    DOC COMMENT [parent FN] L851 "/// Compose the architecture sticky-note paragraph: module/f…"
+    METHOD CALL -> .is_empty
+    CALL -> String::new
+    CALL -> BTreeSet::new
+    METHOD CALL -> .insert
+      METHOD CALL -> .name
+    CALL -> BTreeSet::new
+    METHOD CALL -> .insert
+      METHOD CALL -> .is_empty
+      METHOD CALL -> .as_str
+    METHOD CALL -> .or_else
+      METHOD CALL -> .find
+        METHOD CALL -> .iter
+        closure   L871
+      closure   L872
+        METHOD CALL -> .min_by_key
+          METHOD CALL -> .iter
+          closure   L872
+            METHOD CALL -> .unwrap_or
+              METHOD CALL -> .copied
+                METHOD CALL -> .get
+    METHOD CALL -> .join
+      METHOD CALL -> .collect
+        METHOD CALL -> .into_iter
+    MACRO CALL -> format!
+    METHOD CALL -> .push_str
+      MACRO CALL -> format!
+    comment [parent STMT_LIST] L883 "// most-depended-on module"
+    METHOD CALL -> .max_by_key
+      METHOD CALL -> .iter
+      closure   L886
+        METHOD CALL -> .unwrap_or
+          METHOD CALL -> .copied
+            METHOD CALL -> .get
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    METHOD CALL -> .push_str
+      MACRO CALL -> format!
+    METHOD CALL -> .push
+    METHOD CALL -> .push_str
+      MACRO CALL -> format!
+  fn build_test_index   L898-945
+    comment [parent FN] L898 "// ── Tests ────────────────────────────────────────────────…"
+    DOC COMMENT [parent FN] L900 "/// Map each file id to humanised descriptions of the test f…"
+    comment [parent STMT_LIST] L902 "// Map symbol name -> owning file id."
+    CALL -> HashMap::new
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .clone
+      METHOD CALL -> .clone
+    CALL -> HashMap::new
+    CALL -> humanize
+    comment [parent STMT_LIST] L919 "// Attach the test to files whose symbols it references. Lex…"
+    comment [parent STMT_LIST] L920 "// body once and probing the identifier set is both faster t…"
+    comment [parent STMT_LIST] L921 "// substring scan per symbol and immune to accidental"
+    comment [parent STMT_LIST] L922 "// inside-a-longer-identifier matches."
+    METHOD CALL -> .collect
+      METHOD CALL -> .into_iter
+        CALL -> lang::idents
+    CALL -> BTreeSet::new
+    METHOD CALL -> .len
+    CALL -> lang::is_common_word
+    METHOD CALL -> .contains
+      METHOD CALL -> .as_str
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+    METHOD CALL -> .or_default
+      METHOD CALL -> .entry
+    METHOD CALL -> .len
+    METHOD CALL -> .contains
+    METHOD CALL -> .push
+      METHOD CALL -> .clone
+  fn humanize   L947-960
+    DOC COMMENT [parent FN] L947 "/// Turn a test function name like `test_parses_args` into a…"
+    METHOD CALL -> .trim_start_matches
+      METHOD CALL -> .trim_start_matches
+    METHOD CALL -> .trim_start_matches
+    METHOD CALL -> .replace
+    METHOD CALL -> .trim
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .to_string
+    METHOD CALL -> .to_string
+  fn build_folders   L962-982
+    comment [parent FN] L962 "// ── Folders ──────────────────────────────────────────────…"
+    DOC COMMENT [parent FN] L964 "/// Group file ids by their parent directory into the left-p…"
+    CALL -> BTreeMap::new
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .to_string
+    METHOD CALL -> .clone
+    METHOD CALL -> .push
+      METHOD CALL -> .or_default
+        METHOD CALL -> .entry
+      METHOD CALL -> .clone
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .into_iter
+        closure   L976-980
+          CALL -> Some
+  fn layout   L984-1064
+    comment [parent FN] L984 "// ── Layout ───────────────────────────────────────────────…"
+    DOC COMMENT [parent FN] L986 "/// Place file nodes on the 1360x600 virtual canvas as a lef…"
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .iter
+        closure   L992
+          METHOD CALL -> .as_str
+    comment [parent STMT_LIST] L993 "// adjacency for BFS"
+    CALL -> HashMap::new
+    METHOD CALL -> .push
+      METHOD CALL -> .or_default
+        METHOD CALL -> .entry
+          METHOD CALL -> .as_str
+      METHOD CALL -> .as_str
+    comment [parent STMT_LIST] L998 "// roots = indegree 0 (or entry); fall back to first node"
+    CALL -> HashMap::new
+    CALL -> std::collections::VecDeque::new
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+    METHOD CALL -> .push_back
+      METHOD CALL -> .as_str
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .first
+    METHOD CALL -> .insert
+      METHOD CALL -> .to_string
+    METHOD CALL -> .push_back
+    comment [parent STMT_LIST] L1013 "// multi-source BFS (shortest path) — stable even when the g…"
+    METHOD CALL -> .pop_front
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    METHOD CALL -> .get
+    METHOD CALL -> .contains_key
+    METHOD CALL -> .insert
+      METHOD CALL -> .to_string
+    METHOD CALL -> .push_back
+    METHOD CALL -> .or_insert
+      METHOD CALL -> .entry
+        METHOD CALL -> .clone
+    METHOD CALL -> .max
+      METHOD CALL -> .unwrap_or
+        METHOD CALL -> .max
+          METHOD CALL -> .copied
+            METHOD CALL -> .values
+    comment [parent STMT_LIST] L1030 "// group by column"
+    CALL -> BTreeMap::new
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .copied
+        METHOD CALL -> .get
+    METHOD CALL -> .push
+      METHOD CALL -> .or_default
+        METHOD CALL -> .entry
+      METHOD CALL -> .as_str
+    const CANVAS_W   L1037
+    const CANVAS_H   L1038
+    const NW   L1039
+    const NH   L1040
+    METHOD CALL -> .min
+    CALL -> HashMap::new
+    METHOD CALL -> .len
+    METHOD CALL -> .saturating_sub
+    METHOD CALL -> .max
+    METHOD CALL -> .enumerate
+      METHOD CALL -> .iter
+    METHOD CALL -> .insert
+      METHOD CALL -> .to_string
+      CALL -> round1
+      CALL -> round1
+  fn round1   L1066-1069
+    DOC COMMENT [parent FN] L1066 "/// Round to one decimal place to keep emitted coordinates c…"
+    METHOD CALL -> .round
+  fn sorted_labels   L1071-1085
+    comment [parent FN] L1071 "// ── Helpers ──────────────────────────────────────────────…"
+    DOC COMMENT [parent FN] L1073 "/// De-duplicate a list of node ids while preserving order (…"
+    CALL -> Vec::new
+    CALL -> HashSet::new
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+    METHOD CALL -> .push
+      METHOD CALL -> .clone
+  fn unique_id   L1087-1120
+    DOC COMMENT [parent FN] L1087 "/// Derive a stable, unique node id from a file path: the fi…"
+    CALL -> file_stem
+    comment [parent STMT_LIST] L1090 "// Generic stems (mod.rs, index.js, …) collide across folder…"
+    comment [parent STMT_LIST] L1091 "// parent directory to keep ids meaningful and distinct."
+    MACRO CALL -> matches!
+    CALL -> dir_of
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .next
+        METHOD CALL -> .rsplit
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .clone
+    MACRO CALL -> format!
+    METHOD CALL -> .clone
+    CALL -> sanitize
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .into
+    comment [parent STMT_LIST] L1111 "// Append an incrementing numeric suffix until the id is uni…"
+    METHOD CALL -> .clone
+    METHOD CALL -> .contains
+    MACRO CALL -> format!
+    METHOD CALL -> .insert
+      METHOD CALL -> .clone
+  fn sanitize   L1122-1127
+    DOC COMMENT [parent FN] L1122 "/// Replace any non-alphanumeric/underscore character with `…"
+    METHOD CALL -> .collect
+      METHOD CALL -> .map
+        METHOD CALL -> .chars
+        closure   L1125
+          METHOD CALL -> .is_alphanumeric
+  fn file_stem   L1129-1136
+    DOC COMMENT [parent FN] L1129 "/// Return a path's filename without its extension."
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .next
+        METHOD CALL -> .rsplit
+    METHOD CALL -> .rsplit_once
+    METHOD CALL -> .to_string
+    METHOD CALL -> .to_string
+  fn display_label   L1138-1152
+    DOC COMMENT [parent FN] L1138 "/// Human-friendly node label: the filename, prefixed with i…"
+    METHOD CALL -> .unwrap_or
+      METHOD CALL -> .next
+        METHOD CALL -> .rsplit
+    CALL -> file_stem
+    MACRO CALL -> matches!
+    comment [parent STMT_LIST] L1143 "// include parent dir for clarity"
+    CALL -> dir_of
+    METHOD CALL -> .next
+      METHOD CALL -> .rsplit
+    METHOD CALL -> .is_empty
+    MACRO CALL -> format!
+    METHOD CALL -> .to_string
+  fn dir_of   L1154-1160
+    DOC COMMENT [parent FN] L1154 "/// Return the directory portion of a repo-relative path (em…"
+    METHOD CALL -> .rsplit_once
+    METHOD CALL -> .to_string
+    CALL -> String::new
+  mod tests   L1162-1254
+    DOC COMMENT [parent MODULE] L1162 "/// Unit tests exercising the end-to-end analysis on small s…"
+    attr #[cfg(test)]
+    fn f   L1167-1170
+      DOC COMMENT [parent FN] L1167 "/// Build an `InputFile` from a path and source text (test h…"
+      METHOD CALL -> .into
+      METHOD CALL -> .into
+    fn classifies_and_links_a_small_rust_project   L1172-1196
+      DOC COMMENT [parent FN] L1172 "/// Smoke test: a tiny Rust project classifies `main` as ent…"
+      DOC COMMENT [parent FN] L1173 "/// type module and `util` as a single-fn module, links `mai…"
+      DOC COMMENT [parent FN] L1174 "/// the orphan, and exposes `model`'s types in the bottom-pa…"
+      attr #[test]
+      MACRO CALL -> vec!
+      CALL -> analyze
+      closure   L1184
+        METHOD CALL -> .map
+          METHOD CALL -> .find
+            METHOD CALL -> .iter
+            closure   L1184
+          closure   L1184
+            METHOD CALL -> .as_str
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert_eq!
+      comment [parent STMT_LIST] L1188 "// main depends on model and util"
+      MACRO CALL -> assert!
+      MACRO CALL -> assert!
+      comment [parent STMT_LIST] L1191 "// dead.rs has no callers -> orphan"
+      MACRO CALL -> assert!
+      comment [parent STMT_LIST] L1193 "// model.rs exposes its types in the bottom-panel sub graph"
+      MACRO CALL -> assert!
+    fn analyzes_a_single_file_without_entry_point   L1198-1222
+      DOC COMMENT [parent FN] L1198 "/// A single standalone file (with no `main`, so no entry no…"
+      DOC COMMENT [parent FN] L1199 "/// analyzes into a complete one-node model with its symbols…"
+      attr #[test]
+      MACRO CALL -> vec!
+      CALL -> analyze
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert_ne!
+      MACRO CALL -> assert!
+      comment [parent STMT_LIST] L1215 "// Symbols and the local call graph are still extracted."
+      MACRO CALL -> assert!
+      MACRO CALL -> assert!
+      MACRO CALL -> assert!
+      comment [parent STMT_LIST] L1220 "// The doc comment drives the summary."
+      MACRO CALL -> assert!
+    fn scan_path_handles_files_and_directories   L1224-1253
+      DOC COMMENT [parent FN] L1224 "/// `scan_path` accepts a single source file (naming the pro…"
+      DOC COMMENT [parent FN] L1225 "/// still handles directories, and rejects unsupported/overs…"
+      attr #[test]
+      METHOD CALL -> .join
+        CALL -> std::env::temp_dir
+        MACRO CALL -> format!
+      METHOD CALL -> .unwrap
+        CALL -> fs::create_dir_all
+          METHOD CALL -> .join
+      METHOD CALL -> .unwrap
+        CALL -> fs::write
+          METHOD CALL -> .join
+      METHOD CALL -> .unwrap
+        CALL -> fs::write
+          METHOD CALL -> .join
+      METHOD CALL -> .unwrap
+        CALL -> fs::write
+          METHOD CALL -> .join
+      comment [parent STMT_LIST] L1234 "// Single file: project named after the file, one input coll…"
+      METHOD CALL -> .unwrap
+        CALL -> scan_path
+          METHOD CALL -> .join
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert_eq!
+      MACRO CALL -> assert!
+      comment [parent STMT_LIST] L1241 "// Directory: recursive scan unchanged (the .txt file is ski…"
+      METHOD CALL -> .unwrap
+        CALL -> scan_path
+      MACRO CALL -> assert_eq!
+      METHOD CALL -> .collect
+        METHOD CALL -> .map
+          METHOD CALL -> .iter
+          closure   L1244
+            METHOD CALL -> .as_str
+      METHOD CALL -> .sort
+      MACRO CALL -> assert_eq!
+      comment [parent STMT_LIST] L1248 "// Unsupported extension and oversized files are rejected wi…"
+      MACRO CALL -> assert!
+      MACRO CALL -> assert!
+      METHOD CALL -> .unwrap
+        CALL -> fs::remove_dir_all
+  fn resolve_module   L1256-1295
+    DOC COMMENT [parent FN] L1256 "/// Resolve an import/use hint to the id of the file it refe…"
+    comment [parent STMT_LIST] L1263 "// relative path resolution for JS/TS imports like ./foo or …"
+    METHOD CALL -> .starts_with
+    METHOD CALL -> .parent
+      CALL -> Path::new
+    METHOD CALL -> .join
+      METHOD CALL -> .trim_start_matches
+    METHOD CALL -> .replace
+      METHOD CALL -> .to_string_lossy
+    CALL -> file_stem
+    METHOD CALL -> .get
+    CALL -> Some
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L1272 "// last segment of the relative path"
+    METHOD CALL -> .find
+      METHOD CALL -> .rsplit
+      closure   L1273
+        METHOD CALL -> .is_empty
+    METHOD CALL -> .get
+    CALL -> Some
+      METHOD CALL -> .clone
+    comment [parent STMT_LIST] L1280 "// Module/symbol path like `crate::cli::Cli` or `pkg.module.…"
+    comment [parent STMT_LIST] L1281 "// pick the deepest segment that maps to a known file (the m…"
+    comment [parent STMT_LIST] L1282 "// just before the imported symbol, so prefer the last match…"
+    METHOD CALL -> .split
+      closure   L1284
+        METHOD CALL -> .is_alphanumeric
+    METHOD CALL -> .is_empty
+    METHOD CALL -> .get
+    CALL -> Some
+      METHOD CALL -> .clone

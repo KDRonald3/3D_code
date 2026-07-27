@@ -1,0 +1,56 @@
+{
+  "fixture": "adversarial-resolution",
+  "edges": [
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "helper",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::helper" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "deep::helper",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::deep::helper" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "deep::inner::helper",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::deep::inner::helper" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "beta::hop2",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::chain::original" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "shadow::shadow",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::shadow::shadow" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "collide",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::collide" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "nested::probe",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::nested::probe" }
+    },
+    {
+      "caller": "adversarial_resolution::drive",
+      "call_path": "twin",
+      "expect": {
+        "kind": "conflict",
+        "candidates": [
+          "adversarial_resolution::twin#L",
+          "adversarial_resolution::twin#L"
+        ]
+      }
+    },
+    {
+      "caller": "adversarial_resolution::nested::probe",
+      "call_path": "name",
+      "expect": { "kind": "resolved", "id": "adversarial_resolution::nested::name" }
+    }
+  ]
+}

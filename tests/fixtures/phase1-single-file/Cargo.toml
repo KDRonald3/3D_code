@@ -1,0 +1,11 @@
+[package]
+name = "phase1-single-file"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "phase1_single_file"
+path = "lib.rs"

@@ -1,0 +1,2 @@
+This fixture is expected to fail to compile: `mystery()` is intentionally undefined
+so Horizon can assert a genuine Unresolved free-function call site.

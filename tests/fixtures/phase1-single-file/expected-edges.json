@@ -1,0 +1,41 @@
+{
+  "fixture": "phase1-single-file",
+  "edges": [
+    {
+      "caller": "phase1_single_file::alpha",
+      "call_path": "beta",
+      "expect": { "kind": "resolved", "id": "phase1_single_file::beta" }
+    },
+    {
+      "caller": "phase1_single_file::alpha",
+      "call_path": "alpha",
+      "expect": { "kind": "resolved", "id": "phase1_single_file::alpha" }
+    },
+    {
+      "caller": "phase1_single_file::alpha",
+      "call_path": "mystery",
+      "expect": { "kind": "unresolved" }
+    },
+    {
+      "caller": "phase1_single_file::alpha",
+      "call_path": "open",
+      "expect": {
+        "kind": "conflict",
+        "candidates": [
+          "phase1_single_file::open#L",
+          "phase1_single_file::open#L"
+        ]
+      }
+    },
+    {
+      "caller": "phase1_single_file::alpha",
+      "call_path": "crate::beta",
+      "expect": { "kind": "resolved", "id": "phase1_single_file::beta" }
+    },
+    {
+      "caller": "phase1_single_file::beta",
+      "call_path": "alpha",
+      "expect": { "kind": "resolved", "id": "phase1_single_file::alpha" }
+    }
+  ]
+}

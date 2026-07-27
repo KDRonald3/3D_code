@@ -1,0 +1,539 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{codebg}{gray}{0.96}
+\definecolor{codekw}{RGB}{0,90,160}
+\definecolor{codecm}{RGB}{100,110,100}
+
+% Defined explicitly rather than relying on listings' built-in Rust support,
+% which is absent from older distributions and errors out when requested.
+\lstdefinelanguage{Rust}{
+  keywords={as,async,await,break,const,continue,crate,dyn,else,enum,extern,
+    false,fn,for,if,impl,in,let,loop,match,mod,move,mut,pub,ref,return,self,
+    Self,static,struct,super,trait,true,type,unsafe,use,where,while},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+}
+
+\lstdefinestyle{rust}{
+  language=Rust,
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecm}\itshape,
+  breaklines=true,
+  frame=none,
+  xleftmargin=1em,
+  framexleftmargin=1em,
+  showstringspaces=false,
+  captionpos=b
+}
+\lstset{style=rust}
+
+% Deliberately takes no argument: the braces at each call site become an
+% ordinary group, which keeps \verb usable inside the note text.
+\newcommand{\note}{\par\smallskip\noindent\textit{Why it matters:} }
+
+\title{Horizon Function Map\\[0.3em]\large Deferred Scope and Known Exclusions}
+\author{}
+\date{26 July 2026}
+
+\begin{document}
+\maketitle
+
+\section{Purpose of this document}
+
+This is a record of everything discussed and \emph{deliberately set aside} while
+designing the function map. It exists so that a decision made for good reasons
+today is not mistaken for an oversight later, and so that the cost of each
+exclusion is written down while it is still fresh.
+
+Nothing here is a bug. Each item is either an accepted limitation, a deferral, or
+an alternative that was evaluated and passed over. Items that remain genuinely
+undecided are collected separately in Section~\ref{sec:open}.
+
+Where a number appears, it was measured on real code --- Horizon's own
+\verb|src/|, the purpose-built demo crates, or published benchmarks --- rather
+than estimated.
+
+\textbf{Reading note (post-implementation).} Several design-phase assumptions
+were later reversed (no compile gate; crates as spine nodes; allowlisted macro
+recovery; correctness harness). This file has been reconciled with the
+specification of record in
+\texttt{docs/requirements/rust-function-map.md}. Prefer that document when the
+two disagree on \emph{current} behaviour; this file keeps the measured costs and
+the reasoning that led to each exclusion.
+
+\section{The frame these exclusions follow from}
+
+Four decisions shape everything below.
+
+\begin{description}[style=nextline,leftmargin=1em]
+  \item[Functions only.] The map contains free functions, their calls, and
+    documentation. Data structures are not map nodes.
+  \item[Free functions only.] Methods and \verb|impl| / \verb|trait| items are
+    \textbf{permanently out of scope} for this tool (declarations and call
+    sites). Associated functions on types are excluded for the same reason.
+  \item[Build the tree always.] There is no compile gate. Mid-edit and
+    non-compiling source still yields a map; conflicts and unresolved markers
+    make incompleteness visible. (An earlier ``valid code only'' frame was
+    rejected --- see Section~\ref{sec:gates}.)
+  \item[Batch updates.] The map is a single-shot batch analysis. Live
+    incremental updating while typing is a non-goal. The host product's
+    rebuild trigger (when a codebase is ``uploaded'', whether prior JSON is
+    retained) is unspecified; the tool itself has no cache.
+\end{description}
+
+\section{Deferred by explicit decision}
+
+\subsection{Methods and \texttt{impl} blocks}
+
+Excluded entirely: method declarations inside \verb|impl| blocks, and calls of
+the form \verb|x.foo()|. Permanently out of scope --- not a ``phase~2'' of this
+resolver.
+
+\note{This is the largest single exclusion by volume. Of Horizon's \textbf{1{,}394
+call sites, 1{,}053 are method calls} --- roughly 75\%. Only 266 are the
+path-form calls the map currently describes. The map will therefore represent a
+minority of the call activity in a typical Rust codebase.}
+
+Resolving them requires knowing the type of the receiver, which needs type
+inference rather than name lookup. Two sub-cases are known to be unresolvable
+without a real type checker and would remain excluded even in a separate
+type-aware product:
+
+\begin{itemize}[nosep]
+  \item receivers typed through a generic parameter (\verb|T: Store|),
+  \item receivers behind a trait object or opaque type (\verb|&dyn Store|,
+    \verb|impl Store|).
+\end{itemize}
+
+A related correctness rule was identified for any future method work: Rust probes
+inherent methods before trait methods, so when a type has both, the inherent one
+wins. The demo fixture \verb|tests/fixtures/method-ambiguity/| contains exactly
+this collision.
+
+\begin{lstlisting}
+impl Cache {
+    pub fn get(&self, key: &str) -> Option<&Item> { ... }
+}
+
+impl Store for Cache {
+    fn get(&self, key: &str) -> Option<&Item> { ... }
+}
+\end{lstlisting}
+
+\subsection{Associated functions and constructors}
+
+Also permanently out of scope, counted in summary counters rather than drawn:
+
+\begin{itemize}[nosep]
+  \item associated functions on types (\verb|Vec::new|, \verb|Type::assoc|) ---
+    \verb|associated_dropped|;
+  \item enum variants and tuple-struct constructors (\verb|Ok(x)|,
+    \verb|CallTarget::Resolved(...)|) --- \verb|constructor_dropped|.
+\end{itemize}
+
+\note{Both are syntactically \verb|CallExpr| in \verb|ra_ap_syntax|. Recording
+them as \verb|Unresolved| would mis-diagnose a type or constructor as a missing
+free function. Classification uses collected local type names, prelude variants,
+primitives, and a strict UpperCamelCase convention heuristic when facts are
+absent (failures surface as \verb|Unresolved|, not silent drops).}
+
+\subsection{Data structures}
+
+Excluded from the \emph{emitted} map: \verb|struct|, \verb|enum|, and
+\verb|trait| definitions as containment nodes; the use of one data structure
+inside another's definition; and field types as map edges.
+
+\note{Type \emph{names} (and enum variants) are collected internally so
+constructors and associated functions can be classified and dropped. That index
+is not part of the JSON map. Representing data structures as first-class map
+nodes remains deferred, not abandoned.}
+
+\subsection{Compile gate (rejected)}
+
+An earlier frame required the map to update only from code that compiles. That
+was replaced: build always, mark conflicts / unresolved.
+
+\note{Error tolerance was one of the original reasons for choosing
+\verb|ra_ap_syntax| over \verb|syn|. Keeping a compile gate would have thrown
+away that capability and blocked mid-edit repositories. Ambiguous globs
+(\verb|E0659|) and missing names (\verb|E0425|) are first-class map outcomes
+under the never-guess rule.}
+
+Validity-gate mechanisms that were evaluated and \emph{not} adopted are recorded
+in Section~\ref{sec:gates} for history.
+
+\subsection{Live incremental updating}
+
+Excluded: updating the map continuously as code is typed.
+
+\note{The tool is a single-shot batch analyser with no incremental state. The
+original ``update while typing'' requirement conflicted with batch rebuilds and
+is a non-goal. Host-product storage and rebuild policy remain open
+(requirements, Open questions).}
+
+\subsection{Call categories excluded from the map}
+
+Kinds of call recognised by the analyser but absent from the tree (except where
+noted).
+
+\begin{description}[style=nextline,leftmargin=1em]
+
+  \item[External calls.] Calls into \verb|std| / \verb|core| / \verb|alloc| /
+    \verb|proc_macro|, or into a Cargo dependency whose kind is external.
+    Deliberately dropped --- not drawn as \verb|Unresolved|, not given a new
+    variant. Counted in \verb|MapSummary.external_dropped|.
+    \note{Someone reading the never-silently-missing rule literally might try to
+    ``restore'' these as unresolved sites. Do not: external callees are outside
+    the indexed universe by design. A function whose body only calls
+    \verb|std| appears as a childless leaf; that is intentional.}
+
+  \item[Indirect calls.] A call through a variable holding a function.
+\begin{lstlisting}
+fn apply(s: &str, f: fn(&str) -> String) -> String {
+    f(s)                     // `f` is a parameter, not a function name
+}
+let k = |x: &str| normalize(x);
+k(label)                     // `k` is a local closure binding
+\end{lstlisting}
+    Which function runs depends on what the caller passed and may differ per
+    invocation. Determining it requires dataflow analysis.
+
+  \item[Functions passed as values.] In \verb|apply(&n, normalize)| the name
+    \verb|normalize| is mentioned but not called.
+    \note{This relationship vanishes completely today. A function can be passed
+    throughout a codebase and still appear unreferenced in the map.}
+
+\end{description}
+
+\paragraph{Macro-hidden calls (partially recovered).}
+ The parser leaves macro
+arguments as unstructured token trees, so \verb|mean(v)| inside
+\verb|format!("{}", mean(v))| is invisible to a normal tree walk. Measured on
+Horizon this hid on the order of tens of path-form calls against a few hundred
+visible ones.
+
+\textbf{Implemented:} an allowlist of std/core expression macros
+(\verb|format!|, \verb|println!|, \verb|assert_eq!|, \verb|vec!|, \ldots) is
+opened by re-parsing the token-tree interior; recovered sites resolve through
+the normal path and set \verb|CallSite.from_macro|. Nested allowlisted macros
+are opened recursively (depth-bounded).
+
+\textbf{Still deferred / deliberately opaque:} user-defined macros,
+\verb|matches!| / pattern-position macros, \verb|stringify!| / \verb|concat!|,
+\verb|cfg!|, \verb|quote!|, \verb|macro_rules!| / \verb|macro| definition
+bodies, attribute / derive token trees. Prefer a miss over a fabricated edge.
+
+\paragraph{Macro-hidden \texttt{mod} declarations (allowlisted item reparse).}
+ Allowlisted item-pasting macros (\verb|cfg_if!|, Tokio-style names starting
+\verb|cfg_|) hide \verb|mod| declarations inside token trees. Recovery
+re-parses the \emph{invocation} token tree (depth-bounded at 8) and walks the
+resulting modules. All \verb|cfg_if!| branches are \textbf{unioned} --- the tool
+does not choose a build configuration, for the same reason it keeps
+\verb|#[cfg]|-duplicated functions.
+
+\textbf{Not recovered:} serde's \verb|crate_root!()| pattern. The modules live
+in a \verb|macro_rules!| \emph{definition} body; the call site is empty.
+Expanding definition bodies is a different and riskier problem than re-parsing
+an invocation's tokens. Prefer a missing subtree over a fabricated module tree.
+
+\textbf{First-wins on cfg-twinned \texttt{\#[path]}:} when two \verb|#[cfg]| arms
+declare the same module name with different \verb|#[path]| targets, the first
+declaration wins --- one module path maps to one file. Real limitation.
+
+\section{Language features knowingly unhandled}
+
+\subsection{Configuration-gated duplicate definitions}
+
+\begin{lstlisting}
+#[cfg(unix)]    fn open() { }
+#[cfg(windows)] fn open() { }
+\end{lstlisting}
+
+One path, two real definitions. Which is live depends on a build configuration
+nobody has chosen. Horizon emits a \verb|Conflict| naming every candidate
+(FunctionIds get \verb|#L{line}| suffixes). That is the never-guess outcome,
+not a silent pick.
+
+\subsection{Modules absent from the tree spine}
+
+The map's containment hierarchy is crate $\rightarrow$ folder $\rightarrow$
+file $\rightarrow$ function. Modules are not nodes, on the working assumption
+that a module corresponds to a file. That assumption was tested against the
+compiler and is false in four distinct ways:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Case} & \textbf{Module} & \textbf{File} \\
+\midrule
+Ordinary            & \verb|text|              & \verb|text.rs| \\
+Inline module       & \verb|text::case|        & none --- written inside \verb|text.rs| \\
+Undeclared file     & none                     & \verb|orphan.rs| --- never compiled \\
+\verb|#[path]|      & \verb|tidy_name|         & \verb|renamed_on_disk.rs| \\
+Crate root          & the root itself          & \verb|lib.rs| --- contributes no segment \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\note{Two consequences follow. Inline modules disappear from the spine, so a file
+may contain two functions of the same name at different module depths --- and a
+call node that references only its declaring \emph{file} cannot distinguish them
+(resolved targets therefore reference \emph{function} ids). Second, a file
+declared nowhere is not part of the crate at all. File discovery is
+declaration-driven (\verb|mod| walk), never a directory glob.}
+
+A further consequence, verified: a \verb|mod| inside a file nests rather than
+merging, so a file \verb|selfdecl.rs| declaring \verb|pub mod selfdecl| yields the
+path \verb|crate::selfdecl::selfdecl::inner_fn|.
+
+\subsection{Textual inclusion}
+
+\verb|include!("other.rs")| splices a file's text in with no module boundary.
+Rare outside code generation, but it means even a complete \verb|mod| walk can
+miss source that is genuinely compiled.
+
+\subsection{Scope-local \texttt{use} declarations}
+
+\verb|use| is legal inside functions and modules, not only at file top level.
+A \verb|use| inside a function body is attributed to the enclosing
+\emph{module} with \verb|Import::scope_widened = true| --- wider than rustc.
+Module-level \verb|use| (including inside inline \verb|mod| blocks) is
+attributed to that module correctly. The flag exists so the limitation is never
+silent.
+
+\subsection{Glob imports into dependencies}
+
+\verb|use some_dependency::*;| is not specially expanded across crates.
+Within-crate globs are resolved against the index with visibility-filtered
+candidate sets. Cross-crate edges use explicit paths / imports into declared
+path dependencies.
+
+\subsection{Traits imported as \texttt{\_}}
+
+\verb|use SomeTrait as _;| brings a trait into scope for method resolution
+without binding a nameable identifier, so the trait becomes invisible to the
+index. Method-related, and therefore doubly out of scope.
+
+\subsection{Visibility asymmetry (intentional)}
+
+Three distinct policies --- do not ``unify'' them:
+
+\begin{itemize}[nosep]
+  \item \textbf{Direct within-crate edges:} visibility is \emph{not} filtered.
+    A path the author wrote still appears even if rustc would emit
+    \verb|E0603|.
+  \item \textbf{Glob candidate sets:} visibility \emph{is} filtered so private
+    items do not manufacture \verb|E0659| conflicts rustc would never report.
+  \item \textbf{Cross-crate reachability:} visibility \emph{is} enforced
+    (\verb|pub| item behind an all-\verb|pub| module chain) plus the
+    dependency gate.
+\end{itemize}
+
+\section{Build-system cases knowingly unhandled}
+
+Crate discovery is driven by \verb|cargo metadata --no-deps --offline|, which
+was measured at \textbf{322\,ms on Horizon} and performs no compilation. Path
+dependencies outside the workspace are found by recursing into each
+\verb|path| directory. The following remain unhandled.
+
+\begin{description}[style=nextline,leftmargin=1em]
+  \item[\texttt{[patch]} and \texttt{[replace]}.] These can redirect an apparent
+    registry dependency to a local directory, so a crate can be local without its
+    own entry saying \verb|path|. Same for vendored setups where
+    \verb|.cargo/config.toml| places every dependency on disk.
+  \item[Optional and feature-gated dependencies.] Presence depends on the
+    selected feature set, which is genuinely undecidable without choosing one.
+  \item[Target-specific dependencies.] Entries under
+    \verb|[target.'cfg(unix)'.dependencies]| vary by platform.
+  \item[Development dependencies.] Visible only to tests, examples, and benches,
+    not to the library --- filtered out of the dependency list used for
+    resolution. Scale validation shows the cost: test-only externals surface as
+    \verb|Unresolved| rather than \verb|external_dropped|. Including them as
+    external roots (not walked) remains an open product decision.
+  \item[Examples, integration tests, benches, \texttt{build.rs}.]
+    Deliberately \emph{not} discovered as map crates. They are secondary
+    surfaces; including them would inflate maps and hit the same
+    \verb|[dev-dependencies]| blind spot. Not an accidental omission of target
+    kinds.
+  \item[Non-Cargo projects.] Builds driven by \verb|rust-project.json|, Buck, or
+    Bazel are out of scope; everything assumes Cargo.
+\end{description}
+
+\paragraph{Handled (recorded because once surprising).} Package names and
+editions come from \verb|cargo metadata|, not directory heuristics. A binary in
+\verb|src/bin/| is a separate crate node from the library beside it and reaches
+it by package name (implicit path dependency), exactly as Cargo does.
+FunctionIds disambiguate same-named lib+bin pairs as \verb|{name}[bin]|.
+Manifest dependency renaming
+(\verb|alias = { package = "real-name", path = "..." }|) is supported: the
+import name is what code uses; the package name identifies the path dep.
+Library-like target kinds include \verb|proc-macro| (as well as \verb|lib| /
+\verb|rlib| / \verb|dylib| / \verb|cdylib| / \verb|staticlib|) ---
+\verb|cargo metadata| reports proc-macro crates with kind \verb|proc-macro|,
+not \verb|lib|, so omitting that kind silently dropped crates such as
+\verb|serde_derive|.
+
+\section{Alternatives evaluated and set aside}
+
+\subsection{rust-analyzer SCIP indexing}
+\label{sec:scip}
+
+\verb|rust-analyzer scip .| emits a complete semantic index --- definitions,
+references, resolved cross-references, hover documentation --- using real name
+resolution and type inference rather than heuristics. Published measurements:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Codebase} & \textbf{Time} & \textbf{Peak memory} & \textbf{Result} \\
+\midrule
+ruff              & 73\,s   & 2.1\,GB & 646k occurrences, 81\% resolved \\
+ripgrep           & 35\,s   & 1.1\,GB & full index \\
+rust-analyzer     & 35\,s   & ---     & full index \\
+mozilla-central   & 20\,min & ---     & full index \\
+\midrule
+ruff, via live LSP & 254\,s & 15.4\,GB & 9\% resolved, degraded \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Unresolved references are \verb|std| and dependencies, marked
+\verb|EXTERNAL_SYMBOL| --- which is the intended external-dependency rule,
+implemented for free. Coverage includes methods.
+
+\note{This resolves roughly 81\% including methods, against the hand-built
+approach's roughly 55\% of path-form calls with methods excluded. The decision
+is to build our own for now regardless. The costs of adopting SCIP are a required
+toolchain (\verb|rustup component add rust-analyzer|), a batch snapshot rather
+than incremental output, and (at decision time) unverified handling of comments
+as first-class nodes. LSIF from rust-analyzer is used only as a
+\emph{correctness oracle} for free-function edges on Horizon itself --- not as
+the production indexer.}
+
+\subsection{Validity gates not chosen}
+\label{sec:gates}
+
+Three mechanisms for establishing that code compiles were identified. Under the
+``build always'' decision they are unused; recorded for history.
+
+\begin{itemize}[nosep]
+  \item \verb|cargo check --message-format=json| --- the authority. One JSON
+    object per line; the \verb|cargo_metadata| crate parses the stream. Stops
+    before code generation, so a small class of codegen-time diagnostics never
+    appears.
+  \item \verb|rust-analyzer diagnostics <path>| --- purpose-built as a gate;
+    exits non-zero if any error is found.
+  \item \verb|rust-analyzer unresolved-references <path>| --- narrower and
+    aimed exactly at this problem, reporting \verb|file:line:column: text|. Known
+    false positives around procedural macros unless the workspace is loaded with
+    \verb|all_targets: true|.
+\end{itemize}
+
+\paragraph{Rejected outright: parser errors as a validity gate.} Syntactic
+validity and compilability are almost unrelated. Of the compiler errors produced
+while testing these rules, only one was syntactic --- a dash in a path. Every
+other one parsed perfectly and failed later:
+
+\begin{lstlisting}[language={}]
+E0433  cannot find module `text`        <- parsed fine
+E0425  cannot find function `get`       <- parsed fine
+E0603  module `secret` is private       <- parsed fine
+E0659  `get` is ambiguous               <- parsed fine
+E0308  mismatched types                 <- parsed fine
+\end{lstlisting}
+
+\section{Known weaknesses in what already exists}
+
+\begin{description}[style=nextline,leftmargin=1em]
+  \item[Correctness outside the measured set.] A standing harness reports zero
+    false positives on fixture oracles and on an LSIF comparison against
+    Horizon itself (see \texttt{docs/correctness-measurement.md}). That does
+    \emph{not} speak for large or unfamiliar corpora at LSIF grade (a hand
+    sample on ripgrep / Cellular Automata is recorded in
+    \texttt{docs/scale-validation.md}).
+  \item[UpperCamelCase drop heuristic.] Unknown path segments matching strict
+    UpperCamelCase (ASCII uppercase start, alphanumeric only, at least one
+    lowercase) may be classified as types and dropped. Segments that
+    \emph{fail} that test surface as \verb|Unresolved| rather than a silent
+    drop. Modules present in the module tree are unaffected; UpperCamelCase
+    modules \emph{absent} from the tree can still be mis-dropped.
+  \item[Nested free-function unqualified recursion.] An unqualified recursive
+    call inside a nested \verb|fn| can surface as \verb|Unresolved|. No
+    dedicated fixture yet.
+  \item[Function-body \texttt{use} widening.] Documented; wider than rustc.
+  \item[Re-export hop bound.] Chains are followed at most 32 hops
+    (\verb|REEXPORT_HOP_LIMIT|), then \verb|Unresolved|.
+  \item[Cross-crate facade re-exports.] \verb|pub use| barrels across path
+    dependencies are not followed; free functions behind a facade remain
+    \verb|Unresolved| (measured on ripgrep).
+\end{description}
+
+\section{Undecided}
+\label{sec:open}
+
+These remain genuinely open (aligned with the requirements Open questions).
+Decisions that were open at design time and are now settled are listed at the
+end of this section for the record.
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Update trigger.} Host-product policy for when to rebuild;
+    the tool has no cache (see requirements).
+  \item \textbf{Parallelism.} Pipeline is sequential; scale validation shows
+    ~0.8--1.1\,MB/s analysed on dense trees and ~10--20\,min for a 50k-file
+    estimate --- parallelism is the obvious lever.
+  \item \textbf{Broader macro recovery.} User macros and definition-body
+    expanders stay opaque; any opt-in needs its own false-positive measurement.
+  \item \textbf{Cross-crate LSIF / large-corpus precision.} Unmeasured beyond
+    purpose-built multi-crate fixtures and a hand sample on unfamiliar code.
+  \item \textbf{Dev-dependencies as external roots.} Whether to list them so
+    test-only calls become \verb|external_dropped| rather than
+    \verb|Unresolved|.
+  \item \textbf{Facade re-exports across path deps.} Fix versus accept as a
+    known limitation.
+\end{enumerate}
+
+\paragraph{Settled since the design draft (no longer open).}
+\begin{itemize}[nosep]
+  \item Doc comments attach to functions (outer) and files (inner).
+  \item Crates are spine nodes above folders.
+  \item Call edges reference function ids, not files.
+  \item No validity gate; edition comes from \verb|cargo metadata|.
+  \item File discovery is a \verb|mod| walk, not a directory glob.
+  \item Manifest dependency renaming is supported.
+  \item Proc-macro (and other library-like) target kinds are discovered;
+    examples / tests / benches / \verb|build.rs| are deliberately excluded.
+  \item Allowlisted item-macro \verb|mod| recovery (\verb|cfg_if!| / \verb|cfg_*|)
+    with union-of-branches; \verb|crate_root!()|-style definition bodies stay closed.
+  \item Capitalisation check is strict UpperCamelCase; failures surface as
+    \verb|Unresolved| rather than silent drops.
+  \item Correctness harness shares the extract/resolve pipeline with the CLI
+    (no parallel twin walk).
+\end{itemize}
+
+\section{Original goals not addressed today}
+
+\begin{itemize}[nosep]
+  \item \textbf{Multi-language support.} The project is intended to work on
+    arbitrary codebases; everything designed today is Rust-specific.
+  \item \textbf{Methods / type-aware resolution.} Permanently out of this
+    tool's scope; would be a separate product.
+  \item \textbf{Identity under re-export.} One definition can be reachable by
+    several paths. Import aliases and bounded re-export hops are handled;
+    a general alias table as a first-class map feature is not.
+\end{itemize}
+
+\end{document}

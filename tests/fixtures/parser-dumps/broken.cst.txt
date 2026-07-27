@@ -1,0 +1,183 @@
+SOURCE_FILE@0..386
+  COMMENT@0..60 "//! Half-typed file,  ..."
+  WHITESPACE@60..63 "\n\r\n"
+  USE@63..93
+    USE_KW@63..66 "use"
+    WHITESPACE@66..67 " "
+    USE_TREE@67..92
+      PATH@67..92
+        PATH@67..83
+          PATH@67..70
+            PATH_SEGMENT@67..70
+              NAME_REF@67..70
+                IDENT@67..70 "std"
+          COLON2@70..72 "::"
+          PATH_SEGMENT@72..83
+            NAME_REF@72..83
+              IDENT@72..83 "collections"
+        COLON2@83..85 "::"
+        PATH_SEGMENT@85..92
+          NAME_REF@85..92
+            IDENT@85..92 "HashMap"
+    SEMICOLON@92..93 ";"
+  WHITESPACE@93..97 "\r\n\r\n"
+  STRUCT@97..172
+    COMMENT@97..124 "/// A cache being wri ..."
+    WHITESPACE@124..125 "\n"
+    VISIBILITY@125..128
+      PUB_KW@125..128 "pub"
+    WHITESPACE@128..129 " "
+    STRUCT_KW@129..135 "struct"
+    WHITESPACE@135..136 " "
+    NAME@136..141
+      IDENT@136..141 "Cache"
+    WHITESPACE@141..142 " "
+    RECORD_FIELD_LIST@142..172
+      L_CURLY@142..143 "{"
+      WHITESPACE@143..149 "\r\n    "
+      RECORD_FIELD@149..169
+        NAME@149..152
+          IDENT@149..152 "map"
+        COLON@152..153 ":"
+        WHITESPACE@153..154 " "
+        PATH_TYPE@154..169
+          PATH@154..169
+            PATH_SEGMENT@154..169
+              NAME_REF@154..161
+                IDENT@154..161 "HashMap"
+              GENERIC_ARG_LIST@161..169
+                L_ANGLE@161..162 "<"
+                TYPE_ARG@162..168
+                  PATH_TYPE@162..168
+                    PATH@162..168
+                      PATH_SEGMENT@162..168
+                        NAME_REF@162..168
+                          IDENT@162..168 "String"
+                COMMA@168..169 ","
+      WHITESPACE@169..171 "\r\n"
+      R_CURLY@171..172 "}"
+  WHITESPACE@172..176 "\r\n\r\n"
+  IMPL@176..339
+    IMPL_KW@176..180 "impl"
+    WHITESPACE@180..181 " "
+    PATH_TYPE@181..186
+      PATH@181..186
+        PATH_SEGMENT@181..186
+          NAME_REF@181..186
+            IDENT@181..186 "Cache"
+    WHITESPACE@186..187 " "
+    ASSOC_ITEM_LIST@187..339
+      L_CURLY@187..188 "{"
+      WHITESPACE@188..194 "\r\n    "
+      FN@194..225
+        COMMENT@194..209 "/// Build one.\r"
+        WHITESPACE@209..214 "\n    "
+        VISIBILITY@214..217
+          PUB_KW@214..217 "pub"
+        WHITESPACE@217..218 " "
+        FN_KW@218..220 "fn"
+        WHITESPACE@220..221 " "
+        NAME@221..224
+          IDENT@221..224 "new"
+        PARAM_LIST@224..225
+          L_PAREN@224..225 "("
+      WHITESPACE@225..233 "\r\n\r\n    "
+      FN@233..336
+        COMMENT@233..250 "/// Fetch a key.\r"
+        WHITESPACE@250..255 "\n    "
+        VISIBILITY@255..258
+          PUB_KW@255..258 "pub"
+        WHITESPACE@258..259 " "
+        FN_KW@259..261 "fn"
+        WHITESPACE@261..262 " "
+        NAME@262..265
+          IDENT@262..265 "get"
+        PARAM_LIST@265..283
+          L_PAREN@265..266 "("
+          SELF_PARAM@266..271
+            AMP@266..267 "&"
+            NAME@267..271
+              SELF_KW@267..271 "self"
+          COMMA@271..272 ","
+          WHITESPACE@272..273 " "
+          PARAM@273..282
+            IDENT_PAT@273..276
+              NAME@273..276
+                IDENT@273..276 "key"
+            COLON@276..277 ":"
+            WHITESPACE@277..278 " "
+            REF_TYPE@278..282
+              AMP@278..279 "&"
+              PATH_TYPE@279..282
+                PATH@279..282
+                  PATH_SEGMENT@279..282
+                    NAME_REF@279..282
+                      IDENT@279..282 "str"
+          R_PAREN@282..283 ")"
+        WHITESPACE@283..284 " "
+        RET_TYPE@284..300
+          THIN_ARROW@284..286 "->"
+          WHITESPACE@286..287 " "
+          PATH_TYPE@287..300
+            PATH@287..300
+              PATH_SEGMENT@287..300
+                NAME_REF@287..293
+                  IDENT@287..293 "Option"
+                GENERIC_ARG_LIST@293..300
+                  L_ANGLE@293..294 "<"
+                  TYPE_ARG@294..299
+                    REF_TYPE@294..299
+                      AMP@294..295 "&"
+                      PATH_TYPE@295..299
+                        PATH@295..299
+                          PATH_SEGMENT@295..299
+                            NAME_REF@295..299
+                              IDENT@295..299 "Item"
+                  R_ANGLE@299..300 ">"
+        WHITESPACE@300..301 " "
+        BLOCK_EXPR@301..336
+          STMT_LIST@301..336
+            L_CURLY@301..302 "{"
+            WHITESPACE@302..312 "\r\n        "
+            METHOD_CALL_EXPR@312..329
+              FIELD_EXPR@312..320
+                PATH_EXPR@312..316
+                  PATH@312..316
+                    PATH_SEGMENT@312..316
+                      NAME_REF@312..316
+                        SELF_KW@312..316 "self"
+                DOT@316..317 "."
+                NAME_REF@317..320
+                  IDENT@317..320 "map"
+              DOT@320..321 "."
+              NAME_REF@321..324
+                IDENT@321..324 "get"
+              ARG_LIST@324..329
+                L_PAREN@324..325 "("
+                PATH_EXPR@325..328
+                  PATH@325..328
+                    PATH_SEGMENT@325..328
+                      NAME_REF@325..328
+                        IDENT@325..328 "key"
+                R_PAREN@328..329 ")"
+            WHITESPACE@329..335 "\r\n    "
+            R_CURLY@335..336 "}"
+      WHITESPACE@336..338 "\r\n"
+      R_CURLY@338..339 "}"
+  WHITESPACE@339..343 "\r\n\r\n"
+  FN@343..386
+    COMMENT@343..377 "/// Just started typi ..."
+    WHITESPACE@377..378 "\n"
+    VISIBILITY@378..381
+      PUB_KW@378..381 "pub"
+    WHITESPACE@381..382 " "
+    FN_KW@382..384 "fn"
+    WHITESPACE@384..386 "\r\n"
+    ERROR@386..386
+error 169..169: expected R_ANGLE
+error 225..225: expected value parameter
+error 225..225: expected R_PAREN
+error 225..225: expected a block
+error 386..386: expected a name
+error 386..386: expected function arguments
+error 386..386: expected a block

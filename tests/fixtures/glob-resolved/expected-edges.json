@@ -1,0 +1,10 @@
+{
+  "fixture": "glob-resolved",
+  "edges": [
+    {
+      "caller": "glob_resolved::app::run",
+      "call_path": "get",
+      "expect": { "kind": "resolved", "id": "glob_resolved::text::get" }
+    }
+  ]
+}

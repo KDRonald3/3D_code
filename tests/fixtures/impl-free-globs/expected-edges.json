@@ -1,0 +1,45 @@
+{
+  "fixture": "impl-free-globs",
+  "edges": [
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "mean",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::numbers::mean" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "total",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::numbers::sum_all" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "text::upper",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::text::upper" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "crate::mean",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::numbers::mean" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "shout_upper",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::text::upper" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "area",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::shapes::area" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "describe",
+      "expect": { "kind": "resolved", "id": "impl_free_globs::app::describe" }
+    },
+    {
+      "caller": "impl_free_globs::app::run",
+      "call_path": "std::cmp::max",
+      "expect": { "kind": "absent" }
+    }
+  ]
+}

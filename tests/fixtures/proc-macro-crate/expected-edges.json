@@ -1,0 +1,15 @@
+{
+  "fixture": "proc-macro-crate",
+  "edges": [
+    {
+      "caller": "proc_macro_crate::sanitize",
+      "call_path": "expand_name",
+      "expect": { "kind": "resolved", "id": "proc_macro_crate::expand_name" }
+    },
+    {
+      "caller": "proc_macro_crate::identity",
+      "call_path": "sanitize",
+      "expect": { "kind": "resolved", "id": "proc_macro_crate::sanitize" }
+    }
+  ]
+}

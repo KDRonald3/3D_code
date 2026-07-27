@@ -1,0 +1,11 @@
+[package]
+name = "impl-free-globs"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "impl_free_globs"
+path = "lib.rs"

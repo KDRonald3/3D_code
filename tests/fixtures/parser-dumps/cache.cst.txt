@@ -1,0 +1,635 @@
+SOURCE_FILE@0..1170
+  COMMENT@0..19 "//! Storage layer.\r"
+  WHITESPACE@19..22 "\n\r\n"
+  USE@22..52
+    USE_KW@22..25 "use"
+    WHITESPACE@25..26 " "
+    USE_TREE@26..51
+      PATH@26..51
+        PATH@26..42
+          PATH@26..29
+            PATH_SEGMENT@26..29
+              NAME_REF@26..29
+                IDENT@26..29 "std"
+          COLON2@29..31 "::"
+          PATH_SEGMENT@31..42
+            NAME_REF@31..42
+              IDENT@31..42 "collections"
+        COLON2@42..44 "::"
+        PATH_SEGMENT@44..51
+          NAME_REF@44..51
+            IDENT@44..51 "HashMap"
+    SEMICOLON@51..52 ";"
+  WHITESPACE@52..56 "\r\n\r\n"
+  STRUCT@56..138
+    COMMENT@56..75 "/// A cached item.\r"
+    WHITESPACE@75..76 "\n"
+    VISIBILITY@76..79
+      PUB_KW@76..79 "pub"
+    WHITESPACE@79..80 " "
+    STRUCT_KW@80..86 "struct"
+    WHITESPACE@86..87 " "
+    NAME@87..91
+      IDENT@87..91 "Item"
+    WHITESPACE@91..92 " "
+    RECORD_FIELD_LIST@92..138
+      L_CURLY@92..93 "{"
+      WHITESPACE@93..99 "\r\n    "
+      RECORD_FIELD@99..118
+        VISIBILITY@99..102
+          PUB_KW@99..102 "pub"
+        WHITESPACE@102..103 " "
+        NAME@103..110
+          IDENT@103..110 "payload"
+        COLON@110..111 ":"
+        WHITESPACE@111..112 " "
+        PATH_TYPE@112..118
+          PATH@112..118
+            PATH_SEGMENT@112..118
+              NAME_REF@112..118
+                IDENT@112..118 "String"
+      COMMA@118..119 ","
+      WHITESPACE@119..125 "\r\n    "
+      RECORD_FIELD@125..134
+        NAME@125..129
+          IDENT@125..129 "hits"
+        COLON@129..130 ":"
+        WHITESPACE@130..131 " "
+        PATH_TYPE@131..134
+          PATH@131..134
+            PATH_SEGMENT@131..134
+              NAME_REF@131..134
+                IDENT@131..134 "u32"
+      COMMA@134..135 ","
+      WHITESPACE@135..137 "\r\n"
+      R_CURLY@137..138 "}"
+  WHITESPACE@138..142 "\r\n\r\n"
+  TRAIT@142..279
+    COMMENT@142..177 "/// Anything that can ..."
+    WHITESPACE@177..178 "\n"
+    VISIBILITY@178..181
+      PUB_KW@178..181 "pub"
+    WHITESPACE@181..182 " "
+    TRAIT_KW@182..187 "trait"
+    WHITESPACE@187..188 " "
+    NAME@188..193
+      IDENT@188..193 "Store"
+    WHITESPACE@193..194 " "
+    ASSOC_ITEM_LIST@194..279
+      L_CURLY@194..195 "{"
+      WHITESPACE@195..201 "\r\n    "
+      FN@201..276
+        COMMENT@201..229 "/// Required: fetch b ..."
+        WHITESPACE@229..234 "\n    "
+        FN_KW@234..236 "fn"
+        WHITESPACE@236..237 " "
+        NAME@237..240
+          IDENT@237..240 "get"
+        PARAM_LIST@240..258
+          L_PAREN@240..241 "("
+          SELF_PARAM@241..246
+            AMP@241..242 "&"
+            NAME@242..246
+              SELF_KW@242..246 "self"
+          COMMA@246..247 ","
+          WHITESPACE@247..248 " "
+          PARAM@248..257
+            IDENT_PAT@248..251
+              NAME@248..251
+                IDENT@248..251 "key"
+            COLON@251..252 ":"
+            WHITESPACE@252..253 " "
+            REF_TYPE@253..257
+              AMP@253..254 "&"
+              PATH_TYPE@254..257
+                PATH@254..257
+                  PATH_SEGMENT@254..257
+                    NAME_REF@254..257
+                      IDENT@254..257 "str"
+          R_PAREN@257..258 ")"
+        WHITESPACE@258..259 " "
+        RET_TYPE@259..275
+          THIN_ARROW@259..261 "->"
+          WHITESPACE@261..262 " "
+          PATH_TYPE@262..275
+            PATH@262..275
+              PATH_SEGMENT@262..275
+                NAME_REF@262..268
+                  IDENT@262..268 "Option"
+                GENERIC_ARG_LIST@268..275
+                  L_ANGLE@268..269 "<"
+                  TYPE_ARG@269..274
+                    REF_TYPE@269..274
+                      AMP@269..270 "&"
+                      PATH_TYPE@270..274
+                        PATH@270..274
+                          PATH_SEGMENT@270..274
+                            NAME_REF@270..274
+                              IDENT@270..274 "Item"
+                  R_ANGLE@274..275 ">"
+        SEMICOLON@275..276 ";"
+      WHITESPACE@276..278 "\r\n"
+      R_CURLY@278..279 "}"
+  WHITESPACE@279..283 "\r\n\r\n"
+  STRUCT@283..362
+    COMMENT@283..307 "/// An in-memory cache.\r"
+    WHITESPACE@307..308 "\n"
+    VISIBILITY@308..311
+      PUB_KW@308..311 "pub"
+    WHITESPACE@311..312 " "
+    STRUCT_KW@312..318 "struct"
+    WHITESPACE@318..319 " "
+    NAME@319..324
+      IDENT@319..324 "Cache"
+    WHITESPACE@324..325 " "
+    RECORD_FIELD_LIST@325..362
+      L_CURLY@325..326 "{"
+      WHITESPACE@326..332 "\r\n    "
+      RECORD_FIELD@332..358
+        NAME@332..335
+          IDENT@332..335 "map"
+        COLON@335..336 ":"
+        WHITESPACE@336..337 " "
+        PATH_TYPE@337..358
+          PATH@337..358
+            PATH_SEGMENT@337..358
+              NAME_REF@337..344
+                IDENT@337..344 "HashMap"
+              GENERIC_ARG_LIST@344..358
+                L_ANGLE@344..345 "<"
+                TYPE_ARG@345..351
+                  PATH_TYPE@345..351
+                    PATH@345..351
+                      PATH_SEGMENT@345..351
+                        NAME_REF@345..351
+                          IDENT@345..351 "String"
+                COMMA@351..352 ","
+                WHITESPACE@352..353 " "
+                TYPE_ARG@353..357
+                  PATH_TYPE@353..357
+                    PATH@353..357
+                      PATH_SEGMENT@353..357
+                        NAME_REF@353..357
+                          IDENT@353..357 "Item"
+                R_ANGLE@357..358 ">"
+      COMMA@358..359 ","
+      WHITESPACE@359..361 "\r\n"
+      R_CURLY@361..362 "}"
+  WHITESPACE@362..366 "\r\n\r\n"
+  IMPL@366..703
+    IMPL_KW@366..370 "impl"
+    WHITESPACE@370..371 " "
+    PATH_TYPE@371..376
+      PATH@371..376
+        PATH_SEGMENT@371..376
+          NAME_REF@371..376
+            IDENT@371..376 "Cache"
+    WHITESPACE@376..377 " "
+    ASSOC_ITEM_LIST@377..703
+      L_CURLY@377..378 "{"
+      WHITESPACE@378..384 "\r\n    "
+      FN@384..483
+        COMMENT@384..410 "/// Build an empty ca ..."
+        WHITESPACE@410..415 "\n    "
+        VISIBILITY@415..418
+          PUB_KW@415..418 "pub"
+        WHITESPACE@418..419 " "
+        FN_KW@419..421 "fn"
+        WHITESPACE@421..422 " "
+        NAME@422..425
+          IDENT@422..425 "new"
+        PARAM_LIST@425..427
+          L_PAREN@425..426 "("
+          R_PAREN@426..427 ")"
+        WHITESPACE@427..428 " "
+        RET_TYPE@428..435
+          THIN_ARROW@428..430 "->"
+          WHITESPACE@430..431 " "
+          PATH_TYPE@431..435
+            PATH@431..435
+              PATH_SEGMENT@431..435
+                NAME_REF@431..435
+                  SELF_TYPE_KW@431..435 "Self"
+        WHITESPACE@435..436 " "
+        BLOCK_EXPR@436..483
+          STMT_LIST@436..483
+            L_CURLY@436..437 "{"
+            WHITESPACE@437..447 "\r\n        "
+            RECORD_EXPR@447..476
+              PATH@447..452
+                PATH_SEGMENT@447..452
+                  NAME_REF@447..452
+                    IDENT@447..452 "Cache"
+              WHITESPACE@452..453 " "
+              RECORD_EXPR_FIELD_LIST@453..476
+                L_CURLY@453..454 "{"
+                WHITESPACE@454..455 " "
+                RECORD_EXPR_FIELD@455..474
+                  NAME_REF@455..458
+                    IDENT@455..458 "map"
+                  COLON@458..459 ":"
+                  WHITESPACE@459..460 " "
+                  CALL_EXPR@460..474
+                    PATH_EXPR@460..472
+                      PATH@460..472
+                        PATH@460..467
+                          PATH_SEGMENT@460..467
+                            NAME_REF@460..467
+                              IDENT@460..467 "HashMap"
+                        COLON2@467..469 "::"
+                        PATH_SEGMENT@469..472
+                          NAME_REF@469..472
+                            IDENT@469..472 "new"
+                    ARG_LIST@472..474
+                      L_PAREN@472..473 "("
+                      R_PAREN@473..474 ")"
+                WHITESPACE@474..475 " "
+                R_CURLY@475..476 "}"
+            WHITESPACE@476..482 "\r\n    "
+            R_CURLY@482..483 "}"
+      WHITESPACE@483..491 "\r\n\r\n    "
+      FN@491..662
+        COMMENT@491..550 "/// Inherent `get` -- ..."
+        WHITESPACE@550..555 "\n    "
+        VISIBILITY@555..558
+          PUB_KW@555..558 "pub"
+        WHITESPACE@558..559 " "
+        FN_KW@559..561 "fn"
+        WHITESPACE@561..562 " "
+        NAME@562..565
+          IDENT@562..565 "get"
+        PARAM_LIST@565..583
+          L_PAREN@565..566 "("
+          SELF_PARAM@566..571
+            AMP@566..567 "&"
+            NAME@567..571
+              SELF_KW@567..571 "self"
+          COMMA@571..572 ","
+          WHITESPACE@572..573 " "
+          PARAM@573..582
+            IDENT_PAT@573..576
+              NAME@573..576
+                IDENT@573..576 "key"
+            COLON@576..577 ":"
+            WHITESPACE@577..578 " "
+            REF_TYPE@578..582
+              AMP@578..579 "&"
+              PATH_TYPE@579..582
+                PATH@579..582
+                  PATH_SEGMENT@579..582
+                    NAME_REF@579..582
+                      IDENT@579..582 "str"
+          R_PAREN@582..583 ")"
+        WHITESPACE@583..584 " "
+        RET_TYPE@584..600
+          THIN_ARROW@584..586 "->"
+          WHITESPACE@586..587 " "
+          PATH_TYPE@587..600
+            PATH@587..600
+              PATH_SEGMENT@587..600
+                NAME_REF@587..593
+                  IDENT@587..593 "Option"
+                GENERIC_ARG_LIST@593..600
+                  L_ANGLE@593..594 "<"
+                  TYPE_ARG@594..599
+                    REF_TYPE@594..599
+                      AMP@594..595 "&"
+                      PATH_TYPE@595..599
+                        PATH@595..599
+                          PATH_SEGMENT@595..599
+                            NAME_REF@595..599
+                              IDENT@595..599 "Item"
+                  R_ANGLE@599..600 ">"
+        WHITESPACE@600..601 " "
+        BLOCK_EXPR@601..662
+          STMT_LIST@601..662
+            L_CURLY@601..602 "{"
+            WHITESPACE@602..612 "\r\n        "
+            EXPR_STMT@612..628
+              METHOD_CALL_EXPR@612..627
+                PATH_EXPR@612..616
+                  PATH@612..616
+                    PATH_SEGMENT@612..616
+                      NAME_REF@612..616
+                        SELF_KW@612..616 "self"
+                DOT@616..617 "."
+                NAME_REF@617..622
+                  IDENT@617..622 "touch"
+                ARG_LIST@622..627
+                  L_PAREN@622..623 "("
+                  PATH_EXPR@623..626
+                    PATH@623..626
+                      PATH_SEGMENT@623..626
+                        NAME_REF@623..626
+                          IDENT@623..626 "key"
+                  R_PAREN@626..627 ")"
+              SEMICOLON@627..628 ";"
+            WHITESPACE@628..638 "\r\n        "
+            METHOD_CALL_EXPR@638..655
+              FIELD_EXPR@638..646
+                PATH_EXPR@638..642
+                  PATH@638..642
+                    PATH_SEGMENT@638..642
+                      NAME_REF@638..642
+                        SELF_KW@638..642 "self"
+                DOT@642..643 "."
+                NAME_REF@643..646
+                  IDENT@643..646 "map"
+              DOT@646..647 "."
+              NAME_REF@647..650
+                IDENT@647..650 "get"
+              ARG_LIST@650..655
+                L_PAREN@650..651 "("
+                PATH_EXPR@651..654
+                  PATH@651..654
+                    PATH_SEGMENT@651..654
+                      NAME_REF@651..654
+                        IDENT@651..654 "key"
+                R_PAREN@654..655 ")"
+            WHITESPACE@655..661 "\r\n    "
+            R_CURLY@661..662 "}"
+      WHITESPACE@662..670 "\r\n\r\n    "
+      FN@670..700
+        FN_KW@670..672 "fn"
+        WHITESPACE@672..673 " "
+        NAME@673..678
+          IDENT@673..678 "touch"
+        PARAM_LIST@678..697
+          L_PAREN@678..679 "("
+          SELF_PARAM@679..684
+            AMP@679..680 "&"
+            NAME@680..684
+              SELF_KW@680..684 "self"
+          COMMA@684..685 ","
+          WHITESPACE@685..686 " "
+          PARAM@686..696
+            IDENT_PAT@686..690
+              NAME@686..690
+                IDENT@686..690 "_key"
+            COLON@690..691 ":"
+            WHITESPACE@691..692 " "
+            REF_TYPE@692..696
+              AMP@692..693 "&"
+              PATH_TYPE@693..696
+                PATH@693..696
+                  PATH_SEGMENT@693..696
+                    NAME_REF@693..696
+                      IDENT@693..696 "str"
+          R_PAREN@696..697 ")"
+        WHITESPACE@697..698 " "
+        BLOCK_EXPR@698..700
+          STMT_LIST@698..700
+            L_CURLY@698..699 "{"
+            R_CURLY@699..700 "}"
+      WHITESPACE@700..702 "\r\n"
+      R_CURLY@702..703 "}"
+  WHITESPACE@703..707 "\r\n\r\n"
+  IMPL@707..879
+    IMPL_KW@707..711 "impl"
+    WHITESPACE@711..712 " "
+    PATH_TYPE@712..717
+      PATH@712..717
+        PATH_SEGMENT@712..717
+          NAME_REF@712..717
+            IDENT@712..717 "Store"
+    WHITESPACE@717..718 " "
+    FOR_KW@718..721 "for"
+    WHITESPACE@721..722 " "
+    PATH_TYPE@722..727
+      PATH@722..727
+        PATH_SEGMENT@722..727
+          NAME_REF@722..727
+            IDENT@722..727 "Cache"
+    WHITESPACE@727..728 " "
+    ASSOC_ITEM_LIST@728..879
+      L_CURLY@728..729 "{"
+      WHITESPACE@729..735 "\r\n    "
+      FN@735..876
+        COMMENT@735..794 "/// Trait `get` -- sa ..."
+        WHITESPACE@794..799 "\n    "
+        FN_KW@799..801 "fn"
+        WHITESPACE@801..802 " "
+        NAME@802..805
+          IDENT@802..805 "get"
+        PARAM_LIST@805..823
+          L_PAREN@805..806 "("
+          SELF_PARAM@806..811
+            AMP@806..807 "&"
+            NAME@807..811
+              SELF_KW@807..811 "self"
+          COMMA@811..812 ","
+          WHITESPACE@812..813 " "
+          PARAM@813..822
+            IDENT_PAT@813..816
+              NAME@813..816
+                IDENT@813..816 "key"
+            COLON@816..817 ":"
+            WHITESPACE@817..818 " "
+            REF_TYPE@818..822
+              AMP@818..819 "&"
+              PATH_TYPE@819..822
+                PATH@819..822
+                  PATH_SEGMENT@819..822
+                    NAME_REF@819..822
+                      IDENT@819..822 "str"
+          R_PAREN@822..823 ")"
+        WHITESPACE@823..824 " "
+        RET_TYPE@824..840
+          THIN_ARROW@824..826 "->"
+          WHITESPACE@826..827 " "
+          PATH_TYPE@827..840
+            PATH@827..840
+              PATH_SEGMENT@827..840
+                NAME_REF@827..833
+                  IDENT@827..833 "Option"
+                GENERIC_ARG_LIST@833..840
+                  L_ANGLE@833..834 "<"
+                  TYPE_ARG@834..839
+                    REF_TYPE@834..839
+                      AMP@834..835 "&"
+                      PATH_TYPE@835..839
+                        PATH@835..839
+                          PATH_SEGMENT@835..839
+                            NAME_REF@835..839
+                              IDENT@835..839 "Item"
+                  R_ANGLE@839..840 ">"
+        WHITESPACE@840..841 " "
+        BLOCK_EXPR@841..876
+          STMT_LIST@841..876
+            L_CURLY@841..842 "{"
+            WHITESPACE@842..852 "\r\n        "
+            METHOD_CALL_EXPR@852..869
+              FIELD_EXPR@852..860
+                PATH_EXPR@852..856
+                  PATH@852..856
+                    PATH_SEGMENT@852..856
+                      NAME_REF@852..856
+                        SELF_KW@852..856 "self"
+                DOT@856..857 "."
+                NAME_REF@857..860
+                  IDENT@857..860 "map"
+              DOT@860..861 "."
+              NAME_REF@861..864
+                IDENT@861..864 "get"
+              ARG_LIST@864..869
+                L_PAREN@864..865 "("
+                PATH_EXPR@865..868
+                  PATH@865..868
+                    PATH_SEGMENT@865..868
+                      NAME_REF@865..868
+                        IDENT@865..868 "key"
+                R_PAREN@868..869 ")"
+            WHITESPACE@869..875 "\r\n    "
+            R_CURLY@875..876 "}"
+      WHITESPACE@876..878 "\r\n"
+      R_CURLY@878..879 "}"
+  WHITESPACE@879..883 "\r\n\r\n"
+  FN@883..1015
+    COMMENT@883..945 "/// A free function w ..."
+    WHITESPACE@945..946 "\n"
+    VISIBILITY@946..949
+      PUB_KW@946..949 "pub"
+    WHITESPACE@949..950 " "
+    FN_KW@950..952 "fn"
+    WHITESPACE@952..953 " "
+    NAME@953..961
+      IDENT@953..961 "describe"
+    PARAM_LIST@961..974
+      L_PAREN@961..962 "("
+      PARAM@962..973
+        IDENT_PAT@962..966
+          NAME@962..966
+            IDENT@962..966 "item"
+        COLON@966..967 ":"
+        WHITESPACE@967..968 " "
+        REF_TYPE@968..973
+          AMP@968..969 "&"
+          PATH_TYPE@969..973
+            PATH@969..973
+              PATH_SEGMENT@969..973
+                NAME_REF@969..973
+                  IDENT@969..973 "Item"
+      R_PAREN@973..974 ")"
+    WHITESPACE@974..975 " "
+    RET_TYPE@975..984
+      THIN_ARROW@975..977 "->"
+      WHITESPACE@977..978 " "
+      PATH_TYPE@978..984
+        PATH@978..984
+          PATH_SEGMENT@978..984
+            NAME_REF@978..984
+              IDENT@978..984 "String"
+    WHITESPACE@984..985 " "
+    BLOCK_EXPR@985..1015
+      STMT_LIST@985..1015
+        L_CURLY@985..986 "{"
+        WHITESPACE@986..992 "\r\n    "
+        METHOD_CALL_EXPR@992..1012
+          FIELD_EXPR@992..1004
+            PATH_EXPR@992..996
+              PATH@992..996
+                PATH_SEGMENT@992..996
+                  NAME_REF@992..996
+                    IDENT@992..996 "item"
+            DOT@996..997 "."
+            NAME_REF@997..1004
+              IDENT@997..1004 "payload"
+          DOT@1004..1005 "."
+          NAME_REF@1005..1010
+            IDENT@1005..1010 "clone"
+          ARG_LIST@1010..1012
+            L_PAREN@1010..1011 "("
+            R_PAREN@1011..1012 ")"
+        WHITESPACE@1012..1014 "\r\n"
+        R_CURLY@1014..1015 "}"
+  WHITESPACE@1015..1019 "\r\n\r\n"
+  FN@1019..1168
+    COMMENT@1019..1082 "/// Unique free funct ..."
+    WHITESPACE@1082..1083 "\n"
+    VISIBILITY@1083..1086
+      PUB_KW@1083..1086 "pub"
+    WHITESPACE@1086..1087 " "
+    FN_KW@1087..1089 "fn"
+    WHITESPACE@1089..1090 " "
+    NAME@1090..1100
+      IDENT@1090..1100 "count_hits"
+    PARAM_LIST@1100..1116
+      L_PAREN@1100..1101 "("
+      PARAM@1101..1115
+        IDENT_PAT@1101..1106
+          NAME@1101..1106
+            IDENT@1101..1106 "items"
+        COLON@1106..1107 ":"
+        WHITESPACE@1107..1108 " "
+        REF_TYPE@1108..1115
+          AMP@1108..1109 "&"
+          SLICE_TYPE@1109..1115
+            L_BRACK@1109..1110 "["
+            PATH_TYPE@1110..1114
+              PATH@1110..1114
+                PATH_SEGMENT@1110..1114
+                  NAME_REF@1110..1114
+                    IDENT@1110..1114 "Item"
+            R_BRACK@1114..1115 "]"
+      R_PAREN@1115..1116 ")"
+    WHITESPACE@1116..1117 " "
+    RET_TYPE@1117..1123
+      THIN_ARROW@1117..1119 "->"
+      WHITESPACE@1119..1120 " "
+      PATH_TYPE@1120..1123
+        PATH@1120..1123
+          PATH_SEGMENT@1120..1123
+            NAME_REF@1120..1123
+              IDENT@1120..1123 "u32"
+    WHITESPACE@1123..1124 " "
+    BLOCK_EXPR@1124..1168
+      STMT_LIST@1124..1168
+        L_CURLY@1124..1125 "{"
+        WHITESPACE@1125..1131 "\r\n    "
+        METHOD_CALL_EXPR@1131..1165
+          METHOD_CALL_EXPR@1131..1159
+            METHOD_CALL_EXPR@1131..1143
+              PATH_EXPR@1131..1136
+                PATH@1131..1136
+                  PATH_SEGMENT@1131..1136
+                    NAME_REF@1131..1136
+                      IDENT@1131..1136 "items"
+              DOT@1136..1137 "."
+              NAME_REF@1137..1141
+                IDENT@1137..1141 "iter"
+              ARG_LIST@1141..1143
+                L_PAREN@1141..1142 "("
+                R_PAREN@1142..1143 ")"
+            DOT@1143..1144 "."
+            NAME_REF@1144..1147
+              IDENT@1144..1147 "map"
+            ARG_LIST@1147..1159
+              L_PAREN@1147..1148 "("
+              CLOSURE_EXPR@1148..1158
+                PARAM_LIST@1148..1151
+                  PIPE@1148..1149 "|"
+                  PARAM@1149..1150
+                    IDENT_PAT@1149..1150
+                      NAME@1149..1150
+                        IDENT@1149..1150 "i"
+                  PIPE@1150..1151 "|"
+                WHITESPACE@1151..1152 " "
+                FIELD_EXPR@1152..1158
+                  PATH_EXPR@1152..1153
+                    PATH@1152..1153
+                      PATH_SEGMENT@1152..1153
+                        NAME_REF@1152..1153
+                          IDENT@1152..1153 "i"
+                  DOT@1153..1154 "."
+                  NAME_REF@1154..1158
+                    IDENT@1154..1158 "hits"
+              R_PAREN@1158..1159 ")"
+          DOT@1159..1160 "."
+          NAME_REF@1160..1163
+            IDENT@1160..1163 "sum"
+          ARG_LIST@1163..1165
+            L_PAREN@1163..1164 "("
+            R_PAREN@1164..1165 ")"
+        WHITESPACE@1165..1167 "\r\n"
+        R_CURLY@1167..1168 "}"
+  WHITESPACE@1168..1170 "\r\n"

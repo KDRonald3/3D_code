@@ -1,0 +1,11 @@
+[package]
+name = "glob-resolved"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "glob_resolved"
+path = "src/lib.rs"

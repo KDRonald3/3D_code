@@ -1,0 +1,14 @@
+[package]
+name = "renamed-path-dep"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Import name in source is `alias`; real package is `text-engine`.
+alias = { package = "text-engine", path = "engine" }
