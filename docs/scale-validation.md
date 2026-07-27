@@ -1,10 +1,10 @@
 # Scale validation on unfamiliar Rust code
 
-**Status:** refreshed measurement pass  
+**Status:** refreshed measurement pass (post cross-crate facade following)  
 **Date:** 26 July 2026  
-**Resolution behaviour:** unchanged by this pass — ran the tool and measured  
-**Prior pass:** earlier the same day (pre macro-mod recovery, pre proc-macro
-discovery, pre capitalisation tightening). Figures below supersede that table.
+**Resolution behaviour:** this pass measures after cross-crate `pub use` /
+`pub extern crate` facade following landed. Prior same-day figures (below as
+“before”) are the pre-facade baselines from the earlier refresh.
 
 ## Why
 
@@ -65,11 +65,28 @@ strict UpperCamelCase classification).
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Cellular Automata | 7 | 0.10 | 7 | 0.10 | 0.33 | 5 | **0.31** | 2 | 87 | 175 | 0 | 2 | 63 | 38 | 30 |
 | serde | 208 | 1.23 | 35 | 0.34 | 0.63 | 13 | **0.54** | 5 | 156 | 248 | 1 | 14 | 56 | 152 | 31 |
-| ripgrep | 110 | 1.87 | 86 | 1.65 | 1.8–1.9 | 26 | **0.87** | 12 | 737 | 2103 | 20 | 142 | 355 | 474 | 801 |
+| ripgrep | 110 | 1.87 | 86 | 1.65 | ~4 | — | — | 12 | 737 | **2108** | 20 | **132** | 355 | 474 | 806 |
 | bat | 67 | 0.61 | 40 | 0.40 | 0.41 | 14 | **0.97** | 2 | 267 | 266 | 1 | 27 | 183 | 332 | 208 |
 | tokio | 790 | 5.52 | 492 | 4.11 | 2.2 | 27 | **1.85**† | 12 | 762 | 529 | 2 | 749 | 458 | 336 | 629 |
-| rust-analyzer | 1480 | 16.61 | 920 | 16.32 | ~21 | 67 | **0.78** | 49 | 11939 | 14960 | 28 | 1596 | 1228 | 3932 | 5771 |
-| Horizon (self) | 81 | 0.38 | 12 | 0.25 | 0.23 | 10 | **1.06** | 3 | 186 | 393 | 0 | 23 | 96 | 195 | 126 |
+| rust-analyzer | 1480 | 16.61 | 920 | 16.32 | ~39 | — | — | 49 | 11939 | **15021** | 28 | **1533** | 1229 | 3932 | 5772 |
+| Horizon (self) | — | — | — | — | — | — | — | 3 | — | **411** | 0 | 23 | 100 | 204 | 133 |
+
+### Facade following: before → after (multi-crate)
+
+| Corpus | Resolved before | Resolved after | Δ | Unresolved before | Unresolved after | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| ripgrep | 2103 | **2108** | +5 | 142 | **132** | −10 |
+| rust-analyzer | 14960 | **15021** | +61 | 1596 | **1533** | −63 |
+| Horizon (self) | 393 | 411 | +18 | 23 | 23 | 0 |
+
+Ripgrep’s +5 are free-function calls through `pub extern crate grep_* as …`
+facades (`grep::cli::hostname` → `grep_cli::hostname::hostname`, etc.). The
+unresolved drop (−10) is larger than +5 because some former unresolved paths
+are now classified as associated/constructor drops once the module prefix
+resolves (`grep::cli::CommandReader::new`, …). Rust-analyzer’s gains are mostly
+`pub use` barrels across path crates (e.g. `hir::db::file_item_tree` →
+`hir_def::item_tree::file_item_tree`). Horizon’s self-map resolved count rose
+mainly because the resolver itself grew, not because Horizon is multi-crate.
 
 † Tokio’s analysed throughput looks high because the newly recovered module tree
 is many moderate-sized files; wall time is still ~2 s. Dense trees
@@ -135,18 +152,19 @@ Platform/`cfg` twins (`#[cfg(windows)] fn imp` / `#[cfg(unix)] fn imp`) all
 remain visible; calls become `Conflict` naming every candidate. Seen throughout
 ripgrep and rust-analyzer. Matches the never-guess rule; noisy on real code.
 
-### 3. `pub use` re-exports across path crates not followed
+### 3. ~~`pub use` re-exports across path crates not followed~~ (fixed)
 
-ripgrep’s `rg` binary still leaves facade paths like `grep::cli::hostname`
-**Unresolved** when the definition lives in `grep-cli` behind a `pub use`.
-Cross-crate resolution works for direct definitions in the dependency, not
-through re-export barrels.
+Cross-crate facade following now consults the foreign crate’s re-export table
+(`pub use`, renamed `pub use`, `pub use glob::*`, and `pub extern crate … as`
+crate renames). ripgrep’s `grep::cli::hostname` resolves to
+`grep_cli::hostname::hostname`. Remaining unresolved on ripgrep are mostly
+dev-dependency / test helpers / associated forms, not facade barrels.
 
-### 4. Associated calls on path-dep types → `Unresolved` instead of drop
+### 4. Associated calls on path-dep types → often `associated_dropped` now
 
-`Dep::Type::assoc` forms where the type is only reached as a re-export can
-surface as `Unresolved` (`no public module …`) rather than
-`associated_dropped`. Inflates unresolved; not a false `Resolved`.
+Once a facade module prefix resolves, `Dep::Type::assoc` forms are more often
+recognised and dropped as associated (see ripgrep assoc 801→806). Some may
+still surface as `Unresolved` when the type path cannot be classified.
 
 ### 5. Dev-dependencies invisible → external test calls as `Unresolved`
 
@@ -180,20 +198,27 @@ deferred-scope.
 
 ## Correctness spot-check on unfamiliar code
 
-### Hand verification (prior pass; still the best unfamiliar-code evidence)
+### Hand verification
 
-Method: random sample of `Resolved` edges; require the callee’s final path
-segment to appear on the recorded source line, and the target `FunctionId` to
-exist as a node in the same map.
+**Prior pass** (random `Resolved` edges): ripgrep 30/30 OK, Cellular Automata
+20/20 OK — 0 / 50 FP suspects.
 
-| Corpus | Sample | OK | FP suspect | Target node missing |
-|---|---:|---:|---:|---:|
-| ripgrep | 30 | 30 | 0 | 0 |
-| Cellular Automata | 20 | 20 | 0 | 0 |
-| **Total** | **50** | **50** | **0** | **0** |
+**This pass — newly resolved facade edges (highest FP risk):**
 
-**Estimated false-positive rate on this sample: 0 / 50 = 0%.**  
-Not a substitute for LSIF breadth, but evidence on *unfamiliar* code.
+Method: take every ripgrep edge whose call path is `grep::…` and whose target
+now `Resolved` into `grep_*` (the five free-function facade recoveries);
+confirm the call text on the recorded line and that the target `FunctionId`
+names a real `pub fn` in the dependency crate. Separately spot-check
+rust-analyzer `hir::db::file_item_tree` → `hir_def::item_tree::file_item_tree`
+against `hir/src/db.rs`’s `pub use hir_def::{file_item_tree, …}`.
+
+| Corpus | Sample | OK | FP suspect |
+|---|---:|---:|---:|
+| ripgrep (all new `grep::`→`grep_*` free-fn facades) | 5 | 5 | 0 |
+| rust-analyzer (`hir::db::file_item_tree` facade) | 1 | 1 | 0 |
+| **Total this pass** | **6** | **6** | **0** |
+
+**Estimated false-positive rate on newly resolved facade sample: 0 / 6 = 0%.**
 
 ### LSIF compare (Horizon self-map, this refresh)
 
@@ -201,11 +226,11 @@ Standing harness (`measure_correctness all --generate-lsif`):
 
 | Metric | Value |
 |---|---:|
-| Fixture oracles | **49 / 49**, **0** false positives |
-| LSIF compared (Horizon) | 393 |
-| LSIF matched | 393 |
+| Fixture oracles | **59 / 59**, **0** false positives |
+| LSIF compared (Horizon) | 411 |
+| LSIF matched | 411 |
 | **False positives** | **0** |
-| Ordinary / `from_macro` cohorts | 356 / 37, both **0** FP |
+| Ordinary / `from_macro` cohorts | 374 / 37, both **0** FP |
 
 ---
 
@@ -237,7 +262,7 @@ dominated by deliberate drops plus all method calls never counted.
 | Codebase style | Map quality |
 |---|---|
 | Free-function pipelines, workspace of small crates (ripgrep, CA, parts of bat) | Good |
-| Facade crates + path re-exports | Patchy (unresolved through barrels) |
+| Facade crates + path re-exports | Improved (cross-crate `pub use` / `extern crate` facades followed) |
 | Macro-assembled modules via **definition bodies** (serde `crate_root!`) | Thin |
 | Allowlisted item-macro module trees (`cfg_if!`, Tokio `cfg_*`) | Recovered |
 | Method/`impl`-centric (tokio runtime, much of RA) | Partial — free helpers visible, product logic missing |
@@ -253,9 +278,9 @@ runtimes around **10–20 minutes** and memory in the low-GB range for dense tre
 **Not ready to claim “works on any codebase”** without caveats:
 
 1. Definition-body macro module trees can still yield thin maps (serde).
-2. Facade re-exports break cross-crate free-function resolution.
-3. Dev-dependencies and some associated forms inflate Unresolved.
-4. Method-centric crates omit most of the program by design.
+2. Dev-dependencies and some associated forms inflate Unresolved.
+3. Method-centric crates omit most of the program by design.
+4. Consumer-side `use dep::*` is still not expanded (foreign facades are).
 
 Performance work (parallel file parse, skip fixture manifests, streaming JSON)
 would help the 50k goal; **correctness/usefulness gaps above matter more**.
@@ -265,20 +290,20 @@ would help the 50k goal; **correctness/usefulness gaps above matter more**.
 ## Appendix: raw summary lines
 
 ```
-cellular-automata: 2 crates, 87 functions; 175 resolved, 0 conflicts, 2 unresolved;
-  dropped: 63 external, 38 constructor, 30 associated
-serde: 5 crates, 156 functions; 248 resolved, 1 conflict, 14 unresolved;
-  dropped: 56 external, 152 constructor, 31 associated
-ripgrep: 12 crates, 737 functions; 2103 resolved, 20 conflicts, 142 unresolved;
-  dropped: 355 external, 474 constructor, 801 associated
-bat: 2 crates, 267 functions; 266 resolved, 1 conflict, 27 unresolved;
-  dropped: 183 external, 332 constructor, 208 associated
-tokio: 12 crates, 762 functions; 529 resolved, 2 conflicts, 749 unresolved;
-  dropped: 458 external, 336 constructor, 629 associated
-rust-analyzer: 49 crates, 11939 functions; 14960 resolved, 28 conflicts, 1596 unresolved;
-  dropped: 1228 external, 3932 constructor, 5771 associated
-horizon: 3 crates, 186 functions; 393 resolved, 0 conflicts, 23 unresolved;
-  dropped: 96 external, 195 constructor, 126 associated
+ripgrep: 12 crates, 737 functions; 2108 resolved, 20 conflicts, 132 unresolved;
+  dropped: 355 external, 474 constructor, 806 associated
+rust-analyzer: 49 crates, 11939 functions; 15021 resolved, 28 conflicts, 1533 unresolved;
+  dropped: 1229 external, 3932 constructor, 5772 associated
+horizon (self-map via measure_correctness): 411 resolved, 0 conflicts, 23 unresolved;
+  dropped: 100 external, 204 constructor, 133 associated
+```
+
+Prior (pre-facade) summary lines for comparison:
+
+```
+ripgrep: 2103 resolved, 142 unresolved
+rust-analyzer: 14960 resolved, 1596 unresolved
+horizon: 393 resolved, 23 unresolved
 ```
 
 Artefacts (local, not in git): `%TEMP%\horizon-scale-results\`,

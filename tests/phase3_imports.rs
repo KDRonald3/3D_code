@@ -226,6 +226,7 @@ mod client {
         facts.imports,
         vis,
         Default::default(),
+        Default::default(),
     );
 
     let site = |name: &str| PendingCall {

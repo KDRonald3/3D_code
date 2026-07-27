@@ -88,6 +88,11 @@ fn oracle_proc_macro_crate() {
 }
 
 #[test]
+fn oracle_cross_crate_facade() {
+    check_fixture("cross-crate-facade");
+}
+
+#[test]
 fn macro_hidden_calls_mark_provenance_and_skip_traps() {
     let dir = fixtures_root().join("macro-hidden-calls");
     let map = build_function_map(&dir).expect("build map");

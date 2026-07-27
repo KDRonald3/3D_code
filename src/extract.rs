@@ -18,9 +18,11 @@
 //!
 //! Builds the import table from `use` / `pub use` trees (plain paths, brace
 //! lists, nested braces, aliases, `self` in a list, globs, relative
-//! `crate`/`self`/`super` roots, and external roots). Each leaf binding
-//! becomes one [`Import`]. Nested trees are walked via the AST — not by
-//! string-splitting the written form.
+//! `crate`/`self`/`super` roots, and external roots), plus `extern crate`
+//! / `pub extern crate … as alias` (edition-2015-style crate renames still
+//! used as facades, e.g. ripgrep's `pub extern crate grep_cli as cli`).
+//! Each leaf binding becomes one [`Import`]. Nested trees are walked via
+//! the AST — not by string-splitting the written form.
 //!
 //! ## Function-body `use` scoping (known limitation)
 //!
@@ -820,31 +822,60 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str) -> Vec<TypeDef> {
     types
 }
 
-/// Expand every `use` / `pub use` tree in the file into flattened [`Import`]s.
+/// Expand every `use` / `pub use` tree and `extern crate` item into
+/// flattened [`Import`]s.
+///
+/// `pub extern crate dep as name` is recorded like `pub use dep as name`: a
+/// public binding of the dependency crate under `name`. That is the facade
+/// form ripgrep's `grep` crate uses (`pub extern crate grep_cli as cli`).
 fn extract_imports(root: &SyntaxNode, file_module_path: &str) -> Vec<Import> {
     let mut imports = Vec::new();
     for node in root.descendants() {
-        let Some(use_item) = ast::Use::cast(node.clone()) else {
+        if let Some(use_item) = ast::Use::cast(node.clone()) {
+            // Nested `use` trees are walked from the top-level Use item only.
+            // Descendant UseTree nodes must not be double-scanned as Use items.
+            let Some(tree) = use_item.use_tree() else {
+                continue;
+            };
+            let module_path = call_module_path(use_item.syntax(), file_module_path);
+            let scope_widened = is_inside_function_body(use_item.syntax());
+            let visibility = visibility_of(&use_item);
+            let is_public = !matches!(visibility, ItemVisibility::Private);
+            flatten_use_tree(
+                &tree,
+                &[],
+                &module_path,
+                &visibility,
+                is_public,
+                scope_widened,
+                &mut imports,
+            );
+            continue;
+        }
+        let Some(ext) = ast::ExternCrate::cast(node.clone()) else {
             continue;
         };
-        // Nested `use` trees are walked from the top-level Use item only.
-        // Descendant UseTree nodes must not be double-scanned as Use items.
-        let Some(tree) = use_item.use_tree() else {
+        let Some(name_ref) = ext.name_ref() else {
             continue;
         };
-        let module_path = call_module_path(use_item.syntax(), file_module_path);
-        let scope_widened = is_inside_function_body(use_item.syntax());
-        let visibility = visibility_of(&use_item);
+        let crate_name = name_ref.text().to_string();
+        let rename = ext.rename();
+        if rename.as_ref().is_some_and(|r| r.underscore_token().is_some()) {
+            continue;
+        }
+        let alias = rename.and_then(|r| r.name().map(|n| n.text().to_string()));
+        let module_path = call_module_path(ext.syntax(), file_module_path);
+        let visibility = visibility_of(&ext);
         let is_public = !matches!(visibility, ItemVisibility::Private);
-        flatten_use_tree(
-            &tree,
-            &[],
-            &module_path,
-            &visibility,
+        imports.push(Import {
+            path: crate_name,
+            alias,
+            is_glob: false,
             is_public,
-            scope_widened,
-            &mut imports,
-        );
+            visibility,
+            module_path,
+            scope_widened: false,
+        });
     }
     imports
 }

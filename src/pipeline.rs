@@ -114,7 +114,8 @@ pub(crate) fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
 
 /// Build a [`ResolveIndex`] for `extracted[i]` with dependency-gated path crates.
 pub(crate) fn resolve_index_for(extracted: &[ExtractedCrate], i: usize) -> ResolveIndex {
-    let path_crates = path_crates_for(&extracted[i].krate, extracted);
+    let all_crates = all_library_indexes(extracted);
+    let path_crates = path_crates_for(&extracted[i].krate, extracted, &all_crates);
     let external_crates = external_crate_names(&extracted[i].krate);
     ResolveIndex::build(
         extracted[i].functions.clone(),
@@ -124,14 +125,60 @@ pub(crate) fn resolve_index_for(extracted: &[ExtractedCrate], i: usize) -> Resol
         extracted[i].imports.clone(),
         extracted[i].function_visibility.clone(),
         path_crates,
+        all_crates,
     )
+}
+
+/// Build indexes for every library crate, keyed by real rustc name.
+///
+/// These are consulted when following a foreign crate's `pub use other::…`
+/// facade. Initial path entry still goes through [`path_crates_for`].
+fn all_library_indexes(all: &[ExtractedCrate]) -> HashMap<String, PathCrateIndex> {
+    let mut out = HashMap::new();
+    for target in all {
+        if !target.krate.is_library {
+            continue;
+        }
+        let aliases = path_dep_aliases(&target.krate, all);
+        let index = PathCrateIndex::build(
+            target.rustc_name.clone(),
+            &target.functions,
+            target.module_paths.clone(),
+            target.module_visibility.clone(),
+            target.function_visibility.clone(),
+            &target.imports,
+            target.types.clone(),
+            aliases,
+        );
+        out.insert(target.rustc_name.clone(), index);
+    }
+    out
+}
+
+/// Map each declared path dependency's import name → real rustc name.
+fn path_dep_aliases(krate: &Crate, all: &[ExtractedCrate]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for dep in &krate.dependencies {
+        if dep.kind != DependencyKind::Path {
+            continue;
+        }
+        let Some(target) = find_path_dep_library(dep, all) else {
+            continue;
+        };
+        out.insert(dep.import_rustc_name(), target.rustc_name.clone());
+    }
+    out
 }
 
 /// Build path-crate indexes for dependencies declared by `krate` only.
 ///
 /// Keys are the **import** rustc names (manifest rename alias when present),
 /// because that is what appears as the first segment of `use` / call paths.
-fn path_crates_for(krate: &Crate, all: &[ExtractedCrate]) -> HashMap<String, PathCrateIndex> {
+fn path_crates_for(
+    krate: &Crate,
+    all: &[ExtractedCrate],
+    all_crates: &HashMap<String, PathCrateIndex>,
+) -> HashMap<String, PathCrateIndex> {
     let mut out = HashMap::new();
     for dep in &krate.dependencies {
         if dep.kind != DependencyKind::Path {
@@ -146,15 +193,9 @@ fn path_crates_for(krate: &Crate, all: &[ExtractedCrate]) -> HashMap<String, Pat
         {
             continue;
         }
-        let index = PathCrateIndex::build(
-            target.rustc_name.clone(),
-            &target.functions,
-            target.module_paths.clone(),
-            target.module_visibility.clone(),
-            target.function_visibility.clone(),
-            &target.imports,
-            target.types.clone(),
-        );
+        let Some(index) = all_crates.get(&target.rustc_name).cloned() else {
+            continue;
+        };
         out.insert(dep.import_rustc_name(), index);
     }
     out

@@ -1,0 +1,11 @@
+Intentional mid-edit / ambiguity fixture (does not fully compile).
+
+`consumer::run` deliberately names:
+- `text_facade::get` — rustc E0659 (two glob re-exports)
+- `text_facade::crate_only_version` — rustc E0603 (`pub(crate)` only)
+- `text_facade::private_mod::from_private` — rustc E0603 (private module)
+- `format_engine::upper` — rustc E0433 (undeclared dependency)
+
+The successful facade forms (`upper`, `split`, `chained`, `area`, `from_private`)
+are valid Rust; the crate as a whole is kept non-compiling so the negative
+cases stay in source for the oracle harness.

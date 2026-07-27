@@ -1,0 +1,11 @@
+[package]
+name = "text-facade"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+format-engine = { path = "../format-engine" }
+parse-engine = { path = "../parse-engine" }
+mid-crate = { path = "../mid-crate" }
+shapes-eng = { path = "../shapes-eng" }
+text-eng = { path = "../text-eng" }

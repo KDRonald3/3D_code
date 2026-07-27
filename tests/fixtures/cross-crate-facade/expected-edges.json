@@ -1,0 +1,61 @@
+{
+  "fixture": "cross-crate-facade",
+  "edges": [
+    {
+      "caller": "consumer::run",
+      "call_path": "upper",
+      "expect": { "kind": "resolved", "id": "format_engine::upper" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "split",
+      "expect": { "kind": "resolved", "id": "parse_engine::tokenize" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "chained",
+      "expect": { "kind": "resolved", "id": "leaf_crate::chained" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "area",
+      "expect": { "kind": "resolved", "id": "format_engine::area" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "from_private",
+      "expect": { "kind": "resolved", "id": "text_facade::private_mod::from_private" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "text_facade::fmt_eng::upper",
+      "expect": { "kind": "resolved", "id": "format_engine::upper" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "text_facade::get",
+      "expect": {
+        "kind": "conflict",
+        "candidates": [
+          "shapes_eng::get",
+          "text_eng::get"
+        ]
+      }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "text_facade::crate_only_version",
+      "expect": { "kind": "unresolved" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "text_facade::private_mod::from_private",
+      "expect": { "kind": "unresolved" }
+    },
+    {
+      "caller": "consumer::run",
+      "call_path": "format_engine::upper",
+      "expect": { "kind": "unresolved" }
+    }
+  ]
+}

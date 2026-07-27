@@ -83,13 +83,16 @@ Implementation lives in:
 | `macro-hidden-calls` | 10 | 10 | 0 |
 | `renamed-path-dep` | 1 | 1 | 0 |
 | `proc-macro-crate` | 2 | 2 | 0 |
-| **Total** | **49** | **49** | **0** |
+| `cross-crate-facade` | 10 | 10 | 0 |
+| **Total** | **59** | **59** | **0** |
 
 **False-positive count on fixtures: 0.**  
-Every edge that must be `Conflict` stayed a conflict (glob clash, cfg twins);
-no case resolved to a guessed winner. Local definitions beat globs; rename
-chains landed on the defining function; same names at several module depths
-stayed distinct; Cargo rename aliases and proc-macro free functions resolved.
+Every edge that must be `Conflict` stayed a conflict (glob clash, cfg twins,
+cross-crate glob facades); no case resolved to a guessed winner. Local
+definitions beat globs; rename chains landed on the defining function; same
+names at several module depths stayed distinct; Cargo rename aliases,
+proc-macro free functions, and cross-crate `pub use` facades (plain / renamed /
+multi-crate chain / glob) resolved to the defining `FunctionId`.
 
 ### 2. LSIF precision on Horizon (breadth)
 
@@ -99,16 +102,16 @@ monikers):
 
 | Metric | Value |
 |---|---|
-| Resolved edges compared | 393 |
-| LSIF-agreed (same free-function moniker) | 393 |
+| Resolved edges compared | 411 |
+| LSIF-agreed (same free-function moniker) | 411 |
 | **False positives** (Horizon Resolved ≠ LSIF free-fn moniker) | **0** |
-| Ordinary cohort (non-macro) | 356 compared / 356 matched / **0 FP** |
+| Ordinary cohort (non-macro) | 374 compared / 374 matched / **0 FP** |
 | Macro-recovered cohort (`from_macro`) | 37 compared / 37 matched / **0 FP** |
 | Unmatched (no same-name LSIF moniker in span) | 0 |
 | LSIF said `::impl::` only | 0 |
 | Self-map conflicts / unresolved | 0 / 23 (closure calls inside `assert_eq!`, not FPs) |
 
-**False-positive rate among LSIF-comparable edges: 0 / 393 = 0%.**  
+**False-positive rate among LSIF-comparable edges: 0 / 411 = 0%.**  
 **Macro-recovered FP rate: 0 / 37 = 0%.**
 
 Earlier noisy “FP” reports during harness development were matcher artifacts
@@ -121,12 +124,12 @@ same tree.
 
 | Lens | Figure | Notes |
 |---|---|---|
-| Fixture expected edges present | **49 / 49 (100%)** | Includes required `Absent` drops |
-| Self-map resolved edges confirmed by LSIF | **393 / 393 (100%)** | Same-name moniker agreement after id normalization |
+| Fixture expected edges present | **59 / 59 (100%)** | Includes required `Absent` drops |
+| Self-map resolved edges confirmed by LSIF | **411 / 411 (100%)** | Same-name moniker agreement after id normalization |
 | Deliberate drops that should stay dropped | **6 / 6** on `exclude-non-functions` | `Ok`, `Target::Ready`, `LocalId::make`, `Vec::new` absent; `mystery` Unresolved; `helper` Resolved |
 
 **Exclusion swallowing (sampled):** on Horizon itself the harness recorded
-**96 external / 195 constructor / 126 associated** drops (this snapshot).
+**100 external / 204 constructor / 133 associated** drops (this snapshot).
 Stratified samples were inspected; heuristic “suspicious drop” count was **0**.
 
 ### 4. Confidence
@@ -148,8 +151,8 @@ block to paste here.)
 
 1. **Cross-crate precision** beyond the multi-crate integration tests
    (LSIF self-map is same-repo; foreign FunctionIds need a multi-crate LSIF
-   filter). Facade `pub use` barrels across path deps remain unresolved on
-   ripgrep-scale code.
+   filter). Facade following is covered by the `cross-crate-facade` oracle;
+   newly resolved facade edges on large corpora still need hand spot-checks.
 2. **Visibility / privacy** edges that rustc would reject (`E0603`) but Horizon
    still draws (by design for direct edges) — not a false positive under the
    product rule, but not compared to rustc accept/reject.

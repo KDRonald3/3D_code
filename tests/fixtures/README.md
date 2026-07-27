@@ -46,6 +46,7 @@ claimed by Horizon's root workspace when checked via `--manifest-path`.
 | [`macro-modules/`](macro-modules/) | new | `mod` decls inside allowlisted item macros (`cfg_if!` multi-branch union, `cfg_fs!`) vs missing-file branch and `stringify!` trap | **Compiles** (exit 0; see `expected-compile-ok.txt`) |
 | [`renamed-path-dep/`](renamed-path-dep/) | new | Cargo manifest rename (`alias = { package = "text-engine", path = "engine" }`) must resolve `alias::greet` | **Compiles** (exit 0; see `expected-compile-ok.txt`) |
 | [`proc-macro-crate/`](proc-macro-crate/) | new | `proc-macro = true` library: free functions must appear (metadata kind is `proc-macro`, not `lib`) | **Compiles** (exit 0; see `expected-compile-ok.txt`) |
+| [`cross-crate-facade/`](cross-crate-facade/) | new | Cross-crate `pub use` facades: plain, renamed, multi-crate chain, glob, glob Conflict; negatives for `pub(crate)`, private module path, undeclared dep | **Intentional mid-edit** (E0659 / E0603 / E0433; see `expected-compile-ok.txt`) |
 
 Fixtures that participate in the standing correctness harness also carry
 `expected-edges.json` (hand-annotated ground truth). Re-run with
@@ -87,6 +88,36 @@ silently omits the entire crate — including ordinary free functions inside it.
 
 **Compile status:** intentional **success**. Recorded in
 `expected-compile-ok.txt`. Participates in the standing oracle harness.
+
+---
+
+## `cross-crate-facade/`
+
+**Hazard:** Cross-crate facade re-exports — the dominant published-Rust pattern
+where a crate root re-exports definitions that live in other path crates.
+Within-crate facades are covered by [`impl-free-globs/`](impl-free-globs/);
+this fixture is the *across* crate-boundary case.
+
+**Contents:** workspace with `consumer` (depends only on `text-facade`) plus
+`text-facade`, `format-engine`, `parse-engine`, `mid-crate`, `leaf-crate`,
+`shapes-eng`, `text-eng`.
+
+| Call / situation | Expected |
+|---|---|
+| `upper` via `pub use format_engine::upper` | Resolved → `format_engine::upper` |
+| `split` via `pub use parse_engine::tokenize as split` | Resolved → `parse_engine::tokenize` |
+| `chained` via facade → mid → leaf | Resolved → `leaf_crate::chained` |
+| `area` via `pub use format_engine::*` | Resolved → `format_engine::area` |
+| `from_private` via `pub use private_mod::from_private` | Resolved → `text_facade::private_mod::from_private` (Rust-correct facade over a private module) |
+| `text_facade::fmt_eng::upper` via `pub extern crate format_engine as fmt_eng` | Resolved → `format_engine::upper` (ripgrep-style crate rename facade) |
+| `text_facade::get` via two `pub use …::*` globs | **Conflict** `[shapes_eng::get, text_eng::get]` |
+| `text_facade::crate_only_version` (`pub(crate) use`) | **Unresolved** |
+| `text_facade::private_mod::from_private` (named private module) | **Unresolved** |
+| `format_engine::upper` (consumer does not declare it) | **Unresolved** (dependency gate) |
+
+**Compile status:** intentional **mid-edit** — conflict + privacy + undeclared
+crate keep the consumer from compiling. Recorded in `expected-compile-ok.txt`.
+Participates in the standing oracle harness.
 
 ---
 

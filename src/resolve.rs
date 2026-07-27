@@ -34,7 +34,18 @@
 //! Cross-crate reachability requires:
 //! - the item itself is `pub` (not `pub(crate)` / private / …);
 //! - every module on the path from the foreign crate root is `pub`
-//!   (a `pub fn` inside a private module is unreachable — module-chain check).
+//!   (a `pub fn` inside a private module is unreachable — module-chain check);
+//! - **or** a `pub use` facade exposes the item under a public name (the
+//!   named path need not mention private intermediate modules).
+//!
+//! Facade following consults the foreign crate's re-export table — including
+//! `pub use` into *another* path crate that the foreign crate declares, and
+//! `pub use glob::*` candidate sets. Chains A→B→C are followed with the same
+//! [`REEXPORT_HOP_LIMIT`] as within-crate hops; exhausting it yields
+//! `Unresolved` so a cycle cannot hang the tool. Following a facade must not
+//! bypass the dependency gate for *initial* entry: crate A still cannot start
+//! a path at crate C unless A declares C. Once inside a declared dependency
+//! B, B's own `pub use C::…` may be followed when B declares C.
 //!
 //! That is deliberately stricter than within-crate **direct** edges, which
 //! still do not filter visibility (Phase 2): a call the author wrote is worth
@@ -113,10 +124,23 @@ struct ExplicitBinding {
     is_reexport: bool,
 }
 
+/// One glob import / `pub use glob::*` in a module.
+#[derive(Debug, Clone)]
+struct GlobBinding {
+    /// Absolutized globbed module path (`crate::format`, `engine_a`, …).
+    target: String,
+    visibility: ItemVisibility,
+    /// Whether the glob is a `pub use` (visible as a cross-crate facade).
+    is_reexport: bool,
+}
+
 /// Index of one path-dependency crate for cross-crate resolution.
 ///
-/// Only inserted into [`ResolveIndex::path_crates`] when the current crate
-/// declares that dependency — the dependency gate lives at construction time.
+/// Inserted into [`ResolveIndex::path_crates`] only when the *current* crate
+/// declares that dependency — the dependency gate for initial entry. The same
+/// indexes also live in [`ResolveIndex::all_crates`] (keyed by rustc name) so
+/// facade `pub use other::…` chains can follow into crates the foreign crate
+/// declares, without letting the consumer start a path at an undeclared sibling.
 #[derive(Debug, Clone, Default)]
 pub struct PathCrateIndex {
     pub rustc_name: String,
@@ -126,12 +150,23 @@ pub struct PathCrateIndex {
     by_full_path: HashMap<String, Vec<FunctionId>>,
     by_parent_name: HashMap<(String, String), Vec<FunctionId>>,
     explicits: HashMap<(String, String), Vec<ExplicitBinding>>,
+    /// Glob imports keyed by importing module path.
+    globs: HashMap<String, Vec<GlobBinding>>,
+    /// Import rustc name → real rustc name for this crate's path dependencies.
+    /// Used when following `pub use dep::…` / `pub use dep::*` across crates.
+    dep_aliases: HashMap<String, String>,
     type_by_module_name: HashMap<(String, String), usize>,
     types: Vec<TypeDef>,
 }
 
 impl PathCrateIndex {
     /// Build a foreign-crate index from that crate's extracted facts.
+    ///
+    /// `path_dep_aliases` maps each declared path-dependency's import rustc
+    /// name (manifest rename when present) to that dependency's real rustc
+    /// name. Without it, bare `pub use dep::item` targets are wrongly
+    /// rewritten under `crate::` and facade following cannot start.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         rustc_name: impl Into<String>,
         functions: &[Function],
@@ -140,6 +175,7 @@ impl PathCrateIndex {
         function_visibility: HashMap<FunctionId, ItemVisibility>,
         imports: &[Import],
         types: Vec<TypeDef>,
+        path_dep_aliases: HashMap<String, String>,
     ) -> Self {
         let rustc_name = rustc_name.into();
         let mut by_full_path: HashMap<String, Vec<FunctionId>> = HashMap::new();
@@ -162,23 +198,33 @@ impl PathCrateIndex {
             type_by_module_name.insert((ty.module_path.clone(), ty.name.clone()), idx);
         }
 
+        let path_dep_names: HashSet<String> = path_dep_aliases.keys().cloned().collect();
+        let empty_externals = HashSet::new();
         let mut explicits: HashMap<(String, String), Vec<ExplicitBinding>> = HashMap::new();
-        let empty = HashSet::new();
+        let mut globs: HashMap<String, Vec<GlobBinding>> = HashMap::new();
         for imp in imports {
+            // Keep path-dep roots as `dep::…` (not `crate::dep::…`).
+            let path = normalize_bare_import_path(
+                &imp.path,
+                &imp.module_path,
+                &modules,
+                &empty_externals,
+                &path_dep_names,
+            );
             if imp.is_glob {
+                globs
+                    .entry(imp.module_path.clone())
+                    .or_default()
+                    .push(GlobBinding {
+                        target: path,
+                        visibility: imp.visibility.clone(),
+                        is_reexport: imp.is_public,
+                    });
                 continue;
             }
             let Some(local) = imp.local_name().map(str::to_string) else {
                 continue;
             };
-            // Absolutize bare re-export targets (`format::upper` → `crate::format::upper`).
-            let path = normalize_bare_import_path(
-                &imp.path,
-                &imp.module_path,
-                &modules,
-                &empty,
-                &empty,
-            );
             explicits
                 .entry((imp.module_path.clone(), local))
                 .or_default()
@@ -197,9 +243,23 @@ impl PathCrateIndex {
             by_full_path,
             by_parent_name,
             explicits,
+            globs,
+            dep_aliases: path_dep_aliases,
             type_by_module_name,
             types,
         }
+    }
+
+    fn dep_rustc_name(&self, import_name: &str) -> Option<&str> {
+        self.dep_aliases.get(import_name).map(String::as_str)
+    }
+
+    fn public_globs_in(&self, module: &str) -> impl Iterator<Item = &GlobBinding> {
+        self.globs
+            .get(module)
+            .into_iter()
+            .flatten()
+            .filter(|g| g.is_reexport && matches!(g.visibility, ItemVisibility::Public))
     }
 
     fn lookup_full(&self, full_path: &str) -> Vec<FunctionId> {
@@ -252,9 +312,15 @@ pub struct ResolveIndex {
     pub modules: HashSet<String>,
     /// Rustc names of external dependencies (`serde`, …) plus `std`/`core`/`alloc`.
     pub external_crates: HashSet<String>,
-    /// Path-dependency crates declared by the current crate, keyed by rustc name.
-    /// Absence of a workspace sibling here is the dependency gate.
+    /// Path-dependency crates declared by the current crate, keyed by **import**
+    /// rustc name (manifest rename when present). Absence of a workspace sibling
+    /// here is the dependency gate for *initial* path entry.
     pub path_crates: HashMap<String, PathCrateIndex>,
+    /// Every library crate in the repository, keyed by real rustc name.
+    /// Consulted only when following a foreign crate's `pub use` into a crate
+    /// that foreign crate declares — never as an initial entry point for the
+    /// consumer.
+    pub all_crates: HashMap<String, PathCrateIndex>,
     /// Local type definitions collected at extract time.
     pub types: Vec<TypeDef>,
     /// `(parent_module_path, function_name)` → candidate ids.
@@ -283,7 +349,8 @@ impl ResolveIndex {
     /// Build an index from crate-wide definitions, modules, types, and imports.
     ///
     /// `path_crates` must already be dependency-gated: only path dependencies
-    /// declared by the crate being resolved.
+    /// declared by the crate being resolved (keyed by import name).
+    /// `all_crates` holds every library index for facade hop following.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         functions: Vec<Function>,
@@ -293,6 +360,7 @@ impl ResolveIndex {
         imports: Vec<Import>,
         function_visibility: HashMap<FunctionId, ItemVisibility>,
         path_crates: HashMap<String, PathCrateIndex>,
+        all_crates: HashMap<String, PathCrateIndex>,
     ) -> Self {
         let mut by_parent_name: HashMap<(String, String), Vec<FunctionId>> = HashMap::new();
         let mut by_full_path: HashMap<String, Vec<FunctionId>> = HashMap::new();
@@ -371,6 +439,7 @@ impl ResolveIndex {
             modules,
             external_crates,
             path_crates,
+            all_crates,
             types,
             by_parent_name,
             by_full_path,
@@ -530,12 +599,13 @@ pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveR
     }
 
     // Path-dependency crate written at the call site (dependency-gated via index).
-    if let Some(foreign) = index.path_crates.get(segments[0]) {
+    if index.path_crates.contains_key(segments[0]) {
         return Ok(resolve_cross_crate_path(
             &segments[1..],
-            foreign,
+            segments[0],
             path,
             0,
+            index,
         ));
     }
 
@@ -1025,8 +1095,10 @@ fn resolve_target_path(
     }
 
     // Cross-crate import target (`text_engine::format::upper`).
-    if let Some(foreign) = index.path_crates.get(segments[0]) {
-        return match resolve_cross_crate_path(&segments[1..], foreign, target, hops) {
+    // Initial entry still requires a declared dependency of the *current* crate.
+    if index.path_crates.contains_key(segments[0]) {
+        return match resolve_cross_crate_path(&segments[1..], segments[0], target, hops, index)
+        {
             ResolveResult::Target(CallTarget::Resolved(id)) => {
                 TargetResolve::Functions(vec![id])
             }
@@ -1102,20 +1174,31 @@ fn resolve_target_path(
 
 /// Resolve `segments` inside a foreign path-dependency crate.
 ///
+/// `crate_key` is either an import name present in [`ResolveIndex::path_crates`]
+/// (initial entry) or a real rustc name already validated via a facade hop.
+///
 /// Enforces cross-crate visibility: only `pub` items behind an all-`pub`
-/// module chain are reachable. Re-export hops stay within the foreign crate
-/// and respect [`REEXPORT_HOP_LIMIT`].
+/// module chain are reachable by *naming* that path. `pub use` facades that
+/// are themselves `pub` may expose an item without naming private intermediate
+/// modules. Re-export hops — including into another crate the foreign crate
+/// declares — share [`REEXPORT_HOP_LIMIT`] with within-crate following.
 fn resolve_cross_crate_path(
     segments: &[&str],
-    foreign: &PathCrateIndex,
+    crate_key: &str,
     full_path: &str,
     hops: usize,
+    index: &ResolveIndex,
 ) -> ResolveResult {
     if hops > REEXPORT_HOP_LIMIT {
         return ResolveResult::Target(unresolved(format!(
             "re-export chain exceeded {REEXPORT_HOP_LIMIT} hops resolving `{full_path}`"
         )));
     }
+    let Some(foreign) = foreign_index(index, crate_key) else {
+        return ResolveResult::Target(unresolved(format!(
+            "no indexed path crate `{crate_key}` for `{full_path}`"
+        )));
+    };
     if segments.is_empty() {
         return ResolveResult::Target(unresolved(format!(
             "path `{full_path}` names a crate, not a function"
@@ -1137,10 +1220,36 @@ fn resolve_cross_crate_path(
         }
 
         // Public re-export of a module (or path prefix) under this name.
-        match lookup_cross_crate_name(foreign, &module, seg, hops) {
+        match lookup_cross_crate_name(foreign, &module, seg, hops, index) {
             CrossLookup::Module(m) => {
                 module = m;
                 continue;
+            }
+            CrossLookup::ForeignModule {
+                crate_key: next_key,
+                module: m,
+            } => {
+                // Path continues inside another crate reached via facade.
+                let seg_pos = segments.iter().position(|s| *s == *seg).unwrap_or(0);
+                let after: Vec<&str> = segments[seg_pos + 1..].to_vec();
+                let m_segs: Vec<&str> = if m == "crate" {
+                    Vec::new()
+                } else {
+                    m.strip_prefix("crate::")
+                        .unwrap_or(&m)
+                        .split("::")
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                };
+                let mut combined: Vec<&str> = m_segs;
+                combined.extend(after);
+                return resolve_cross_crate_path(
+                    &combined,
+                    &next_key,
+                    full_path,
+                    hops + 1,
+                    index,
+                );
             }
             CrossLookup::Functions(_) => {
                 return ResolveResult::Target(unresolved(format!(
@@ -1160,14 +1269,19 @@ fn resolve_cross_crate_path(
     }
 
     let name = segments[segments.len() - 1];
-    match lookup_cross_crate_name(foreign, &module, name, hops) {
+    match lookup_cross_crate_name(foreign, &module, name, hops, index) {
         CrossLookup::Functions(ids) => match ids.as_slice() {
             [only] => ResolveResult::Target(CallTarget::Resolved(only.clone())),
             _ if ids.len() > 1 => ResolveResult::Target(CallTarget::Conflict(Conflict {
-                candidates: ids,
+                candidates: ids.clone(),
                 reason: format!(
-                    "multiple public definitions of `{name}` in `{}::{module}`",
-                    foreign.rustc_name
+                    "`{name}` is ambiguous across public re-exports / definitions in `{}` \
+                     (candidates: {})",
+                    foreign.rustc_name,
+                    ids.iter()
+                        .map(|id| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             })),
             _ => ResolveResult::Target(unresolved(format!(
@@ -1175,9 +1289,11 @@ fn resolve_cross_crate_path(
                 foreign.rustc_name
             ))),
         },
-        CrossLookup::Module(_) => ResolveResult::Target(unresolved(format!(
-            "path `{full_path}` names a module, not a function"
-        ))),
+        CrossLookup::Module(_) | CrossLookup::ForeignModule { .. } => {
+            ResolveResult::Target(unresolved(format!(
+                "path `{full_path}` names a module, not a function"
+            )))
+        }
         CrossLookup::Type => ResolveResult::Excluded(ExclusionKind::VariantOrConstructor),
         CrossLookup::None => {
             if foreign.find_type(&module, name).is_some() || looks_like_type_name(name) {
@@ -1191,9 +1307,21 @@ fn resolve_cross_crate_path(
     }
 }
 
+/// Look up a foreign crate index by import name (`path_crates`) or rustc name
+/// (`all_crates`).
+fn foreign_index<'a>(index: &'a ResolveIndex, key: &str) -> Option<&'a PathCrateIndex> {
+    index
+        .path_crates
+        .get(key)
+        .or_else(|| index.all_crates.get(key))
+}
+
 enum CrossLookup {
     Functions(Vec<FunctionId>),
+    /// Module path inside the same foreign crate (`crate::format`).
     Module(String),
+    /// Module reached in another crate via a facade re-export.
+    ForeignModule { crate_key: String, module: String },
     Type,
     None,
 }
@@ -1203,6 +1331,7 @@ fn lookup_cross_crate_name(
     module: &str,
     name: &str,
     hops: usize,
+    index: &ResolveIndex,
 ) -> CrossLookup {
     if hops > REEXPORT_HOP_LIMIT {
         return CrossLookup::None;
@@ -1215,7 +1344,6 @@ fn lookup_cross_crate_name(
             fn_ids.push(id);
         }
     }
-    // Also match via full path (covers unusual layouts).
     let full = extend_module_path(module, name);
     for id in foreign.lookup_full(&full) {
         if matches!(foreign.function_vis(&id), ItemVisibility::Public) && !fn_ids.contains(&id) {
@@ -1226,7 +1354,8 @@ fn lookup_cross_crate_name(
         return CrossLookup::Functions(fn_ids);
     }
 
-    // Public re-exports only (`pub use` / `pub use … as`).
+    // Explicit `pub use` / `pub use … as` outrank globs (same precedence as
+    // within-crate import tables).
     let mut reexport_targets = Vec::new();
     for binding in foreign.explicits_in(module, name) {
         if binding.is_reexport && matches!(binding.visibility, ItemVisibility::Public) {
@@ -1234,12 +1363,14 @@ fn lookup_cross_crate_name(
         }
     }
     if reexport_targets.len() == 1 {
-        return resolve_foreign_reexport(foreign, &reexport_targets[0], hops + 1);
+        return resolve_foreign_reexport(foreign, &reexport_targets[0], hops + 1, index);
     }
     if reexport_targets.len() > 1 {
         let mut ids = Vec::new();
         for t in &reexport_targets {
-            if let CrossLookup::Functions(found) = resolve_foreign_reexport(foreign, t, hops + 1) {
+            if let CrossLookup::Functions(found) =
+                resolve_foreign_reexport(foreign, t, hops + 1, index)
+            {
                 for id in found {
                     if !ids.contains(&id) {
                         ids.push(id);
@@ -1250,6 +1381,13 @@ fn lookup_cross_crate_name(
         if !ids.is_empty() {
             return CrossLookup::Functions(ids);
         }
+    }
+
+    // Public glob re-exports (`pub use format::*;`, `pub use engine_a::*;`).
+    // Two globs offering the same name → every candidate (Conflict upstream).
+    let glob_ids = collect_foreign_glob_function_candidates(foreign, module, name, hops, index);
+    if !glob_ids.is_empty() {
+        return CrossLookup::Functions(glob_ids);
     }
 
     let child = extend_module_path(module, name);
@@ -1267,7 +1405,18 @@ fn lookup_cross_crate_name(
     CrossLookup::None
 }
 
-fn resolve_foreign_reexport(foreign: &PathCrateIndex, target: &str, hops: usize) -> CrossLookup {
+/// Follow a re-export target from inside a foreign crate.
+///
+/// Targets may be crate-local (`crate::format::upper`) or another path
+/// dependency the *foreign* crate declares (`engine_a::upper`). The consumer's
+/// dependency gate is not widened: only the foreign crate's own `dep_aliases`
+/// authorize the hop into a third crate.
+fn resolve_foreign_reexport(
+    foreign: &PathCrateIndex,
+    target: &str,
+    hops: usize,
+    index: &ResolveIndex,
+) -> CrossLookup {
     if hops > REEXPORT_HOP_LIMIT {
         return CrossLookup::None;
     }
@@ -1276,11 +1425,60 @@ fn resolve_foreign_reexport(foreign: &PathCrateIndex, target: &str, hops: usize)
         return CrossLookup::None;
     }
 
-    // Re-exports inside a foreign crate are crate-local (`crate::format::upper`).
-    // They must not jump to a third crate from here without a declared dep edge
-    // on that third crate (out of scope for this hop — treat as none).
+    // Cross-crate facade: `engine_a::upper` / `alias::greet` / `grep_cli as cli`.
     if !matches!(segments[0], "crate" | "self" | "super") {
-        return CrossLookup::None;
+        let Some(dep_rustc) = foreign.dep_rustc_name(segments[0]) else {
+            // Not a declared path dep of this foreign crate — refuse rather
+            // than guess (external / typo / undeclared sibling).
+            return CrossLookup::None;
+        };
+        let Some(other) = index.all_crates.get(dep_rustc) else {
+            return CrossLookup::None;
+        };
+        if segments.len() == 1 {
+            // `pub use engine_a;` / `pub use engine_a as alias` — binds the
+            // dependency's crate root as a module path prefix.
+            return CrossLookup::ForeignModule {
+                crate_key: dep_rustc.to_string(),
+                module: "crate".into(),
+            };
+        }
+        // If every remaining segment is a module in the dependency, this
+        // re-export binds a module (e.g. `pub use eng::cli`). Otherwise treat
+        // the target as a function path.
+        let mut module = "crate".to_string();
+        let mut all_modules = true;
+        for seg in &segments[1..] {
+            let child = extend_module_path(&module, seg);
+            if other.modules.contains(&child) {
+                module = child;
+            } else {
+                all_modules = false;
+                break;
+            }
+        }
+        if all_modules {
+            return CrossLookup::ForeignModule {
+                crate_key: dep_rustc.to_string(),
+                module,
+            };
+        }
+        return match resolve_cross_crate_path(
+            &segments[1..],
+            dep_rustc,
+            target,
+            hops,
+            index,
+        ) {
+            ResolveResult::Target(CallTarget::Resolved(id)) => {
+                CrossLookup::Functions(vec![id])
+            }
+            ResolveResult::Target(CallTarget::Conflict(c)) => {
+                CrossLookup::Functions(c.candidates)
+            }
+            ResolveResult::Target(CallTarget::Unresolved(_)) => CrossLookup::None,
+            ResolveResult::External | ResolveResult::Excluded(_) => CrossLookup::None,
+        };
     }
 
     let mut module = "crate".to_string();
@@ -1310,25 +1508,51 @@ fn resolve_foreign_reexport(foreign: &PathCrateIndex, target: &str, hops: usize)
     for seg in &remaining[..remaining.len() - 1] {
         let child = extend_module_path(&module, seg);
         if foreign.modules.contains(&child) {
-            // Within-crate re-export follow: module need not be pub to the
-            // foreign crate's own code, but the *re-export* that exposed the
-            // name to outsiders was already checked Public. Still require pub
-            // modules on the path that outsiders traverse — for a facade
-            // `pub use format::upper`, outsiders never name `format`, so the
-            // chain check is on the re-export site only. Following internally
-            // may walk through non-pub modules; that's fine for the target
-            // item, which still must be `pub`.
+            // Within-crate re-export follow: outsiders never name this module
+            // when they used the facade name, so non-`pub` modules are allowed
+            // on the internal walk. The final item must still be `pub`.
             module = child;
             continue;
         }
-        match lookup_cross_crate_name(foreign, &module, seg, hops) {
+        match lookup_cross_crate_name(foreign, &module, seg, hops, index) {
             CrossLookup::Module(m) => module = m,
+            CrossLookup::ForeignModule {
+                crate_key,
+                module: m,
+            } => {
+                let m_segs: Vec<&str> = if m == "crate" {
+                    Vec::new()
+                } else {
+                    m.strip_prefix("crate::")
+                        .unwrap_or(&m)
+                        .split("::")
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                };
+                let mut combined = m_segs;
+                let seg_idx = remaining.iter().position(|s| *s == *seg).unwrap_or(0);
+                combined.extend_from_slice(&remaining[seg_idx + 1..]);
+                return match resolve_cross_crate_path(
+                    &combined,
+                    &crate_key,
+                    target,
+                    hops + 1,
+                    index,
+                ) {
+                    ResolveResult::Target(CallTarget::Resolved(id)) => {
+                        CrossLookup::Functions(vec![id])
+                    }
+                    ResolveResult::Target(CallTarget::Conflict(c)) => {
+                        CrossLookup::Functions(c.candidates)
+                    }
+                    _ => CrossLookup::None,
+                };
+            }
             _ => return CrossLookup::None,
         }
     }
 
     let name = remaining[remaining.len() - 1];
-    // Final item: must be pub (or a further pub re-export).
     let mut fn_ids = Vec::new();
     for id in foreign.lookup_in_module(&module, name) {
         if matches!(foreign.function_vis(&id), ItemVisibility::Public) {
@@ -1338,7 +1562,128 @@ fn resolve_foreign_reexport(foreign: &PathCrateIndex, target: &str, hops: usize)
     if !fn_ids.is_empty() {
         return CrossLookup::Functions(fn_ids);
     }
-    lookup_cross_crate_name(foreign, &module, name, hops)
+    lookup_cross_crate_name(foreign, &module, name, hops, index)
+}
+
+/// Collect free-function candidates offered by `pub use …::*` in `module`.
+///
+/// Same discipline as within-crate glob sets: only `pub` items (and `pub`
+/// re-exports) in the globbed module contribute. Distinct candidates from
+/// two globs are all returned — never a guessed winner.
+fn collect_foreign_glob_function_candidates(
+    foreign: &PathCrateIndex,
+    module: &str,
+    name: &str,
+    hops: usize,
+    index: &ResolveIndex,
+) -> Vec<FunctionId> {
+    if hops > REEXPORT_HOP_LIMIT {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut seen_glob_targets = HashSet::new();
+    for glob in foreign.public_globs_in(module) {
+        if !seen_glob_targets.insert(glob.target.clone()) {
+            continue;
+        }
+        let Some((crate_key, glob_mod)) =
+            resolve_foreign_glob_module(foreign, &glob.target, hops, index)
+        else {
+            continue;
+        };
+        let Some(target_crate) = foreign_index(index, &crate_key) else {
+            continue;
+        };
+        // Local pub functions in the globbed module.
+        for id in target_crate.lookup_in_module(&glob_mod, name) {
+            if matches!(target_crate.function_vis(&id), ItemVisibility::Public) && !out.contains(&id)
+            {
+                out.push(id);
+            }
+        }
+        // Explicit pub re-exports under this name in the globbed module.
+        for binding in target_crate.explicits_in(&glob_mod, name) {
+            if !(binding.is_reexport && matches!(binding.visibility, ItemVisibility::Public)) {
+                continue;
+            }
+            if let CrossLookup::Functions(ids) =
+                resolve_foreign_reexport(target_crate, &binding.target, hops + 1, index)
+            {
+                for id in ids {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a glob target path to `(crate_key, module_path)` for candidate collection.
+fn resolve_foreign_glob_module(
+    foreign: &PathCrateIndex,
+    target: &str,
+    hops: usize,
+    index: &ResolveIndex,
+) -> Option<(String, String)> {
+    if hops > REEXPORT_HOP_LIMIT {
+        return None;
+    }
+    let segments: Vec<&str> = target.split("::").filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    if !matches!(segments[0], "crate" | "self" | "super") {
+        let dep_rustc = foreign.dep_rustc_name(segments[0])?;
+        let other = index.all_crates.get(dep_rustc)?;
+        if segments.len() == 1 {
+            return Some((dep_rustc.to_string(), "crate".into()));
+        }
+        // Navigate remaining segments; only `pub` modules (named path into the dep).
+        let mut module = "crate".to_string();
+        for seg in &segments[1..] {
+            let child = extend_module_path(&module, seg);
+            if other.modules.contains(&child) {
+                if !matches!(other.module_vis(&child), ItemVisibility::Public) {
+                    return None;
+                }
+                module = child;
+                continue;
+            }
+            return None;
+        }
+        return Some((dep_rustc.to_string(), module));
+    }
+
+    let mut module = "crate".to_string();
+    let mut i = 0usize;
+    while i < segments.len() {
+        match segments[i] {
+            "crate" => {
+                module = "crate".into();
+                i += 1;
+            }
+            "self" => i += 1,
+            "super" => {
+                module = parent_module(&module)?;
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    for seg in &segments[i..] {
+        let child = extend_module_path(&module, seg);
+        if foreign.modules.contains(&child) {
+            // Glob is inside the same crate; module need not be pub for the
+            // crate's own `pub use mod::*` to re-export its pub items.
+            module = child;
+        } else {
+            return None;
+        }
+    }
+    Some((foreign.rustc_name.clone(), module))
 }
 
 fn collect_glob_function_candidates(
@@ -1740,6 +2085,7 @@ mod tests {
             imports,
             vis,
             HashMap::new(),
+            HashMap::new(),
         )
     }
 
@@ -1915,6 +2261,7 @@ mod tests {
             imports,
             vis,
             HashMap::new(),
+            HashMap::new(),
         );
         let r = resolve_call(&site("hidden", "crate::app"), &index).unwrap();
         assert!(
@@ -1943,6 +2290,7 @@ mod tests {
             vec![],
             imports,
             vis,
+            HashMap::new(),
             HashMap::new(),
         );
         let r = resolve_call(&site("helper", "crate::app::tests"), &index).unwrap();

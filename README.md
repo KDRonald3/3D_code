@@ -32,7 +32,7 @@ Scale validation on real repositories
 
 | Codebase style | What you get |
 |---|---|
-| Free-function pipelines (e.g. ripgrep) | Useful: 737 functions, 2,103 resolved edges |
+| Free-function pipelines (e.g. ripgrep) | Useful: see [`docs/scale-validation.md`](docs/scale-validation.md) for current resolved/unresolved counts |
 | Method / `impl`-centric (e.g. tokio) | Partial: free helpers visible after `cfg_*` module recovery (762 fns / 529 resolved), but the runtime still lives in methods |
 | Macro-assembled via definition bodies (e.g. serde `crate_root!`) | Thin: proc-macro crates appear; main library modules inside `macro_rules!` bodies stay closed |
 
@@ -91,7 +91,10 @@ Through Phase 5a (including allowlisted macro recovery):
   `use`, explicit `use` beats glob; two globs for the same name → `Conflict`
   matching rustc `E0659`)
 - Cross-crate resolution behind a declared-dependency gate, with cross-crate
-  visibility enforcement (`pub` item behind an all-`pub` module chain)
+  visibility enforcement (`pub` item behind an all-`pub` module chain) and
+  facade following (`pub use` / renamed `pub use` / `pub use glob::*` /
+  `pub extern crate dep as name`, including chains through several path
+  crates, hop-bounded at 32)
 - Doc comments (`///`, `//!`, block forms, `#[doc = "…"]`)
 - File-level call sites (e.g. `const` / `static` initialisers calling a
   `const fn`)
@@ -119,7 +122,7 @@ Equal prominence: these are not “not yet” unless stated.
 | Calls inside non-allowlisted macros (user macros, `matches!`, `stringify!`, `macro_rules!` bodies, …) | Stay absent — prefer a miss over a fabricated edge |
 | Modules assembled only inside `macro_rules!` **definition** bodies (e.g. serde `crate_root!()`) | Stay absent — expanding definition bodies is a different, riskier problem |
 | Examples, integration tests, benches, `build.rs` | Deliberately not discovered as map crates |
-| Cross-crate glob imports (`use dep::*`) | Not expanded; use explicit paths / imports |
+| Consumer-side cross-crate glob imports (`use dep::*` in the *calling* crate) | Not expanded; use explicit paths / imports. (Foreign crates' own `pub use dep::*` facades *are* followed.) |
 | `use` inside a function body | Treated as module-wide (`scope_widened`), not body-scoped |
 | Visibility filtering on direct within-crate edges | Deliberately **not** enforced (map what was written); globs and cross-crate edges **do** filter |
 | Visual frontend | Deferred; consume the JSON instead |

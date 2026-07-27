@@ -293,7 +293,9 @@ by design" is never conflated with "could not resolve".
 | Bare name supplied by two or more globs, no explicit / local winner | `Conflict` (rustc `E0659`) |
 | Facade / renamed `pub use` (`crate::mean`, `shout_upper`) | Resolve by following re-exports (bounded hops) |
 | `use text_engine::format::upper` / `text_engine::…` at the call site, when `text-engine` is a declared path dependency | Resolve cross-crate (visibility-filtered) |
-| Path into a workspace sibling **not** declared as a dependency | `Unresolved` (dependency gate — never a wrong edge) |
+| Cross-crate facade: `facade::upper` where facade has `pub use eng::upper` (plain / renamed / multi-crate chain / `pub use eng::*`) | Resolve to the defining `FunctionId` (hop-bounded); two foreign globs for the same name → `Conflict` |
+| `pub(crate) use` at a foreign crate root, or a path that *names* a private foreign module | `Unresolved` (not reachable from outside) |
+| Path into a workspace sibling **not** declared as a dependency | `Unresolved` (dependency gate — never a wrong edge); facade following must not bypass this for *initial* entry |
 | `use std::fs` then `fs::write` (import roots in an external crate) | Dropped (`external_dropped`) |
 | `std::…` / external dependency root written at the call site | Dropped (`external_dropped`) |
 | Prelude / local enum variants and tuple-struct constructors (`Ok`, `Enum::V`, `Tuple(…)`) | Dropped (`constructor_dropped`) |
@@ -314,6 +316,8 @@ Fully supported (flattened from the `UseTree` AST, not by string-splitting):
 | Glob | `use crate::text::*;` |
 | Re-export | `pub use numbers::mean;` |
 | Renamed re-export | `pub use text::upper as shout_upper;` |
+| Glob re-export | `pub use format::*;` (including across path crates) |
+| `extern crate` rename facade | `pub extern crate grep_cli as cli;` — same as binding the dep crate under `cli` |
 | Relative roots | `use self::…`, `use super::…`, `use crate::…` |
 | External roots | `use std::fs;`, `use serde::Serialize;` |
 | Discard | `use crate::beta::Marker as _;` — no binding |
@@ -534,13 +538,33 @@ B as a path dependency (dependency gate). Then:
 
 1. Every module segment on the path from B's crate root must be `pub`
    (not `pub(crate)`, not private). A `pub fn` inside a private module is
-   unreachable — module-chain visibility, not only the item's marker
+   unreachable *by naming that module*
    (`text_engine::secret::hidden`).
 2. The target item itself must be `pub` (`pub(crate)` / private are not
    reachable from another crate — `text_engine::format::trim_inner`).
 3. `pub use` facades that are themselves `pub` may expose an item without
-   naming private intermediate modules at the call site; re-export hops stay
-   bounded by [`REEXPORT_HOP_LIMIT`](../../src/resolve.rs).
+   naming private intermediate modules at the call site — including
+   `pub use private_mod::item` (Rust-correct: the *re-export name* is public
+   even when the module is not). `pub(crate) use` is not visible outside.
+4. Facade targets may live in *another* path crate that B declares
+   (`pub use eng::upper`, renamed forms, `pub use eng::*`, and
+   `pub extern crate eng as name`). Following that hop does **not** require
+   A to declare `eng`; it does require B to declare `eng`. A's initial entry
+   still needs A→B. Two foreign glob re-exports offering the same name →
+   `Conflict` (never a pick).
+5. Re-export hops — within or across crates — stay bounded by
+   [`REEXPORT_HOP_LIMIT`](../../src/resolve.rs) (32). Exhausting the bound
+   yields `Unresolved` with a reason that names the limit, so a cycle
+   (A re-exports B which re-exports A) cannot hang the tool. Each hop
+   increments the same counter; there is no separate unbounded walk.
+
+*Why follow across crates at all:* published Rust libraries conventionally
+present a flat crate-root API and treat internal crates / modules as private.
+Leaving facade paths `Unresolved` was the largest remaining resolution gap
+on multi-crate corpora (ripgrep's `grep::cli::…` barrels, which use
+`pub extern crate grep_cli as cli`). Following only `pub` re-exports /
+`pub extern crate` renames, gated by the foreign crate's own dependency list,
+recovers those edges without inventing a path into an undeclared sibling.
 
 Keep the asymmetry deliberate: within-crate direct edges map what the author
 wrote; cross-crate edges map what is actually nameable from outside.
@@ -668,8 +692,10 @@ Known limitations to accept:
 - **Macro-hidden modules** outside the item-macro allowlist, and modules that
   exist only inside `macro_rules!` definition bodies (`crate_root!()`), stay
   absent.
-- **Cross-crate globs** (`use text_engine::*`) are not specially expanded;
-  explicit path / import targets into path deps are the supported form.
+- **Consumer-side cross-crate globs** (`use text_engine::*` in the *calling*
+  crate) are not specially expanded; explicit path / import targets into path
+  deps are the supported form. Foreign crates' own `pub use dep::*` facades
+  *are* followed (see Cross-crate reachability).
 - **Examples / tests / benches** are not discovered as crates (deliberate).
 
 ## Closed questions
@@ -732,11 +758,11 @@ Known limitations to accept:
    callee. Product code currently avoids the pattern; no dedicated fixture
    yet. See "What remains unmeasured" in the correctness doc.
 5. **Cross-crate precision beyond fixtures.** `path-dependency` /
-   `workspace-dep-gate` / `renamed-path-dep` integration tests cover the
-   dependency gate, renames, and visibility rules, but LSIF breadth comparison
-   is same-repo only. A multi-crate LSIF filter for foreign `FunctionId`s is
-   not built. Facade `pub use` barrels across path deps remain unresolved
-   (scale-validation failure §3) — fix vs document-as-limit is undecided.
+   `workspace-dep-gate` / `renamed-path-dep` / `cross-crate-facade` cover the
+   dependency gate, renames, visibility, and facade following, but LSIF
+   breadth comparison is same-repo only. A multi-crate LSIF filter for foreign
+   `FunctionId`s is not built — newly resolved facade edges on large corpora
+   still need hand spot-checks (see scale-validation).
 6. **UpperCamelCase modules absent from the module tree.** The strict
    UpperCamelCase heuristic can still drop a free-function path as associated /
    constructor when a module looks like a type and was not discovered.

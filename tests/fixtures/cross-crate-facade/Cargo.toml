@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "consumer",
+    "text-facade",
+    "format-engine",
+    "parse-engine",
+    "mid-crate",
+    "leaf-crate",
+    "shapes-eng",
+    "text-eng",
+]
+resolver = "2"

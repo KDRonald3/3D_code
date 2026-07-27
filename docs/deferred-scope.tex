@@ -477,9 +477,10 @@ E0308  mismatched types                 <- parsed fine
   \item[Function-body \texttt{use} widening.] Documented; wider than rustc.
   \item[Re-export hop bound.] Chains are followed at most 32 hops
     (\verb|REEXPORT_HOP_LIMIT|), then \verb|Unresolved|.
-  \item[Cross-crate facade re-exports.] \verb|pub use| barrels across path
-    dependencies are not followed; free functions behind a facade remain
-    \verb|Unresolved| (measured on ripgrep).
+  \item[Consumer-side cross-crate globs.] \verb|use dep::*| in the
+    \emph{calling} crate is still not expanded. Foreign crates' own
+    \verb|pub use dep::*| facades \emph{are} followed (settled; see
+    requirements Cross-crate reachability).
 \end{description}
 
 \section{Undecided}
@@ -502,8 +503,6 @@ end of this section for the record.
   \item \textbf{Dev-dependencies as external roots.} Whether to list them so
     test-only calls become \verb|external_dropped| rather than
     \verb|Unresolved|.
-  \item \textbf{Facade re-exports across path deps.} Fix versus accept as a
-    known limitation.
 \end{enumerate}
 
 \paragraph{Settled since the design draft (no longer open).}
@@ -522,6 +521,9 @@ end of this section for the record.
     \verb|Unresolved| rather than silent drops.
   \item Correctness harness shares the extract/resolve pipeline with the CLI
     (no parallel twin walk).
+  \item Cross-crate facade re-exports (\verb|pub use| / renamed / glob /
+    multi-crate chains) are followed with the same hop bound as within-crate
+    re-exports; initial entry remains dependency-gated.
 \end{itemize}
 
 \section{Original goals not addressed today}
