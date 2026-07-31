@@ -1,6 +1,7 @@
 # Horizon Function-Map Review UI
 
-**Status:** draft requirements + vertical build plan  
+**Status:** draft requirements + vertical build plan (technical decisions
+closed 30 July 2026; one lifespan question remains)  
 **Date:** 30 July 2026  
 **Branch:** `feat/ast-system`  
 **Companion specs:** [`rust-function-map.md`](rust-function-map.md),
@@ -20,7 +21,8 @@ Horizon already emits a JSON function map. This document specifies a **local
 web UI, living in this repository**, that loads that map (live or from a saved
 file) and lets the owner **audit whether the analyser got the calls, conflicts,
 unresolved sites, and drop counters right** — with the function’s real source
-code beside the extracted call sites.
+code beside the extracted call sites, and a repository-wide worklist of every
+incomplete edge.
 
 The front end is the Desktop throwaway viewer
 ([`old-viewer-spec.md`](../ui/old-viewer-spec.md)) adapted into hand-written
@@ -43,10 +45,13 @@ are listed under [Decisions made under the production framing](#decisions-made-u
 - Show every incomplete edge honestly: `conflict` (all candidates + reason),
   `unresolved` (reason), `from_macro` provenance, and `MapSummary` counters
   including the three `*_dropped` tallies.
+- Provide a **repository-wide diagnostics worklist**: every `Conflict` and
+  every `Unresolved` site, with reasons (and conflict candidates), linking into
+  the tree and the source panel.
 - Support two load paths: **live in-process analysis** of a repository path,
   and **open a previously saved map JSON**.
-- Show the **source text of a free function** next to that function’s call
-  sites (core review loop — not a polish extra).
+- Show **server-highlighted source** of a free function next to that function’s
+  call sites (core review loop — not a polish extra).
 - Stay a **local development tool**: loopback bind, OS-assigned ephemeral port,
   open the browser; no auth.
 
@@ -61,10 +66,12 @@ are listed under [Decisions made under the production framing](#decisions-made-u
 | Methods / `impl` items in the map | Permanently out of map scope ([`rust-function-map.md`](rust-function-map.md)) |
 | Click-to-open-in-editor | Deferred |
 | Reverse lookup (all callers of a function) | Deferred |
+| Inline mark-up of call-site spans inside the source panel | Deferred (see Deferred) |
 | Light theme / theme toggle | Out (match old viewer: dark only) |
 | Accessibility hardening (`aria-*`, tree roles, live regions) | Deferred — not needed for solo review |
 | Virtualization of the tree | Deferred **unless** reviewing maps the size of rust-analyzer / tokio (see Deferred) |
 | Faithful port of the abandoned Design-Component visualizer on `my-local-name` | Non-goal — wrong JSON contract ([`branch-ui-survey.md`](../ui/branch-ui-survey.md)) |
+| Incremental analysis | Non-goal now — but `File.content_hash` is shaped so a future mode can reuse it |
 
 ## Users and use cases
 
@@ -75,19 +82,20 @@ are listed under [Decisions made under the production framing](#decisions-made-u
 
 Use cases, in priority order:
 
-1. Load a map → expand a function → read its **source** and the ordered
-   `call_sites` Horizon attached; judge extraction/resolution by eye.
-2. Filter to functions with conflicts or unresolved sites; jump candidates;
-   read reasons.
-3. Read `MapSummary` (including `external_dropped`, `constructor_dropped`,
+1. Load a map → open the **diagnostics worklist** → walk every conflict and
+   unresolved site with its reason (and candidates); jump into the enclosing
+   function and read source.
+2. Expand a function in the tree → read its **highlighted source** and the
+   ordered `call_sites` Horizon attached; judge extraction/resolution by eye.
+3. Filter the tree to functions with conflicts or unresolved sites; jump
+   candidates; read reasons.
+4. Read `MapSummary` (including `external_dropped`, `constructor_dropped`,
    `associated_dropped`) and compare against expectations from
    [`unresolved-analysis.md`](../unresolved-analysis.md).
-4. Spot `from_macro: true` sites (purple badge) and treat them as
+5. Spot `from_macro: true` sites (purple badge) and treat them as
    lower-certainty recovery.
-5. Re-run **live** analysis after editing the analyser or the target repo,
+6. Re-run **live** analysis after editing the analyser or the target repo,
    without a separate CLI → `data.js` dance.
-6. *(Recommended, not yet approved)* Work a repository-wide list of every
-   conflict and unresolved site systematically.
 
 ## Behaviour
 
@@ -96,23 +104,26 @@ Use cases, in priority order:
 | Input | How |
 |---|---|
 | Saved map JSON | Browser file picker (client-side parse), **or** server endpoint that reads a path / uploaded bytes and returns `Repository` JSON |
-| Live repository path | Browser submits an absolute path; server calls `horizon_engine::build_function_map` in-process and returns the map |
-| Source file bytes | Server reads `File.path` from disk and slices `[Function.byte_start, Function.byte_end)` (fields being added — see Decisions) |
+| Live repository path | Browser submits an absolute path; server calls [`horizon_engine::build_function_map`](../../crates/horizon-engine/src/lib.rs) in-process and returns the map |
+| Source file bytes | Server reads `File.path` from disk, verifies `File.content_hash`, slices `[Function.byte_start, Function.byte_end)`, lexes the slice with `ra_ap_syntax`, returns tokens |
 
 ### Outputs (what the UI shows)
 
 Match the old viewer unless noted. Layout remains a single-column dark page:
 sticky header → summary bar → toolbar → tree (see
-[`old-viewer-spec.md`](../ui/old-viewer-spec.md) §1–5).
+[`old-viewer-spec.md`](../ui/old-viewer-spec.md) §1–5), plus a diagnostics
+surface (tab, toggle, or sibling list — implementation choice) and a source
+panel under an expanded function.
 
 | Surface | Required for review |
 |---|---|
 | Tree: crate → folder → file → function | yes |
+| **Diagnostics worklist** (every conflict + unresolved) | yes — primary audit list |
 | Call-site cards: `resolved` / `conflict` / `unresolved` | yes |
 | Conflict candidates + reason; unresolved reason | yes |
 | `from_macro` → purple `macro` badge | yes (already in old viewer) |
 | Summary pills: conflicts, unresolved, **and** the three `*_dropped` counters | yes — old viewer already consumed all five `MapSummary` fields; keep them visible |
-| Function **source panel** (new) | yes — core |
+| Function **source panel** (server-highlighted tokens) | yes — core |
 | Docs blocks (`doc_comments[].text`) | yes (port as-is; `kind` still unused) |
 | `Crate.dependencies` / `Crate.roots` | ignore for v1 (same as old viewer) |
 
@@ -138,10 +149,23 @@ Port tokens from the old viewer unchanged:
 Fonts: `--font-ui` Segoe UI / Helvetica Neue; `--font-mono` Cascadia Code /
 Consolas / Menlo. Source panel uses the mono stack.
 
+Source-token colours (CSS classes on spans inside the source `<pre>`; dark only):
+
+| Class | Role | Suggested colour |
+|---|---|---|
+| `.tok-kw` | keywords (`fn`, `let`, `use`, …) | `#c3a6ff` (near `--macro`) |
+| `.tok-fn` | function / call names | `#7eb8ff` (`--accent`) |
+| `.tok-ty` | type names | `#5dce8a` (`--resolved`) |
+| `.tok-c` | comments | `#6b7385` (`--text-dim`) |
+| `.tok-str` | string literals | `#e6c48a` |
+| `.tok-num` | numeric literals | `#e6e9ef` |
+| *(no class / `.tok`)* | punctuation, whitespace, other | `#e6e9ef` (`--text`) |
+
 ### Endpoints (`horizon-server`)
 
 Bind: `127.0.0.1:0` (ephemeral). Print `http://{addr}` and open the default
-browser. Do **not** expose a bind-address flag in v1.
+browser (skeleton today only prints the URL — browser open is still to land).
+Do **not** expose a bind-address flag in v1.
 
 | Method | Path | Body / query | Response |
 |---|---|---|---|
@@ -150,11 +174,41 @@ browser. Do **not** expose a bind-address flag in v1.
 | `GET` | `/api/health` | — | `{"ok":true}` |
 | `POST` | `/api/analyse` | JSON `{"path":"<abs repo>"}` | `Repository` JSON, or `4xx` `{error}` |
 | `POST` | `/api/map` | JSON map body, **or** multipart / path load — pick one in implementation; deserialize via [`map_from_slice`](../../crates/horizon-map/src/json.rs) | Validated `Repository` or `4xx` |
-| `GET` | `/api/source` | `path`, `byte_start`, `byte_end` (and optionally `expected_hash` once hashing lands) | `{ text, … }` or structured error (`missing` / `stale` / `range`) |
+| `GET` | `/api/source` | `path`, `byte_start`, `byte_end`, `expected_hash` | highlighted tokens (below), or structured error (`missing` / `stale` / `range`) |
 
-Live analysis must call the engine **in-process** (`horizon-server` already
-depends on `horizon-engine` per [`Cargo.toml`](../../crates/horizon-server/Cargo.toml)).
-No `std::process` to the CLI.
+**`/api/source` success body** (token wire format, same idea as
+`my-local-name`’s `[[text, class], …]` but with the class vocabulary above):
+
+```json
+{
+  "tokens": [
+    ["fn", "kw"],
+    [" ", ""],
+    ["extract_facts", "fn"],
+    ["(", ""],
+    ["tree", ""],
+    [": ", ""],
+    ["&", ""],
+    ["SourceFile", "ty"],
+    [") ", ""],
+    ["{", ""],
+    ["\n    ", ""],
+    ["// …", "c"]
+  ]
+}
+```
+
+Each element is `[text, class]` where `class` is one of
+`kw` | `fn` | `ty` | `c` | `str` | `num` | `""`. The UI maps `class` →
+`.tok-{class}` (empty class → unstyled / `.tok`). Lex and classify on the
+server with `ra_ap_syntax` over the sliced snippet — no extra highlighting
+crate. `horizon-server` already depends on `horizon-engine`, which pulls in
+`ra_ap_syntax`.
+
+Live analysis must call the engine **in-process** (`horizon-server` depends on
+`horizon-engine` unconditionally — see
+[`Cargo.toml`](../../crates/horizon-server/Cargo.toml)). No `std::process` to
+the CLI.
 
 **Security constraint:** bind address must not become configurable without first
 locking down the repo-path / file-path parameters. A browser-chosen path against
@@ -165,7 +219,7 @@ that must **not** be copied.
 
 ### Interactions
 
-Port from [`old-viewer-spec.md`](../ui/old-viewer-spec.md) §6:
+Port from [`old-viewer-spec.md`](../ui/old-viewer-spec.md) §6, plus:
 
 | Trigger | Effect |
 |---|---|
@@ -174,7 +228,9 @@ Port from [`old-viewer-spec.md`](../ui/old-viewer-spec.md) §6:
 | Search + “Has conflicts” / “Has unresolved” chips | Filter (chip OR semantics retained) |
 | Open JSON… | Load saved map |
 | Analyse path (new chrome) | `POST /api/analyse` → `loadMap` |
-| Expand function (new) | Fetch `/api/source` and show source above or beside call sites |
+| Open diagnostics worklist | Flat list of every conflict + unresolved in the loaded map |
+| Click a diagnostics row | Jump to enclosing function in the tree; fetch `/api/source` and show the source panel |
+| Expand function | Fetch `/api/source` and show highlighted source above or beside call sites |
 
 ### JSON fields the UI must honour
 
@@ -187,8 +243,8 @@ Field names from [`map.rs`](../../crates/horizon-map/src/map.rs) /
 | `MapSummary` | `conflicts`, `unresolved`, `external_dropped`, `constructor_dropped`, `associated_dropped` |
 | `Crate` | `name`, `rustc_name`, `is_library`, `edition`, `folders`, `files` (`roots`, `dependencies` ignored) |
 | `Folder` | `path`, `folders`, `files` |
-| `File` | `path`, `module_path`, `functions`, `call_sites`, `doc_comments` (+ planned `content_hash` — Open questions) |
-| `Function` | `id`, `name`, `module_path`, `line`, `call_sites`, `doc_comments`, **`byte_start`, `byte_end` (to add)** |
+| `File` | `path`, `module_path`, `functions`, `call_sites`, `doc_comments`, **`content_hash` (to add)** |
+| `Function` | `id`, `name`, `module_path`, `line`, `call_sites`, `doc_comments`, **`byte_start`, `byte_end` (to add; full `ast::Fn` `syntax().text_range()`)** |
 | `DocComment` | `text` (`kind` ignored) |
 | `CallSite` | `call_path`, `line`, `byte_start`, `byte_end`, `target`, `from_macro` |
 | `CallTarget` | adjacent tag `kind` + `data` (`resolved` \| `conflict` \| `unresolved`) |
@@ -201,20 +257,35 @@ Field names from [`map.rs`](../../crates/horizon-map/src/map.rs) /
 { "kind": "unresolved", "data": { "reason": "…" } }
 ```
 
+`File.content_hash`: hex-encoded SHA-256 of the raw file bytes at extract time.
+Serde name `content_hash`. Omitted from UI chrome; consumed by `/api/source`.
+
 ## Affected code
 
 | Area | Paths |
 |---|---|
 | Contract | [`crates/horizon-map/src/map.rs`](../../crates/horizon-map/src/map.rs), [`crates/horizon-map/src/json.rs`](../../crates/horizon-map/src/json.rs), [`docs/json-output.md`](../json-output.md) |
-| Extractor (populate function spans) | [`crates/horizon-engine/src/extract.rs`](../../crates/horizon-engine/src/extract.rs) — already has `func.syntax().text_range()` at extract time ([~L261–L274](../../crates/horizon-engine/src/extract.rs)) |
-| Engine entry | `horizon_engine::build_function_map` |
-| Server | [`crates/horizon-server/src/main.rs`](../../crates/horizon-server/src/main.rs) (skeleton today), plus new modules for routes / static / source |
+| Extractor (function spans + file hash) | [`crates/horizon-engine/src/extract.rs`](../../crates/horizon-engine/src/extract.rs) — already has `func.syntax().text_range()` at extract time ([L261–L274](../../crates/horizon-engine/src/extract.rs)) |
+| Engine entry | [`build_function_map`](../../crates/horizon-engine/src/lib.rs) |
+| Pipeline (shared with correctness) | [`pipeline`](../../crates/horizon-engine/src/pipeline.rs) — `ExtractedCrate`, `extract_repository`, `extract_crate`, `resolve_index_for` are `pub` |
+| Server | [`crates/horizon-server/src/main.rs`](../../crates/horizon-server/src/main.rs) (skeleton today), plus new modules for routes / static / source highlight |
 | Static UI | new under `crates/horizon-server/web/` (or `static/`) — adapted from Desktop viewer |
 | Docs | this file; later a one-line pointer from README |
 
-Groundwork **already done** (not a phase): five-crate workspace
-([`Cargo.toml`](../../Cargo.toml)), `horizon-server` binary that binds
-`127.0.0.1:0` and serves a placeholder ([`main.rs`](../../crates/horizon-server/src/main.rs)).
+### Groundwork landed (not a phase)
+
+Committed as `ec73c02` (this requirements doc as `6462c46`). Verified:
+
+| Fact | Detail |
+|---|---|
+| Layout | `crates/horizon-map`, `crates/horizon-engine`, `crates/horizon` (CLI), `crates/horizon-server`, `crates/horizon-correctness`; [`tests/fixtures/`](../../tests/fixtures/) stays at repo root |
+| Workspace | [`Cargo.toml`](../../Cargo.toml) virtual manifest; `cargo build --workspace` / `cargo test --workspace` green |
+| Tests | 62 total: 29 engine unit, 18 engine integration, 12 correctness, 3 map |
+| `horizon-map` leaf | depends only on `serde`, `serde_json`, `anyhow` — no `ra_ap_syntax` |
+| Integration tests | live inside the crates they exercise (virtual root has no package for root tests); fixture paths walk up to the workspace root |
+| `horizon-server` | compiling `axum` skeleton: binds `127.0.0.1:0`, prints URL, placeholder `/` — **does not yet** auto-open a browser |
+| Correctness API | `pipeline` module, `ExtractedCrate`, `extract_repository`, `extract_crate`, `resolve_index_for` widened to `pub` |
+| Engine dep | `horizon-server` → `horizon-engine` unconditional (no feature flag) |
 
 ## Edge cases and constraints
 
@@ -229,7 +300,8 @@ Groundwork **already done** (not a phase): five-crate workspace
   leave stale chrome (old-viewer rough edge #7 — fix).
 - Large corpora (rust-analyzer ~15k kept sites, 1.5k unresolved per
   [`unresolved-analysis.md`](../unresolved-analysis.md)) stress the non-virtualized
-  tree; see Deferred.
+  tree; see Deferred. The diagnostics list will be long on those maps — that is
+  the point of the worklist; virtualization of the *tree* is a separate concern.
 - Never guess a call target in the UI; display every candidate.
 
 ## Decisions, with reasoning
@@ -240,10 +312,10 @@ Groundwork **already done** (not a phase): five-crate workspace
 correctness, not shipping a polished end-user product. Lifespan is uncertain
 (“might be temporary”).
 
-*Why:* owner clarification. Source-beside-call-sites and incomplete-edge
-surfaces beat polish. Production stack choices already made are kept where they
-still serve review (in-repo Rust server, loopback, live analyse) but phase order
-and deferred scope follow review value.
+*Why:* owner clarification. Source-beside-call-sites, the diagnostics worklist,
+and incomplete-edge surfaces beat polish. Production stack choices already made
+are kept where they still serve review (in-repo Rust server, loopback, live
+analyse) but phase order and deferred scope follow review value.
 
 ### Adapt the Desktop viewer, not the branch visualizer
 
@@ -259,7 +331,8 @@ Owner instruction: “don’t change much. take the previous UI, adapt it.”
 
 **Decision:** `axum` server in `horizon-server`; live analysis calls
 `horizon-engine` in-process; always depends on the engine (not an optional
-feature).
+feature). Landed: unconditional dep in
+[`crates/horizon-server/Cargo.toml`](../../crates/horizon-server/Cargo.toml).
 
 *Why:* settled owner decision. Matches abandoned branch’s in-process scan
 pattern, with `axum` instead of `tiny_http`. Avoids CLI subprocess and keeps one
@@ -268,6 +341,7 @@ analysis code path with the CLI.
 ### Loopback + ephemeral port + open browser
 
 **Decision:** bind `127.0.0.1:0` only; print URL; open browser; no auth.
+Skeleton already binds and prints; browser open remains to implement.
 
 *Why:* local tool. Security: configurable bind without locking repo-path would
 be directory disclosure. Explicitly **do not** copy the old `HOST`/`PORT` env
@@ -281,62 +355,97 @@ escape hatch until path inputs are locked down.
 produced (scale results under `%TEMP%\horizon-scale-results\`, fixture sidecars,
 CLI output).
 
-### `Function.byte_start` / `Function.byte_end`
+### `Function.byte_start` / `Function.byte_end` — full `ast::Fn` node
 
 **Decision:** add two `u32` fields to [`Function`](../../crates/horizon-map/src/map.rs)
-(same meaning as on [`CallSite`](../../crates/horizon-map/src/map.rs) L397–L413:
-UTF-8 start and one-past-end of the function item). Populate in extract from
-`ast::Fn`’s `text_range()` (full item, including signature and body — what the
-owner needs to audit).
+(same meaning as on [`CallSite`](../../crates/horizon-map/src/map.rs)
+[L410–L413](../../crates/horizon-map/src/map.rs): UTF-8 start and one-past-end).
+The extent is the **full `ast::Fn` syntax-node range**, including outer
+attributes (`#[cfg]`, `#[inline]`, …), outer doc comments (`///` / `/**`),
+signature, and body.
 
-*Why:* `CallSite` already carries ranges for editor highlighting; `Function`
-today has only 1-based `line` of the `fn` keyword ([L435–L436](../../crates/horizon-map/src/map.rs)).
-Rejected alternatives: re-parse with `ra_ap_syntax` on the server (duplicated
-logic); slice from this function’s line to the next function’s line (wrong when
-non-`fn` items sit between). Extract already touches the syntax node
-([`extract.rs` ~L249–L274](../../crates/horizon-engine/src/extract.rs)).
+**How to obtain the range in extract:** for each free `ast::Fn` already visited
+in [`extract_facts`](../../crates/horizon-engine/src/extract.rs)
+([L249–L274](../../crates/horizon-engine/src/extract.rs)), record:
+
+```rust
+let range = func.syntax().text_range(); // SyntaxNode of the Fn item
+let byte_start = u32::from(range.start());
+let byte_end   = u32::from(range.end());   // one past the end
+```
+
+Do **not** start at `fn_token()` (that drops leading attributes) and do **not**
+use only the body block’s range. `func.syntax().text_range()` is the single
+source of truth.
+
+*Why this extent:* an auditor judging whether calls were attributed to the
+right one of two `#[cfg]`-duplicated definitions needs to see the attributes
+sitting above each signature. Body-only and `fn`-keyword-through-end slices
+hide those attributes and make that judgment harder.
+
+*Accepted consequence:* doc comment text appears in the source panel **and** is
+still carried separately in `Function.doc_comments`, so the same text shows up
+twice (docs block + top of the highlighted slice). That duplication is
+**accepted** rather than dropping attributes from the range. Trimming leading
+outer docs from the *displayed* slice (while keeping attrs) is optional polish,
+not a requirement — see Deferred.
+
+*Why byte fields at all:* `CallSite` already carries ranges for positioning;
+`Function` today has only 1-based `line` of the `fn` keyword
+([L435–L436](../../crates/horizon-map/src/map.rs)). Rejected alternatives:
+re-parse on the server solely to rediscover bounds; slice from this function’s
+line to the next function’s line (wrong when non-`fn` items sit between).
 
 **Contradiction with today’s code:** these fields are **not present yet**.
 Until Phase B lands, source display cannot use the contract.
 
-### Source display: disk slice by byte range (not embedded tokens)
+### Source display: disk slice + server-side highlight
 
-**Decision:** server reads the file and returns the UTF-8 slice; UI renders it
-in a `<pre><code>` panel under the expanded function (plain text for v1; no
-syntax-highlight token array required).
+**Decision:** server reads the file on demand, slices by `Function.byte_*`,
+lexes the snippet with `ra_ap_syntax`, and returns `[text, class]` tokens.
+Maps stay small; the UI renders spans with the `.tok-*` classes above. No
+extra highlighting dependency — the branch UI’s hand-rolled highlighter was
+approximating what the real lexer gives for free.
 
-*Why:* settled with the byte-range contract. Differs from `my-local-name`, which
-embedded highlighted `[text, class]` arrays at scan time and never re-read disk
-for the Inspector ([`branch-ui-survey.md`](../ui/branch-ui-survey.md) §Lead
-answers).
+*Why:* owner decision. Deliberately diverges from `my-local-name`, which
+**embedded** highlighted token arrays in the scan JSON at analyse time and never
+re-read disk ([`branch-ui-survey.md`](../ui/branch-ui-survey.md) §Lead answers).
+Disk + hash keeps saved maps lean and matches the ordinary analyse-then-review
+flow where the file on disk is the file that was analysed.
 
 ### Staleness when the file changed or disappeared
 
-**What the other branch did:** embedded source in the scan JSON at analyse time.
-**No** content hash, mtime, or re-read for display. After disk changed or a file
-was deleted, the UI still showed the **snapshot**. The wrong-lines-from-disk
-hazard **did not apply**; the opposite hazard applied (stale-but-stable until
-re-scan). Schema `version` checked scanner-output shape, not source freshness.
+**Settled** (with `content_hash` on `File`).
 
-**Precedent for offset-based disk reads:** **none.** The branch never served
-fresh file bytes for the source panel. Following “embed forever” literally would
-contradict the settled `byte_start`/`byte_end` + disk-slice decision.
-
-**Recommendation (review-weighted — owner has not formally closed this):**
+**Branch precedent (honest):** `my-local-name` embedded highlighted source at
+scan time and had **no** drift detection. After disk changed or a file was
+deleted, the UI still showed the snapshot. We deliberately diverge: the owner
+will be editing the analyser and re-running constantly, so drift is the normal
+case, not an edge case.
 
 | Mode | Behaviour |
 |---|---|
-| **Live `POST /api/analyse`** | Map and source are co-produced from the same disk state in one session. Slice with `Function.byte_*`. No extra staleness ceremony inside that response. |
-| **Saved JSON** | At extract time, store a per-file content digest on `File` (e.g. `content_hash`: hex sha256 of file bytes — small contract add). `GET /api/source` recomputes the hash; on mismatch return `stale` and show a banner (“source changed since map was built — re-analyse”) **without** showing a sliced body; on missing file return `missing` and hide the panel with that reason; on range out of bounds return `range`. |
-| **Reject** | Silent best-effort slice of a possibly moved file (shows wrong “evidence” during audit). Embed full function bodies in JSON (duplicates the rejected approach; blows up rust-analyzer-scale maps). Live-only source (blocks auditing existing `%TEMP%` scale maps). |
+| **Live `POST /api/analyse`** | Map and source are co-produced from the same disk state. Slice with `Function.byte_*`, highlight, return tokens. |
+| **Saved JSON** | Extract stores `File.content_hash` (SHA-256 hex of file bytes) beside `path` / `module_path`. `GET /api/source` recomputes the hash; on mismatch return `stale` and show a banner (“source changed since map was built — re-analyse”) **without** serving a body; on missing file return `missing`; on range out of bounds return `range`. |
+| **Rejected** | Silent best-effort slice of a drifted file. Embed function bodies in JSON. Live-only source. |
 
-*Why this over “do what the branch did”:* under temporary-review use the owner
-edits the analyser and re-runs constantly; **detecting drift is more valuable**,
-not less. The branch’s embed strategy achieved “show what was analysed” by
-snapshotting text. With disk slices, a **hash gate** is the honest equivalent:
-either show bytes that still match the analyse-time file, or refuse and push
-re-analyse. Recorded as a recommendation until the owner confirms; see Open
-questions.
+**Second payoff (out of scope now, shape the field for it):** `content_hash` is
+exactly what a future incremental-analysis mode needs to know which files
+changed. Not building incremental now; do not invent other hash semantics that
+would block that.
+
+### Repository-wide diagnostics view
+
+**Settled — in scope.** Flat, working-through-able list of every `Conflict` and
+every `Unresolved` call site in the loaded map. Each row carries at least:
+target kind, `call_path`, reason string, enclosing `FunctionId`, file path,
+line, `from_macro`; conflict rows also list every candidate `FunctionId`.
+Click → jump to that function in the tree and open the source panel.
+
+*Why:* the tool’s job is auditing the analyser; this list **is** the audit
+worklist. It is the interactive form of the pass documented in
+[`unresolved-analysis.md`](../unresolved-analysis.md) (correct / miscategorised /
+real gap), which previously needed out-of-repo helpers over 1,533 RA sites.
 
 ### Rough edges from the old viewer
 
@@ -351,24 +460,7 @@ questions.
 | No virtualization | **Defer** unless reviewing RA/tokio-scale maps in-browser |
 | Weak a11y | **Defer** |
 | String-built HTML | Prefer escaping as today; typed widgets not required for a maybe-temporary tool |
-| CallSite `byte_*` unused in old viewer | Still unused for display chrome; used server-side for optional call-range highlight later if cheap |
-
-### Repository-wide diagnostics view (recommendation)
-
-**Previously:** deferred (with reverse lookup and editor deep-links).
-
-**Recommendation under review framing:** **pull into scope** as a dedicated
-phase after source + live analyse work. A flat list of every `conflict` and
-every `unresolved` across the repository (call path, reason, enclosing
-`FunctionId`, file, line, `from_macro`, jump into tree + source) is exactly the
-workflow behind [`unresolved-analysis.md`](../unresolved-analysis.md), which
-today required out-of-repo helpers and manual source checks on 1,533 RA sites.
-
-*Why valuable:* classifications there (correct / miscategorised / real gap)
-were done by grouping unresolved reasons and reading source. The UI should make
-that pass interactive. *Not approved yet* — flagged under Open questions.
-Suggested minimum columns: target kind, `call_path`, reason, `from_macro`,
-function id, file path, line; click → expand that function with source.
+| CallSite `byte_*` unused in old viewer | Still unused for inline source mark-up (deferred); available if that idea is revived |
 
 ### Decisions made under the production framing
 
@@ -378,28 +470,17 @@ explicit:
 | Decision | Production rationale | Under temporary-review framing |
 |---|---|---|
 | First-class versioned in-repo UI | Ship with the product | Still fine as the review harness; do not invest in packaging/release polish |
-| Five-crate layout + `horizon-server` | Clean product boundaries | Already landing; keep — splitting cost is sunk |
+| Five-crate layout + `horizon-server` | Clean product boundaries | **Landed** (`ec73c02`); keep |
 | Faithful visual port of Desktop viewer | Brand/consistency | Keep as cheapest path to a usable tree; skip pixel-perfect chase |
 | Production-quality bar | End users | **Demote** — correctness of displayed analysis evidence matters; chrome polish does not |
 | Virtualization / a11y as future needs | Large users, a11y | Defer; virtualization only if owner reviews RA/tokio **in this UI** |
-| Optional `live-analyse` feature in workspace analysis | Compile isolation | **Overridden:** live is required; engine dep is always on |
+| Optional `live-analyse` feature (workspace analysis draft) | Compile isolation | **Resolved:** engine dep is always on; no feature flag |
 
 ## Open questions
 
-1. **Staleness policy for saved maps** — recommendation above (per-file
-   `content_hash` + refuse stale slices). Owner has not closed this.
-2. **Repository-wide diagnostics view** — recommended in-scope; needs explicit
-   yes/no before that phase starts.
-3. **Per-file `content_hash` field** — needed if staleness recommendation is
-   accepted; exact algorithm (sha256 of bytes) and serde name.
-4. **Function range extent** — full `ast::Fn` syntax node (recommended) vs
-   body-only vs `fn` keyword through body. Affects what the audit panel shows
-   for attributes / where-clauses.
-5. **Syntax highlighting in the source panel** — plain `<pre>` is enough for
-   v1; branch had a tiny custom highlighter. Defer unless reading plain text
-   slows review.
-6. **Whether to keep the UI after the audit pass** — product vs delete; do not
-   let that uncertainty block the review phases.
+1. **Whether to keep the UI after the audit pass** — keep as a standing local
+   tool, or delete once the analyser review is done. Do not let that uncertainty
+   block the review phases. This is the only remaining open question.
 
 ## Deferred scope
 
@@ -407,12 +488,15 @@ explicit:
 |---|---|
 | Reverse caller lookup | Still deferred |
 | Click-to-open-in-editor | Still deferred |
+| **Inline call-site spans in the source panel** | Not chosen for v1. Would mark each extracted `CallSite`’s `[byte_start, byte_end)` inside the highlighted source so the auditor sees *exactly which spans* Horizon treated as calls — high audit value, separate from “show the function text”. Revisit after the basic source panel works. |
+| Trim leading outer docs from the displayed source slice | Optional polish only. The recorded `byte_*` range stays the full `ast::Fn` node; a display-time skip of outer doc attributes would remove the accepted docs duplication without hiding `#[cfg]`. Not required for v1. |
 | Virtualization | Needed **if** the owner reviews rust-analyzer / tokio maps in-browser and the tree becomes unusable; not needed for Horizon-self and fixture maps |
 | Accessibility beyond button/focus-visible | Solo local tool |
 | Dependency graph / `Crate.roots` display | Not needed for call-site audit |
 | Light theme | No |
-| Embedding highlighted source in JSON | Rejected for this architecture (see Decisions) |
+| Embedding highlighted source in JSON | Rejected — disk slice + hash instead (see Decisions) |
 | Configurable bind address | Blocked on path lockdown |
+| Incremental analysis | Out of scope; `content_hash` shaped for it |
 
 ---
 
@@ -420,21 +504,22 @@ explicit:
 
 Build **vertically**: each phase is a thin end-to-end slice that leaves the tree
 compiling and something checkable in a browser. Groundwork (workspace + server
-skeleton) is done.
+skeleton, `ec73c02`) is done.
 
 Phases are ordered by **review value**, not by “finish the faithful port
-before any new feature.”
+before any new feature.” Diagnostics is a **primary deliverable**, so it is
+scheduled as soon as a map is on screen — not after source and live analyse.
 
 ### Parallelism map
 
 | Can overlap | Collision risk |
 |---|---|
-| **A** (static viewer + JSON load) ‖ **B** (`Function` byte ranges in map + extract) | **Low** — A touches `horizon-server/web/*` + server static routes; B touches `horizon-map` + `horizon-engine/extract` + json-output docs/tests. Do not both edit `horizon-server` `Cargo.toml` carelessly. |
-| **C** (source panel) needs **A** + **B** | Sequential after both |
-| **D** (live analyse) can start after **A** (needs routes); independent of **B**/**C** at first, but the useful review loop is A+B+C+D together | May edit same `main.rs` / router as C — **serialize C and D** or split modules first (`routes.rs` vs `static.rs`) |
-| **E** (staleness / hash) needs **B** + **C** | After C |
-| **F** (diagnostics view) needs **A**; much better after **C** | After C; approval gate |
-| **G** (jump + error-chrome fixes) can ride with **A** or a tiny follow-up | Same JS files as A — fold into A if cheap, else immediately after A |
+| **A** (static viewer + JSON load) ‖ **B** (`Function` byte ranges + `File.content_hash` in map + extract) | **Low** — A touches `horizon-server/web/*` + server static routes; B touches `horizon-map` + `horizon-engine/extract` + json-output docs/tests. |
+| **F** (diagnostics list) after **A**; ‖ **B** | **Low** with B — F is almost entirely `viewer.js` / CSS. Same JS files as A: either fold F into the end of A or take A first then F immediately. |
+| **C** (source panel) needs **A** + **B**; then wires F → source | After A+B; edits server router + JS — **serialize with D** or split modules (`routes.rs` / `static.rs` / `source.rs`) |
+| **D** (live analyse) after **A** | Same router files as C — serialize or split modules first |
+| **E** (staleness gate) needs **B** + **C** | After C; hash field itself is populated in B |
+| **G** (jump + error-chrome) | Fold into A if cheap |
 
 ### Phase A — Map on screen from saved JSON
 
@@ -444,7 +529,8 @@ visible in a browser.
 
 **Touches:** `crates/horizon-server/web/*` (new),
 [`crates/horizon-server/src/main.rs`](../../crates/horizon-server/src/main.rs)
-(+ static file routing), optionally `POST /api/map` for server-side validate.
+(+ static file routing, browser open), optionally `POST /api/map` for
+server-side validate.
 
 **Demo:** `cargo run -p horizon-server` → browser opens → Open JSON… on
 `tests/fixtures` output or a CLI-produced map → expand a conflict site (e.g.
@@ -461,41 +547,84 @@ counters in the summary bar.
 fixing jump-to-id brute force here while `viewer.js` is being adapted (**G**
 can be absorbed).
 
-### Phase B — `Function` byte ranges in the contract
+### Phase B — `Function` byte ranges + `File.content_hash`
 
 **Goal:** Every `Function` in emitted JSON carries `byte_start` / `byte_end`
-populated by extract.
+spanning the **full `ast::Fn` syntax node**; every `File` carries
+`content_hash` (SHA-256 hex of file bytes at extract time).
 
-**Touches:** [`map.rs`](../../crates/horizon-map/src/map.rs) `Function`,
+**Range to record:** in [`extract.rs`](../../crates/horizon-engine/src/extract.rs),
+for each free-function `ast::Fn` (`func`), set
+`byte_start = u32::from(func.syntax().text_range().start())` and
+`byte_end = u32::from(func.syntax().text_range().end())`. That `SyntaxNode`
+range includes outer attributes, outer doc comments, signature, and body — the
+settled extent (see Decisions). Do not use `fn_token().text_range()` or the
+body block alone.
+
+**Touches:** [`map.rs`](../../crates/horizon-map/src/map.rs) `Function` + `File`,
 [`json.rs`](../../crates/horizon-map/src/json.rs) sample/tests,
 [`extract.rs`](../../crates/horizon-engine/src/extract.rs),
 [`json-output.md`](../json-output.md), any oracle/fixtures that round-trip full
-function objects.
+function/file objects.
 
-**Demo:** CLI map of a fixture; jq/assert a known function’s range matches a
-manual byte count on that file.
+**Demo:** CLI map of a fixture that has `#[cfg]` (or docs) above a free `fn`;
+jq/assert the function’s `[byte_start, byte_end)` slice starts at the first
+attribute or doc line (not at `fn`) and a known file’s hash matches SHA-256 of
+its bytes.
 
 **Verify:** unit test in extract or map round-trip; `cargo test -p horizon-map
 -p horizon-engine`; spot-check fixture `glob_ambiguity` or `doc_comments`.
 
-**Depends on:** groundwork. **∥ Phase A.**
+**Depends on:** groundwork. **∥ Phase A** (and **∥ Phase F** once A exists).
 
-### Phase C — Source panel (core review loop)
+### Phase F — Repository-wide diagnostics (primary worklist)
 
-**Goal:** Expanding a function shows its real source beside its call sites.
+**Goal:** Flat list of every conflict and unresolved site in the loaded map,
+with reasons and (for conflicts) all candidate ids, so the owner can work the
+audit systematically.
 
-**Touches:** `GET /api/source` in `horizon-server`; `viewer.js` / CSS for a
-source block under the function node; path sandbox against `map.root`.
+**Why this early:** the worklist needs only an in-memory `Repository` — not byte
+ranges, not disk source. Moving it before the source panel gets the owner
+triaging incomplete edges as soon as a map is loadable. Source click-through is
+wired when Phase C lands (progressive enhancement: F ships with tree-jump
+first).
 
-**Demo:** load Horizon’s own map (saved or from A); expand
-`extract_facts` (or similar); confirm the displayed text is the function body
-from disk and that listed `call_sites` appear in that text.
+**Touches:** mostly `viewer.js` / CSS (client-side walk of the loaded map).
 
-**Verify:** server unit/integration test with a tiny temp file + known range;
-browser check on a fixture; intentional out-of-range / missing-file returns
-structured errors.
+**Demo:** load a conflict-bearing fixture or
+`%TEMP%\horizon-scale-results\ripgrep-after.json`; open Diagnostics; confirm
+row count equals `summary.conflicts + summary.unresolved`; click a row → tree
+jumps to the enclosing function.
 
-**Depends on:** A + B.
+**Verify:** listed unresolved count == `summary.unresolved`; same for
+conflicts; spot-check a known example from
+[`unresolved-analysis.md`](../unresolved-analysis.md).
+
+**Depends on:** A. **∥ B.** Source panel link depends on C (add in C or a
+tiny C follow-up).
+
+### Phase C — Highlighted source panel (core review loop)
+
+**Goal:** Expanding a function (or clicking a diagnostics row) shows
+server-highlighted source beside its call sites (full `ast::Fn` slice from
+Phase B, including attributes and docs).
+
+**Touches:** `GET /api/source` in `horizon-server` — read file, slice
+`[byte_start, byte_end)`, lex with `ra_ap_syntax`, return `tokens`; path
+sandbox against `map.root`; `viewer.js` / CSS for `.tok-*` and the source
+block; wire diagnostics row → source. Hash verification against
+`expected_hash` / `File.content_hash` may land here or in Phase E; if deferred
+to E, C still returns tokens when the file and range are valid.
+
+**Demo:** load Horizon’s own map; expand `extract_facts` (or similar); confirm
+highlighted text matches the full item on disk (attrs/docs/signature/body) and
+listed `call_sites` appear in that text; from Diagnostics, click an unresolved
+row and land on the same panel.
+
+**Verify:** server test with a tiny temp file + known range → expected token
+classes; browser check on a fixture; missing-file / bad-range structured errors.
+
+**Depends on:** A + B. Completes F’s source link.
 
 ### Phase D — Live in-process analyse
 
@@ -506,7 +635,8 @@ the result without a pre-saved file.
 control for path + Analyse; engine already a dependency.
 
 **Demo:** point at `tests/fixtures/glob-ambiguity` (or repo root); map appears;
-re-run after a no-op to confirm latency acceptable for fixtures.
+diagnostics list refreshes; re-run after a no-op to confirm latency acceptable
+for fixtures.
 
 **Verify:** request against fixture path returns JSON with `crates.len() >= 1`;
 browser round-trip; ensure no subprocess to CLI (code review / grep).
@@ -517,39 +647,17 @@ route modules first to allow parallel completion.
 ### Phase E — Staleness gate for saved-map source
 
 **Goal:** Source panel refuses silently-wrong slices when the file changed since
-the map was built.
+the map was built (`content_hash` already emitted by B).
 
-**Touches:** `File.content_hash` (or chosen field) in `horizon-map` + extract;
-`/api/source` hash check; UI banner for `stale` / `missing`.
+**Touches:** `/api/source` hash check (if not fully done in C); UI banner for
+`stale` / `missing`.
 
 **Demo:** build map of a fixture; edit the `.rs` file without re-analysing; open
 source → banner, no misleading body; re-analyse → source works again.
 
-**Verify:** automated test with temp dir; hash mismatch → 409/400 + error kind.
+**Verify:** automated test with temp dir; hash mismatch → 4xx + `stale`.
 
-**Depends on:** B + C. **Blocked on Open question 1** — if owner picks
-live-only source, shrink this phase to “source disabled for saved JSON” UI copy
-instead.
-
-### Phase F — Repository-wide diagnostics (recommended)
-
-**Goal:** One list of every conflict and unresolved site in the loaded map, with
-reasons, for systematic audit (pairs with
-[`unresolved-analysis.md`](../unresolved-analysis.md)).
-
-**Touches:** mostly `viewer.js` / CSS (client-side walk of the in-memory map);
-optional trivial server noop.
-
-**Demo:** load `%TEMP%\horizon-scale-results\ripgrep-after.json` (or RA map);
-open Diagnostics; filter unresolved; click a row → function opens with source
-(if C done) and the site highlighted by line.
-
-**Verify:** count of listed unresolved equals `summary.unresolved`; same for
-conflicts; spot-check a known miscategorised example from the unresolved-analysis
-doc.
-
-**Depends on:** A; **should** follow C. **Blocked on Open question 2 (owner
-yes/no).**
+**Depends on:** B + C. Policy is settled — no approval gate.
 
 ### Phase G — Jump + error chrome (if not absorbed in A)
 
@@ -562,18 +670,19 @@ yes/no).**
 ### Explicitly not phased for v1
 
 Virtualization, a11y pass, dependency graph, editor deep links, reverse
-callers, syntax-highlight token port from `my-local-name`, configurable bind.
+callers, inline call-site span mark-up in the source panel, embedding source in
+JSON, configurable bind, incremental analysis.
 
 ---
 
 ## Phase order (compact)
 
 ```
-A  Saved JSON viewer on screen          ┐
-B  Function byte_start/byte_end         ┘  parallel
-C  Source panel                         ← after A+B   ★ core review
-D  Live analyse                         ← after A; serialize w/ C on server router
-E  Staleness / content_hash             ← after C (+ owner OK on policy)
-F  Repo-wide diagnostics (recommended)  ← after C (+ owner yes)
-G  Jump/error fixes                     ← fold into A if possible
+A  Saved JSON viewer on screen (+ browser open, static, optional POST /api/map)
+B  Function byte_* = full ast::Fn text_range(); File.content_hash   ∥ A
+F  Repo-wide diagnostics (tree jump)       ← after A; ∥ B   ★ primary worklist
+C  GET /api/source → highlighted tokens (+ F→source)   ← after A+B
+D  POST /api/analyse (live)                ← after A; serialize w/ C on server router
+E  Staleness gate on /api/source (hash)    ← after B+C
+G  Jump/error fixes                        ← fold into A if possible
 ```
