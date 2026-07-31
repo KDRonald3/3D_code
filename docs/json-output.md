@@ -116,7 +116,7 @@ absent.
 |---|---|---|---|
 | `path` | string (absolute path) | no | Source file on disk |
 | `module_path` | string | no | Module path of this file (`"crate"`, `"crate::shapes"`, …) |
-| `content_hash` | string | no | Lowercase hex-encoded SHA-256 (64 hex digits, no algorithm prefix) of the **raw file bytes** as read from disk at extract time — no newline normalisation. On Windows a CRLF edit changes the digest. A consumer that slices source by `Function.byte_*` must re-hash the path and refuse to slice on mismatch. Algorithm is SHA-256 by this contract; switching later would be a wire-format bump |
+| `content_hash` | string | no† | Lowercase hex-encoded SHA-256 (64 hex digits, no algorithm prefix) of the **raw file bytes** as read from disk at extract time — no newline normalisation. On Windows a CRLF edit changes the digest. A consumer that slices source by `Function.byte_*` must re-hash the path and refuse to slice on mismatch. Algorithm is SHA-256 by this contract; switching later would be a wire-format bump. Empty string means the hash is unavailable (see [Backward compatibility](#backward-compatibility-byte_start-byte_end-content_hash)) |
 | `functions` | array of `Function` | no | Free functions defined in this file |
 | `call_sites` | array of `CallSite` | no | Calls **outside** any free function (e.g. `const` / `static` init). Empty when every path-form call sits inside a function. Never holds calls from `impl` / `trait` items |
 | `doc_comments` | array of `DocComment` | no | Inner module docs (`//!`, `/*! … */`, `#![doc = "…"]`) |
@@ -131,10 +131,13 @@ absent.
 | `name` | string | no | Function name as written |
 | `module_path` | string | no | Full path including name, with a leading `crate` segment (e.g. `"crate::shapes::get"`). Distinct from `id`, which substitutes the crate key for `crate` |
 | `line` | number (u32) | no | 1-based line of the `fn` keyword |
-| `byte_start` | number (u32) | no | UTF-8 byte offset of the start of this free-function item in the file |
-| `byte_end` | number (u32) | no | UTF-8 byte offset one past the end of this free-function item |
+| `byte_start` | number (u32) | no† | UTF-8 byte offset of the start of this free-function item in the file |
+| `byte_end` | number (u32) | no† | UTF-8 byte offset one past the end of this free-function item |
 | `call_sites` | array of `CallSite` | no | Outgoing call edges in **source order** |
 | `doc_comments` | array of `DocComment` | no | Outer docs (`///`, `/** … */`, `#[doc = "…"]`) |
+
+† Always serialised by a fresh extract. Absent only in maps written before these
+fields existed; see [Backward compatibility](#backward-compatibility-byte_start-byte_end-content_hash).
 
 The `byte_start` / `byte_end` range is the full `ast::Fn` syntax node: outer
 attributes (`#[cfg]`, `#[inline]`, …), outer doc comments, signature, and body.
@@ -144,6 +147,25 @@ Doc comment text therefore appears both inside this range and separately in
 `doc_comments`; that duplication is accepted.
 
 Methods and `impl` items never appear as `Function` nodes.
+
+### Backward compatibility (`byte_start` / `byte_end` / `content_hash`)
+
+These three fields were added after the first saved maps. Older JSON that omits
+them still deserialises: missing `byte_start` / `byte_end` become `0`, and a
+missing `content_hash` becomes `""`. Fresh extracts always write real values
+(the fields are never omitted on write).
+
+Consumers must treat the defaults as **unavailable**, not as valid source
+coordinates:
+
+- A **zero-length** function range (`byte_start == byte_end == 0`) means the
+  map predates source slicing. Do not open a source panel or index into the
+  file with those offsets. A real function can start at byte `0`, but its
+  syntax node can never have zero length — that is what makes the sentinel
+  unambiguous.
+- An **empty** `content_hash` means the map predates content hashing. Do not
+  attempt staleness checks against the on-disk file; there is nothing to
+  compare. A real digest is always 64 lowercase hex digits.
 
 ---
 

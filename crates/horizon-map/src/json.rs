@@ -211,6 +211,66 @@ mod tests {
         assert_ne!(id, other);
     }
 
+    /// Maps saved before `byte_start` / `byte_end` / `content_hash` existed
+    /// must still deserialise. The literal below is the old shape on purpose:
+    /// those three fields are omitted so the defaults stay pinned.
+    #[test]
+    fn pre_byte_range_map_deserialises_with_unavailable_sentinels() {
+        let json = r#"{
+  "root": "/tmp/example",
+  "crates": [
+    {
+      "name": "text-engine",
+      "rustc_name": "text_engine",
+      "is_library": true,
+      "edition": "2021",
+      "roots": ["/tmp/example/src/lib.rs"],
+      "dependencies": [],
+      "folders": [],
+      "files": [
+        {
+          "path": "/tmp/example/src/lib.rs",
+          "module_path": "crate",
+          "functions": [
+            {
+              "id": "text_engine::run",
+              "name": "run",
+              "module_path": "crate::run",
+              "line": 3,
+              "call_sites": [],
+              "doc_comments": []
+            }
+          ],
+          "call_sites": [],
+          "doc_comments": []
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "conflicts": 0,
+    "unresolved": 0,
+    "external_dropped": 0,
+    "constructor_dropped": 0,
+    "associated_dropped": 0
+  }
+}"#;
+
+        let repo = map_from_slice(json.as_bytes()).expect("old map shape must deserialise");
+        let file = &repo.crates[0].files[0];
+        assert_eq!(
+            file.content_hash, "",
+            "absent content_hash means source hash unavailable"
+        );
+        let function = &file.functions[0];
+        assert_eq!(function.byte_start, 0);
+        assert_eq!(function.byte_end, 0);
+        assert_eq!(
+            function.byte_start, function.byte_end,
+            "zero-length range is the unavailable sentinel"
+        );
+    }
+
     #[test]
     fn each_call_target_variant_has_stable_json_shape() {
         let resolved = serde_json::to_value(CallTarget::Resolved(FunctionId::from_parts(

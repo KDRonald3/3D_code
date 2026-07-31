@@ -313,6 +313,14 @@ pub struct File {
     /// and refuse to slice on mismatch rather than silently serving text from
     /// stale offsets. Format: lowercase hex, 64 digits, no algorithm prefix
     /// (see [`crate::content_hash`]); the algorithm is SHA-256 by contract.
+    ///
+    /// Deserialises to `""` when absent so maps written before this field
+    /// existed still load. An empty string is the unavailable sentinel — a
+    /// real digest is always 64 hex digits — so a consumer must treat `""` as
+    /// "cannot verify staleness" rather than as a hash of empty content.
+    /// Fresh extracts always emit a real digest; the default exists only for
+    /// reading old documents.
+    #[serde(default)]
     pub content_hash: String,
     pub functions: Vec<Function>,
     /// Call sites outside any free function (e.g. `const` / `static`
@@ -452,8 +460,22 @@ pub struct Function {
     /// attributes. Doc text therefore appears both in a source-panel slice of
     /// this range and separately in [`doc_comments`]; that duplication is
     /// accepted rather than dropping attributes from the range.
+    ///
+    /// Deserialises to `0` when absent so maps written before this field
+    /// existed still load. Together with [`byte_end`], a zero-length range
+    /// (`byte_start == byte_end == 0`) is the unavailable sentinel: a real
+    /// function can start at byte 0, but its syntax node can never have
+    /// zero length, so the pair is unambiguous. A consumer must treat that
+    /// sentinel as "source slice unavailable" rather than as a valid offset.
+    /// Fresh extracts always emit a real range; the default exists only for
+    /// reading old documents.
+    #[serde(default)]
     pub byte_start: u32,
     /// Byte offset (UTF-8) one past the end of this free-function item.
+    ///
+    /// See [`byte_start`] for the zero-length unavailable sentinel shared by
+    /// both ends when deserialising maps that predate these fields.
+    #[serde(default)]
     pub byte_end: u32,
     /// Outgoing call sites in source order. Each ends at a [`CallTarget`].
     pub call_sites: Vec<CallSite>,
