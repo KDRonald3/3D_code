@@ -2168,18 +2168,19 @@
       name.textContent = node.name;
       el.appendChild(name);
 
-      const meta = document.createElement("span");
-      meta.className = "fns-node-meta";
+      // Named metaEl so it does not TDZ-shadow the neighborhood `meta` above.
+      const metaEl = document.createElement("span");
+      metaEl.className = "fns-node-meta";
       if (node.kind === "function") {
-        meta.textContent = node.external
+        metaEl.textContent = node.external
           ? `${basename(node.filePath) || "other file"} · L${node.line}`
           : `L${node.line}`;
       } else if (node.kind === "conflict") {
-        meta.textContent = `${node.candidates?.length || 0} candidates · L${node.line}`;
+        metaEl.textContent = `${node.candidates?.length || 0} candidates · L${node.line}`;
       } else {
-        meta.textContent = node.reason || "analyser could not resolve";
+        metaEl.textContent = node.reason || "analyser could not resolve";
       }
-      el.appendChild(meta);
+      el.appendChild(metaEl);
 
       if (node.kind !== "function") {
         const kind = document.createElement("span");
