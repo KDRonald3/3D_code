@@ -11,3 +11,6 @@
 
 # Generated maps and screenshots used while developing the viewer
 /crates/horizon-server/testdata/
+
+# Compiled report; the .tex source is tracked instead
+/docs/horizon-report.pdf
