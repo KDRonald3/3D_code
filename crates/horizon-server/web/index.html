@@ -26,7 +26,6 @@
         <span class="frame-stats" id="frame-stats" hidden></span>
         <button type="button" id="switch-project" class="text-btn" hidden>Switch project</button>
         <button type="button" id="toggle-theme" class="icon-btn" title="Theme">☾</button>
-        <!-- SEAM: Inspector toggle — Slice 2 attaches the right panel here. -->
         <button type="button" id="toggle-right" class="icon-btn" title="Toggle inspector panel" hidden>☰</button>
       </div>
     </header>
@@ -77,8 +76,7 @@
             <button type="button" class="page-btn" data-page="diff" disabled title="Stub — Diff not in Slice 1"><span class="page-ico">◈</span>Diff · PR #142</button>
             <!-- SEAM: Functions page opens the bottom function DAG (later slice). -->
             <button type="button" class="page-btn" data-page="fns" disabled title="Seam — bottom function DAG not in Slice 1"><span class="page-ico fn">ƒ</span>Functions<span class="page-trail">⊟</span></button>
-            <!-- SEAM: Data structures unavailable (methods/impl out of scope). -->
-            <button type="button" class="page-btn" data-page="ds" disabled title="Unavailable — types/impl out of map scope"><span class="page-ico ds">⬚</span>Data structures<span class="page-trail">⊟</span></button>
+            <!-- Data structures omitted until the analyser emits structs (owner decision). -->
           </div>
 
           <div class="divider"></div>
@@ -152,15 +150,14 @@
         <div id="right-rail" class="resize-rail right-rail" hidden></div>
 
         <!--
-          SEAM: Inspector panel (right aside, default 316px).
-          Later slice: identity → docs → Source (/api/source tokens) → references.
-          Selection precedence: selectedSym → file. Wire callers/callees from
-          inverted CallSite index; Conflict chips expand candidates.
+          Inspector (right aside, default 316px).
+          Selection precedence: selected function → file.
+          SEAM: bottom Diagnostics tab (Slice 3) and function DAG (Slice 4) call
+          into the same selectFunction / selectFile pipeline.
         -->
         <aside id="right-aside" class="right-aside" hidden>
-          <div class="inspector-placeholder">
-            <div class="section-label">Inspector</div>
-            <p class="muted">Not in Slice 1 — selection is on the map and in Layers.</p>
+          <div id="inspector" class="inspector">
+            <div class="insp-empty muted">Select a file on the map or in Layers.</div>
           </div>
         </aside>
       </div>

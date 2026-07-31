@@ -362,10 +362,10 @@ Disagree with a 3-week floor only if Slice 1 is incomplete or layout for
 
 ## Owner decisions before Slice 2
 
-1. **Confirm diagnostics home** — bottom Diagnostics tab + card/Layers badges
-   (this doc’s recommendation), or a full-viewport overlay instead.
-2. **Data structures Page** — omit from Pages entirely until the analyser
-   emits types, or keep a disabled entry with honest empty copy?
+1. **Diagnostics home** — **Settled:** bottom Diagnostics tab beside Functions
+   (this doc’s recommendation), with card/Layers badges as secondary filters.
+2. **Data structures Page** — **Settled:** omit entirely until the analyser
+   emits structs. No disabled placeholder.
 3. **Slice 1 layout acceptance** — is “readable on Horizon-self / fixtures”
    enough to start Inspector, with scale layout as follow-up?
 4. **Hard-cut the tree** — Slice 1 removes Tree|Diagnostics; no dual Tree/Map

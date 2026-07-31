@@ -21,6 +21,8 @@
   const DRAG_MOVE = 5;
   const LEFT_DEFAULT = 236;
   const LEFT_MIN = 180;
+  const RIGHT_DEFAULT = 316;
+  const RIGHT_MIN = 240;
 
   const els = {
     app: document.getElementById("app"),
@@ -42,6 +44,8 @@
     leftAside: document.getElementById("left-aside"),
     leftRail: document.getElementById("left-rail"),
     rightAside: document.getElementById("right-aside"),
+    rightRail: document.getElementById("right-rail"),
+    inspector: document.getElementById("inspector"),
     layerSearch: document.getElementById("layer-search"),
     layerRows: document.getElementById("layer-rows"),
     filterChips: document.getElementById("filter-chips"),
@@ -74,6 +78,13 @@
   let collapsed = new Set();
   /** @type {string|null} */
   let selectedId = null;
+  /** @type {string|null} selected FunctionId, or null when inspecting a file */
+  let selectedFnId = null;
+  /** @type {Map<string, {fn: object, file: object, fileId: string}>} */
+  let fnIndex = new Map();
+  /** Selection history for Back after following call targets. */
+  /** @type {{fileId: string|null, fnId: string|null}[]} */
+  let selHistory = [];
   /** @type {string|null} */
   let hoverId = null;
   let zoom = 1;
@@ -81,12 +92,16 @@
   let panY = 0;
   let leftOpen = true;
   let leftW = LEFT_DEFAULT;
+  let rightOpen = true;
+  let rightW = RIGHT_DEFAULT;
   let dark = false;
   let userSetTheme = false;
   let filters = { entry: true, file: true };
   let query = "";
   let worldW = 1360;
   let worldH = 600;
+  /** Bumps on each source fetch so stale responses are ignored. */
+  let sourceFetchGen = 0;
 
   // Pan / drag state
   let panDrag = null;
@@ -139,6 +154,44 @@
     els.leftRail.style.left = `${leftW - 5}px`;
   }
 
+  function setRightWidth(w) {
+    rightW = w;
+    els.app.style.setProperty("--right-w", `${rightW}px`);
+    els.rightRail.style.right = `${rightW - 5}px`;
+  }
+
+  function setRightOpen(open) {
+    rightOpen = open;
+    els.rightAside.hidden = false;
+    els.rightAside.classList.toggle("collapsed", !rightOpen);
+    els.rightRail.hidden = !rightOpen;
+  }
+
+  function relativePath(absPath) {
+    const root = currentMap?.root ? String(currentMap.root).replace(/\\/g, "/") : "";
+    const p = String(absPath || "").replace(/\\/g, "/");
+    if (root && p.toLowerCase().startsWith(root.toLowerCase())) {
+      const rest = p.slice(root.length).replace(/^\//, "");
+      return rest || p;
+    }
+    return p;
+  }
+
+  function joinDocs(docs) {
+    if (!docs || !docs.length) return "";
+    return docs.map((d) => String(d.text || "")).join("\n\n");
+  }
+
+  function lineSpanFromTokens(startLine, tokens) {
+    let n = 0;
+    for (const pair of tokens || []) {
+      const text = Array.isArray(pair) ? String(pair[0] ?? "") : "";
+      for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n += 1;
+    }
+    const end = startLine + n;
+    return end > startLine ? `L${startLine}–${end}` : `L${startLine}`;
+  }
+
   // —— Map indexing ——
 
   function countKinds(sites) {
@@ -184,13 +237,15 @@
   }
 
   /**
-   * Flatten Repository → FileNode[] and build FunctionId → file-id index.
+   * Flatten Repository → FileNode[] and build FunctionId indexes.
    */
   function flattenMap(map) {
     /** @type {FileNode[]} */
     const nodes = [];
     /** @type {Map<string, string>} functionId → fileNodeId */
     const fnOwner = new Map();
+    /** @type {Map<string, {fn: object, file: object, fileId: string}>} */
+    const index = new Map();
 
     const crates = [...(map.crates || [])].sort((a, b) => {
       const an = String(a.name || "");
@@ -227,7 +282,11 @@
         };
         nodes.push(node);
         for (const fn of file.functions || []) {
-          if (fn.id) fnOwner.set(String(fn.id), id);
+          if (fn.id) {
+            const fid = String(fn.id);
+            fnOwner.set(fid, id);
+            index.set(fid, { fn, file, fileId: id });
+          }
         }
       };
 
@@ -258,7 +317,7 @@
       for (const folder of folders) walkFolder(folder);
     }
 
-    return { nodes, fnOwner };
+    return { nodes, fnOwner, index };
   }
 
   /**
@@ -806,8 +865,7 @@
     els.brandSub.hidden = false;
     els.switchProject.hidden = false;
     els.toggleLeft.hidden = false;
-    // Inspector toggle stays hidden until Slice 2; seam is in HTML.
-    els.toggleRight.hidden = true;
+    els.toggleRight.hidden = false;
 
     const crateN = (currentMap?.crates || []).length;
     const conflictN = summary.conflicts ?? 0;
@@ -836,15 +894,494 @@
     updateWorldTransform();
   }
 
-  function selectFile(id, { reveal }) {
+  function snapshotSelection() {
+    return { fileId: selectedId, fnId: selectedFnId };
+  }
+
+  function pushHistory() {
+    const snap = snapshotSelection();
+    if (!snap.fileId && !snap.fnId) return;
+    const top = selHistory[selHistory.length - 1];
+    if (top && top.fileId === snap.fileId && top.fnId === snap.fnId) return;
+    selHistory.push(snap);
+    if (selHistory.length > 64) selHistory.shift();
+  }
+
+  /**
+   * Select a file card. Clears function selection unless keepFn and the fn
+   * still belongs to this file.
+   */
+  function selectFile(id, { reveal = false, push = false, keepFn = false } = {}) {
+    if (push) pushHistory();
     selectedId = id;
-    if (reveal) revealCard(id);
+    if (!keepFn) selectedFnId = null;
+    if (reveal && id) revealCard(id);
+    setRightOpen(true);
     refreshFocus();
+    renderInspector();
+  }
+
+  /**
+   * Select a function by FunctionId — core audit jump.
+   * Selects its owning file card, reveals it, opens Inspector on the fn.
+   */
+  function selectFunction(fnId, { reveal = true, push = true } = {}) {
+    const entry = fnIndex.get(String(fnId));
+    if (!entry) return false;
+    if (push) pushHistory();
+    selectedId = entry.fileId;
+    selectedFnId = String(fnId);
+    if (reveal) revealCard(entry.fileId);
+    setRightOpen(true);
+    refreshFocus();
+    renderInspector();
+    return true;
+  }
+
+  function goBack() {
+    const prev = selHistory.pop();
+    if (!prev) return;
+    selectedId = prev.fileId;
+    selectedFnId = prev.fnId;
+    if (selectedId) revealCard(selectedId);
+    setRightOpen(true);
+    refreshFocus();
+    renderInspector();
+  }
+
+  // —— Inspector ——
+
+  const SOURCE_MESSAGES = {
+    loading: "Loading source…",
+    stale:
+      "This file changed on disk since analysis — source not shown. Re-analyse to refresh the map.",
+    missing: "Source file is missing on disk.",
+    unverifiable:
+      "Source cannot be verified — this map predates content hashing.",
+    no_source:
+      "No source range on this function (map predates byte_start/byte_end).",
+    not_in_map: "Path is not in the loaded map — source refused.",
+    no_map: "No map loaded on the server — cannot fetch source.",
+    range: "Source byte range is invalid or empty.",
+    bad_request: "Source request was malformed.",
+  };
+
+  function sourceUnavailableReason(fn, file) {
+    const start = fn.byte_start ?? 0;
+    const end = fn.byte_end ?? 0;
+    if (start === 0 && end === 0) return "no_source";
+    if (!(file.content_hash || "")) return "unverifiable";
+    return null;
+  }
+
+  function renderTokens(tokens) {
+    const pre = document.createElement("pre");
+    pre.className = "source-well";
+    const code = document.createElement("code");
+    for (const pair of tokens || []) {
+      const text = Array.isArray(pair) ? String(pair[0] ?? "") : "";
+      const cls = Array.isArray(pair) ? String(pair[1] ?? "") : "";
+      const span = document.createElement("span");
+      span.className = cls ? `tok-${cls}` : "tok";
+      span.textContent = text;
+      code.appendChild(span);
+    }
+    pre.appendChild(code);
+    return pre;
+  }
+
+  function setSourceHost(host, state, detail) {
+    host.replaceChildren();
+    const metaEl = host._metaEl;
+    if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
+    if (state === "served") {
+      host.appendChild(renderTokens(detail.tokens));
+      return;
+    }
+    const banner = document.createElement("div");
+    banner.className = `source-banner ${state}`;
+    banner.textContent =
+      SOURCE_MESSAGES[state] ||
+      detail.message ||
+      SOURCE_MESSAGES.bad_request ||
+      "Failed to load source.";
+    if (state === "error" && detail.message) banner.textContent = detail.message;
+    host.appendChild(banner);
+  }
+
+  async function fetchSourceInto(host, file, fn) {
+    const filePath = String(file.path || "");
+    const start = fn.byte_start ?? 0;
+    const end = fn.byte_end ?? 0;
+    const hash = file.content_hash || "";
+    const name = basename(filePath) || filePath;
+    let meta = `${name} · L${fn.line}`;
+
+    const early = sourceUnavailableReason(fn, file);
+    if (early) {
+      setSourceHost(host, early, { meta });
+      return;
+    }
+
+    const gen = ++sourceFetchGen;
+    setSourceHost(host, "loading", { meta });
+    const params = new URLSearchParams({
+      path: filePath,
+      byte_start: String(start),
+      byte_end: String(end),
+      expected_hash: hash,
+    });
+    try {
+      const res = await fetch(`/api/source?${params}`);
+      if (gen !== sourceFetchGen) return;
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(body.tokens)) {
+        meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
+        setSourceHost(host, "served", { meta, tokens: body.tokens });
+        return;
+      }
+      const err = body.error || "error";
+      if (SOURCE_MESSAGES[err]) {
+        setSourceHost(host, err, { meta, message: body.message });
+      } else {
+        setSourceHost(host, "error", {
+          meta,
+          message: body.message || `Source request failed (${res.status}).`,
+        });
+      }
+    } catch (e) {
+      if (gen !== sourceFetchGen) return;
+      setSourceHost(host, "error", {
+        meta,
+        message: String(e.message || e),
+      });
+    }
+  }
+
+  function jumpLink(id) {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.dataset.jumpId = id;
+    a.textContent = id;
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      selectFunction(id, { reveal: true, push: true });
+    });
+    return a;
+  }
+
+  function renderTargetEl(target) {
+    const wrap = document.createElement("div");
+    wrap.className = "call-target";
+    if (!target || !target.kind) {
+      wrap.innerHTML = `<span class="raw-id">(missing target)</span>`;
+      return wrap;
+    }
+    if (target.kind === "resolved") {
+      const id = String(target.data || "");
+      wrap.appendChild(document.createTextNode("→ "));
+      if (fnIndex.has(id)) wrap.appendChild(jumpLink(id));
+      else {
+        const span = document.createElement("span");
+        span.className = "raw-id";
+        span.title = "No matching function in this map";
+        span.textContent = id;
+        wrap.appendChild(span);
+      }
+      return wrap;
+    }
+    if (target.kind === "conflict") {
+      const data = target.data || {};
+      const candidates = data.candidates || [];
+      wrap.appendChild(document.createTextNode("→ conflict"));
+      if (data.reason) {
+        const reason = document.createElement("span");
+        reason.className = "reason";
+        reason.textContent = data.reason;
+        wrap.appendChild(reason);
+      }
+      const ul = document.createElement("ul");
+      ul.className = "candidates";
+      for (const raw of candidates) {
+        const id = String(raw);
+        const li = document.createElement("li");
+        if (fnIndex.has(id)) li.appendChild(jumpLink(id));
+        else {
+          const span = document.createElement("span");
+          span.className = "raw-id";
+          span.textContent = id;
+          li.appendChild(span);
+        }
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
+      return wrap;
+    }
+    if (target.kind === "unresolved") {
+      wrap.appendChild(document.createTextNode("→ unresolved"));
+      const reason = target.data?.reason || "";
+      if (reason) {
+        const el = document.createElement("span");
+        el.className = "reason";
+        el.textContent = reason;
+        wrap.appendChild(el);
+      }
+      return wrap;
+    }
+    wrap.innerHTML = `<span class="raw-id">${escapeHtml(JSON.stringify(target))}</span>`;
+    return wrap;
+  }
+
+  function renderCallSites(sites) {
+    const list = document.createElement("ul");
+    list.className = "call-list";
+    for (const site of sites || []) {
+      const kind = site.target?.kind || "unknown";
+      const li = document.createElement("li");
+      li.className = `call-site ${kind}`;
+
+      const line = document.createElement("span");
+      line.className = "call-line";
+      line.textContent = `L${site.line}`;
+
+      const path = document.createElement("span");
+      path.className = "call-path";
+      path.textContent = site.call_path || "";
+
+      const badges = document.createElement("span");
+      badges.className = "call-badges";
+      const kindBadge = document.createElement("span");
+      kindBadge.className = `badge kind-${kind}`;
+      kindBadge.textContent = kind;
+      badges.appendChild(kindBadge);
+      if (site.from_macro) {
+        const m = document.createElement("span");
+        m.className = "badge macro";
+        m.title = "Recovered from macro token tree";
+        m.textContent = "macro";
+        badges.appendChild(m);
+      }
+      path.appendChild(badges);
+
+      li.appendChild(line);
+      li.appendChild(path);
+      li.appendChild(renderTargetEl(site.target));
+      list.appendChild(li);
+    }
+    return list;
+  }
+
+  function makeSection(label, bodyEl, metaText) {
+    const sec = document.createElement("div");
+    sec.className = "insp-section";
+    const head = document.createElement("div");
+    head.className = "insp-sec-head";
+    const lab = document.createElement("div");
+    lab.className = "insp-sec-label";
+    lab.textContent = label;
+    head.appendChild(lab);
+    if (metaText) {
+      const meta = document.createElement("div");
+      meta.className = "insp-sec-meta";
+      meta.textContent = metaText;
+      head.appendChild(meta);
+    }
+    sec.appendChild(head);
+    sec.appendChild(bodyEl);
+    return sec;
+  }
+
+  function renderInspector() {
+    const root = els.inspector;
+    if (!root) return;
+    root.replaceChildren();
+    sourceFetchGen += 1; // cancel in-flight fetch when selection changes
+
+    if (!selectedId) {
+      const empty = document.createElement("div");
+      empty.className = "insp-empty muted";
+      empty.textContent = "Select a file on the map or in Layers.";
+      root.appendChild(empty);
+      return;
+    }
+
+    const node = fileNodes.find((n) => n.id === selectedId);
+    if (!node) {
+      const empty = document.createElement("div");
+      empty.className = "insp-empty muted";
+      empty.textContent = "Selected file is not in this map.";
+      root.appendChild(empty);
+      return;
+    }
+
+    const fnEntry = selectedFnId ? fnIndex.get(selectedFnId) : null;
+    const showingFn = !!(fnEntry && fnEntry.fileId === selectedId);
+
+    // Identity
+    const identity = document.createElement("div");
+    identity.className = "insp-identity";
+
+    const backRow = document.createElement("div");
+    backRow.className = "insp-back-row";
+    const backBtn = document.createElement("button");
+    backBtn.type = "button";
+    backBtn.className = "insp-back";
+    backBtn.textContent = "← Back";
+    backBtn.disabled = selHistory.length === 0;
+    backBtn.title =
+      selHistory.length === 0
+        ? "No previous selection"
+        : "Return to previous selection";
+    backBtn.addEventListener("click", () => goBack());
+    backRow.appendChild(backBtn);
+    identity.appendChild(backRow);
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "insp-title-row";
+    const dot = document.createElement("span");
+    const kind = showingFn ? "fn" : node.kind;
+    dot.className = `insp-dot ${kind}`;
+    const label = document.createElement("span");
+    label.className = "insp-label";
+    label.textContent = showingFn ? fnEntry.fn.name : node.name;
+    label.title = showingFn ? String(fnEntry.fn.id) : node.path;
+    const kindChip = document.createElement("span");
+    kindChip.className = `insp-kind ${kind}`;
+    kindChip.textContent = kind;
+    titleRow.appendChild(dot);
+    titleRow.appendChild(label);
+    titleRow.appendChild(kindChip);
+    identity.appendChild(titleRow);
+
+    const pathEl = document.createElement("div");
+    pathEl.className = "insp-path";
+    if (showingFn) {
+      pathEl.textContent = `${fnEntry.fn.module_path} · L${fnEntry.fn.line}`;
+    } else {
+      pathEl.textContent = relativePath(node.path) || node.path;
+    }
+    identity.appendChild(pathEl);
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "insp-meta-row";
+    if (showingFn) {
+      metaRow.innerHTML =
+        `<span class="insp-pill">${escapeHtml(basename(node.path))}</span>` +
+        `<span class="insp-pill">${(fnEntry.fn.call_sites || []).length} call site${
+          (fnEntry.fn.call_sites || []).length === 1 ? "" : "s"
+        }</span>`;
+    } else {
+      const pills = [
+        `<span class="insp-pill">${escapeHtml(node.modulePath || "—")}</span>`,
+        `<span class="insp-pill">${node.fnCount} function${node.fnCount === 1 ? "" : "s"}</span>`,
+      ];
+      if (node.conflicts)
+        pills.push(
+          `<span class="insp-pill conflict">${node.conflicts} conflict${
+            node.conflicts === 1 ? "" : "s"
+          }</span>`
+        );
+      if (node.unresolved)
+        pills.push(
+          `<span class="insp-pill unresolved">${node.unresolved} unresolved</span>`
+        );
+      metaRow.innerHTML = pills.join("");
+    }
+    identity.appendChild(metaRow);
+    root.appendChild(identity);
+
+    if (showingFn) {
+      // Documentation
+      const docsText = joinDocs(fnEntry.fn.doc_comments);
+      const docsBody = document.createElement("p");
+      docsBody.className = docsText ? "insp-docs" : "insp-docs empty";
+      docsBody.textContent = docsText || "No documentation comments.";
+      root.appendChild(makeSection("Documentation", docsBody));
+
+      // Source — meta sits in the section head (Desktop: SOURCE · loc)
+      const sourceHost = document.createElement("div");
+      sourceHost.className = "insp-source-host";
+      const name = basename(fnEntry.file.path) || "file";
+      const srcSec = makeSection(
+        "Source",
+        sourceHost,
+        `${name} · L${fnEntry.fn.line}`
+      );
+      sourceHost._metaEl = srcSec.querySelector(".insp-sec-meta");
+      root.appendChild(srcSec);
+      fetchSourceInto(sourceHost, fnEntry.file, fnEntry.fn);
+
+      // Call sites
+      const sites = fnEntry.fn.call_sites || [];
+      if (sites.length) {
+        root.appendChild(
+          makeSection(
+            "Call sites · references",
+            renderCallSites(sites),
+            `${sites.length}`
+          )
+        );
+      } else {
+        const empty = document.createElement("p");
+        empty.className = "insp-muted";
+        empty.textContent = "No call sites in this function.";
+        root.appendChild(makeSection("Call sites · references", empty));
+      }
+      return;
+    }
+
+    // File view
+    const docsText = joinDocs(node.file.doc_comments);
+    const docsBody = document.createElement("p");
+    docsBody.className = docsText ? "insp-docs" : "insp-docs empty";
+    docsBody.textContent = docsText || "No module documentation (//!).";
+    root.appendChild(makeSection("Documentation", docsBody));
+
+    const fns = [...(node.file.functions || [])].sort(
+      (a, b) => (a.line || 0) - (b.line || 0)
+    );
+    if (fns.length) {
+      const ul = document.createElement("ul");
+      ul.className = "fn-list";
+      for (const fn of fns) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "fn-list-item";
+        btn.innerHTML =
+          `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
+          `<span class="fn-list-meta">L${fn.line}</span>`;
+        btn.addEventListener("click", () =>
+          selectFunction(fn.id, { reveal: false, push: true })
+        );
+        li.appendChild(btn);
+        ul.appendChild(li);
+      }
+      root.appendChild(makeSection("Functions", ul, `${fns.length}`));
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "insp-muted";
+      empty.textContent = "No free functions in this file.";
+      root.appendChild(makeSection("Functions", empty));
+    }
+
+    const modSites = node.file.call_sites || [];
+    if (modSites.length) {
+      root.appendChild(
+        makeSection(
+          "Module-level call sites",
+          renderCallSites(modSites),
+          `${modSites.length}`
+        )
+      );
+    }
   }
 
   function showLoaded() {
     els.importScreen.hidden = true;
     els.mainView.hidden = false;
+    els.toggleRight.hidden = false;
+    setRightOpen(true);
   }
 
   function showImport(errorMsg) {
@@ -854,7 +1391,10 @@
     layout = new Map();
     nodePos = new Map();
     cardEls = new Map();
+    fnIndex = new Map();
     selectedId = null;
+    selectedFnId = null;
+    selHistory = [];
     hoverId = null;
     els.mainView.hidden = true;
     els.importScreen.hidden = false;
@@ -864,6 +1404,8 @@
     els.switchProject.hidden = true;
     els.toggleLeft.hidden = true;
     els.toggleRight.hidden = true;
+    els.rightAside.hidden = true;
+    els.rightRail.hidden = true;
     els.projectName.textContent = "Horizon";
     document.title = "Horizon";
     if (errorMsg) {
@@ -884,16 +1426,39 @@
     }
 
     currentMap = map;
-    const { nodes, fnOwner } = flattenMap(map);
+    const { nodes, fnOwner, index } = flattenMap(map);
     fileNodes = nodes;
     fileEdges = deriveEdges(nodes, fnOwner);
+    fnIndex = index;
     layout = computeLayout(nodes);
     nodePos = new Map();
     collapsed = new Set();
+    selHistory = [];
+    selectedFnId = null;
 
     // Prefer an entry file, else first file.
     const entry = nodes.find((n) => n.kind === "entry");
     selectedId = entry ? entry.id : nodes[0]?.id || null;
+
+    // Optional deep-link: ?fn=FunctionId or ?file=basename
+    try {
+      const q = new URLSearchParams(location.search);
+      const wantFn = q.get("fn");
+      const wantFile = q.get("file");
+      if (wantFn && fnIndex.has(wantFn)) {
+        selectedFnId = wantFn;
+        selectedId = fnIndex.get(wantFn).fileId;
+      } else if (wantFile) {
+        const hit = nodes.find(
+          (n) =>
+            n.name === wantFile ||
+            n.path.replace(/\\/g, "/").endsWith("/" + wantFile)
+        );
+        if (hit) selectedId = hit.id;
+      }
+    } catch (_) {
+      /* ignore */
+    }
 
     showLoaded();
     updateChrome();
@@ -901,6 +1466,8 @@
     renderEdges();
     renderLayers();
     fitView();
+    if (selectedId) revealCard(selectedId);
+    renderInspector();
 
     // Keep diagnostics module warm / assert it loads (Slice later will render).
     if (window.HorizonDiagnostics && map) {
@@ -1018,10 +1585,8 @@
     els.leftRail.hidden = !leftOpen;
   });
 
-  // SEAM: right inspector toggle — enable when inspector ships.
   els.toggleRight.addEventListener("click", () => {
-    const open = els.rightAside.hidden;
-    els.rightAside.hidden = !open;
+    setRightOpen(!rightOpen);
   });
 
   let leftResize = null;
@@ -1040,6 +1605,26 @@
     leftResize = null;
     window.removeEventListener("pointermove", onLeftResizeMove);
     window.removeEventListener("pointerup", onLeftResizeUp);
+  }
+
+  let rightResize = null;
+  els.rightRail.addEventListener("pointerdown", (ev) => {
+    if (!rightOpen) return;
+    ev.preventDefault();
+    rightResize = { sx: ev.clientX, ow: rightW };
+    window.addEventListener("pointermove", onRightResizeMove);
+    window.addEventListener("pointerup", onRightResizeUp);
+  });
+  function onRightResizeMove(ev) {
+    if (!rightResize) return;
+    setRightWidth(
+      Math.max(RIGHT_MIN, rightResize.ow - (ev.clientX - rightResize.sx))
+    );
+  }
+  function onRightResizeUp() {
+    rightResize = null;
+    window.removeEventListener("pointermove", onRightResizeMove);
+    window.removeEventListener("pointerup", onRightResizeUp);
   }
 
   els.layerSearch.addEventListener("input", () => {
@@ -1138,6 +1723,7 @@
     }
     applyTheme();
     setLeftWidth(LEFT_DEFAULT);
+    setRightWidth(RIGHT_DEFAULT);
 
     try {
       window
@@ -1148,6 +1734,14 @@
           applyTheme();
         });
     } catch (_) {}
+
+    // Expose selection for verification / later slices (Diagnostics, DAG).
+    window.HorizonViewer = {
+      selectFile: (id, opts) => selectFile(id, opts || {}),
+      selectFunction: (id, opts) => selectFunction(id, opts || {}),
+      goBack,
+      getSelection: () => snapshotSelection(),
+    };
 
     try {
       const res = await fetch("/api/map");
