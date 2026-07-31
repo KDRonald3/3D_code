@@ -1230,17 +1230,11 @@
   function cardVisible(node) {
     if (node.kind === "entry" && !filters.entry) return false;
     if (node.kind === "file" && !filters.file) return false;
-    // Content chips: a file with functions matches Fns; a file with types
-    // matches Types. Empty files (neither) stay visible so the map never
-    // hides a card solely for lacking both. Turning a chip off dims files
-    // whose only matching content is that kind.
+        // Fns content chip dims files that only have free functions when off.
+    // Types stays disabled (type nodes are not in the free-function contract);
+    // maps that still carry a `types` array load without error via typeCount.
     const hasFn = (node.fnCount || 0) > 0;
-    const hasType = (node.typeCount || 0) > 0;
-    if (hasFn || hasType) {
-      const matchFn = hasFn && filters.fn;
-      const matchType = hasType && filters.struct;
-      if (!matchFn && !matchType) return false;
-    }
+    if (hasFn && !filters.fn) return false;
     if (!query) return true;
     const q = query.toLowerCase();
     return (
