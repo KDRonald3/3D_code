@@ -395,6 +395,7 @@ dependencies = [
  "horizon-engine",
  "horizon-map",
  "http",
+ "ra_ap_syntax",
  "serde",
  "serde_json",
  "tokio",

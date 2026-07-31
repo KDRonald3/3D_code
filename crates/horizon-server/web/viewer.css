@@ -793,3 +793,60 @@ main {
   padding: 24px 8px;
   font-size: 0.85rem;
 }
+
+/* —— Phase C source panel (minimal; likely replaced with next UI) —— */
+
+.source-panel {
+  margin: 8px 0 12px 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.source-panel-meta {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  word-break: break-all;
+}
+
+.source-panel-banner {
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.source-panel-banner.stale,
+.source-panel-banner.missing,
+.source-panel-banner.unverifiable,
+.source-panel-banner.no-source,
+.source-panel-banner.error {
+  color: #e6c48a;
+  background: rgba(240, 179, 90, 0.08);
+}
+
+.source-panel-banner.loading {
+  color: var(--text-dim);
+}
+
+.source-panel pre {
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  white-space: pre;
+  color: var(--text);
+}
+
+.tok-kw { color: #c3a6ff; }
+.tok-fn { color: #7eb8ff; }
+.tok-ty { color: #5dce8a; }
+.tok-c { color: #6b7385; }
+.tok-str { color: #e6c48a; }
+.tok-num { color: #e6e9ef; }
+.tok { color: #e6e9ef; }

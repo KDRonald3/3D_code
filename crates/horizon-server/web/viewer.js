@@ -288,6 +288,120 @@
     return node;
   }
 
+  // —— Phase C source panel (minimal proof surface; next UI will replace) ——
+
+  function sourceUnavailableReason(fn, file) {
+    const start = fn.byte_start ?? 0;
+    const end = fn.byte_end ?? 0;
+    if (start === 0 && end === 0) return "no_source";
+    if (!(file.content_hash || "")) return "unverifiable";
+    return null;
+  }
+
+  function renderTokens(tokens) {
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    for (const pair of tokens || []) {
+      const text = pair[0] ?? "";
+      const cls = pair[1] || "";
+      const span = document.createElement("span");
+      span.className = cls ? `tok-${cls}` : "tok";
+      span.textContent = text;
+      code.appendChild(span);
+    }
+    pre.appendChild(code);
+    return pre;
+  }
+
+  function setSourcePanelState(panel, state, detail) {
+    panel.replaceChildren();
+    const meta = document.createElement("div");
+    meta.className = "source-panel-meta";
+    meta.textContent = detail.meta || "";
+    panel.appendChild(meta);
+
+    if (state === "served") {
+      panel.appendChild(renderTokens(detail.tokens));
+      return;
+    }
+
+    const banner = document.createElement("div");
+    banner.className = `source-panel-banner ${state}`;
+    const messages = {
+      loading: "Loading source…",
+      stale: "Source changed since the map was built — re-analyse. Slice not shown.",
+      missing: "Source file is missing on disk.",
+      unverifiable: "Source hash unavailable (map predates content_hash) — cannot verify slice.",
+      no_source: "No source range on this function (map predates byte_start/byte_end).",
+      error: detail.message || "Failed to load source.",
+    };
+    banner.textContent = messages[state] || messages.error;
+    panel.appendChild(banner);
+  }
+
+  async function fetchSourceInto(panel, file, fn) {
+    const filePath = String(file.path || "");
+    const start = fn.byte_start ?? 0;
+    const end = fn.byte_end ?? 0;
+    const hash = file.content_hash || "";
+    const meta = `${filePath} · bytes [${start}, ${end}) · L${fn.line}`;
+
+    const early = sourceUnavailableReason(fn, file);
+    if (early) {
+      setSourcePanelState(panel, early, { meta });
+      return;
+    }
+
+    setSourcePanelState(panel, "loading", { meta });
+    const params = new URLSearchParams({
+      path: filePath,
+      byte_start: String(start),
+      byte_end: String(end),
+      expected_hash: hash,
+    });
+    try {
+      const res = await fetch(`/api/source?${params}`);
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(body.tokens)) {
+        setSourcePanelState(panel, "served", { meta, tokens: body.tokens });
+        return;
+      }
+      const err = body.error || "error";
+      if (err === "stale" || err === "missing" || err === "unverifiable" || err === "no_source") {
+        setSourcePanelState(panel, err, { meta, message: body.message });
+      } else {
+        setSourcePanelState(panel, "error", {
+          meta,
+          message: body.message || `Source request failed (${res.status}).`,
+        });
+      }
+    } catch (e) {
+      setSourcePanelState(panel, "error", {
+        meta,
+        message: String(e.message || e),
+      });
+    }
+  }
+
+  function openSourceForFunction(fn, file, hostEl) {
+    if (!hostEl) return;
+    let panel = hostEl.querySelector(":scope > .source-panel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.className = "source-panel";
+      hostEl.insertBefore(panel, hostEl.firstChild);
+    }
+    fetchSourceInto(panel, file, fn);
+  }
+
+  function openSourceForDiagnostics(entry) {
+    if (entry.enclosing.type !== "function" || !entry.enclosing.functionId) return;
+    const indexed = idIndex.get(entry.enclosing.functionId);
+    if (!indexed || !indexed.el) return;
+    const children = indexed.el.querySelector(":scope > .children");
+    openSourceForFunction(indexed.fn, indexed.file, children);
+  }
+
   function buildFunctionNode(fn, file) {
     const flags = functionFlags(fn);
     const node = createNode({
@@ -300,6 +414,11 @@
         `<span class="name">${escapeHtml(fn.name)}</span>` +
         `<span class="meta">L${fn.line} · ${escapeHtml(fn.id)}</span>`,
       lazyBuild: (children) => {
+        const panel = document.createElement("div");
+        panel.className = "source-panel";
+        children.appendChild(panel);
+        fetchSourceInto(panel, file, fn);
+
         const docs = renderDocs(fn.doc_comments);
         if (docs) children.appendChild(docs);
         if ((fn.call_sites || []).length) {
@@ -756,9 +875,7 @@
   }
 
   /**
-   * Navigate to the enclosing function (or file) in the tree.
-   * Phase C seam: after jump, openSourceForDiagnostics(entry) will fetch
-   * /api/source and show the highlighted source panel. Not built in Phase F.
+   * Navigate to the enclosing function (or file) in the tree, then open source.
    */
   function navigateFromDiagnostics(entry) {
     setActiveView("tree");
@@ -768,8 +885,7 @@
     } else {
       ok = jumpToFile(entry.filePath);
     }
-    // Phase C: openSourceForDiagnostics(entry);
-    void ok;
+    if (ok) openSourceForDiagnostics(entry);
   }
 
   function renderDiagGroup({ title, meta, count, countClass, entries, open }) {
@@ -1030,9 +1146,20 @@
     const file = els.fileInput.files && els.fileInput.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
-        const map = JSON.parse(String(reader.result));
+        const text = String(reader.result);
+        const map = JSON.parse(text);
+        // Mirror onto the server so /api/source can validate File.path membership.
+        try {
+          await fetch("/api/map", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: text,
+          });
+        } catch (_) {
+          /* source panel will fail honestly if the POST did not land */
+        }
         loadMap(map, file.name);
       } catch (err) {
         showMapError(`Failed to parse ${file.name}: ${err.message}`);

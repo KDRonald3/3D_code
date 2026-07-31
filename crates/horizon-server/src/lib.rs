@@ -6,6 +6,7 @@
 pub mod app;
 pub mod host_guard;
 pub mod routes;
+pub mod source;
 pub mod state;
 pub mod static_files;
 

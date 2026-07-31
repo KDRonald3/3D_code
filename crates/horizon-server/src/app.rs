@@ -2,6 +2,7 @@
 
 use crate::host_guard::reject_non_local_host;
 use crate::routes::{get_map, health, post_map};
+use crate::source::get_source;
 use crate::state::AppState;
 use crate::static_files::{index, viewer_css, viewer_js};
 use axum::extract::DefaultBodyLimit;
@@ -20,6 +21,7 @@ pub fn app(state: AppState) -> Router {
         .route("/static/viewer.js", get(viewer_js))
         .route("/api/health", get(health))
         .route("/api/map", get(get_map).post(post_map))
+        .route("/api/source", get(get_source))
         .layer(middleware::from_fn(reject_non_local_host))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
