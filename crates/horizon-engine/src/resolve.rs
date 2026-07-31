@@ -897,60 +897,55 @@ fn resolve_method_call(
         )));
     }
 
-    match hint {
-        MethodReceiverHint::TypePath(ty_path) => {
-            let full = if ty_path == "crate" {
-                format!("crate::{method}")
-            } else {
-                format!("{ty_path}::{method}")
+    let ty_path = match hint {
+        MethodReceiverHint::TypePath(ty_path) => Some(ty_path.clone()),
+        MethodReceiverHint::SelfField(field) => self_field_type(site, field, index),
+        MethodReceiverHint::Unknown => None,
+    };
+
+    if let Some(ty_path) = ty_path {
+        let full = if ty_path == "crate" {
+            format!("crate::{method}")
+        } else {
+            format!("{ty_path}::{method}")
+        };
+        let ids = index.lookup_full(&full);
+        if !ids.is_empty() {
+            return match unique_or_conflict(
+                ids,
+                format!("multiple inherent methods `{full}`"),
+            ) {
+                Ok(r) => r,
+                Err(r) => r,
             };
-            let ids = index.lookup_full(&full);
-            if !ids.is_empty() {
-                return match unique_or_conflict(
-                    ids,
-                    format!("multiple inherent methods `{full}`"),
-                ) {
-                    Ok(r) => r,
-                    Err(r) => r,
-                };
-            }
-            // Known receiver type but no inherent method — trait methods
-            // (`.clone`, `.into_response`, …) and missing names share this drop.
-            ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
         }
-        MethodReceiverHint::Unknown => {
-            // Honest ambiguity only: every inherent method of this name.
-            // A single candidate without a typed receiver would be a guess
-            // (the receiver might be an external / trait method) — drop it.
-            // Zero candidates (`.clone`, `.len`, …) are the same drop class as
-            // external associated functions, not Unresolved free-function misses.
-            let mut ids = Vec::new();
-            for func in &index.functions {
-                if func.name == method && func.module_path.contains("::") {
-                    // Inherent methods use `Type::method` paths; free functions
-                    // in modules also contain `::`. Prefer entries whose parent
-                    // segment is an indexed type.
-                    if let Some((parent, name)) = split_parent_name(&func.module_path) {
-                        if name == method && index.find_type_at_path(&parent).is_some() {
-                            if !ids.contains(&func.id) {
-                                ids.push(func.id.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            match ids.as_slice() {
-                [] | [_] => ResolveResult::Excluded(ExclusionKind::AssociatedFunction),
-                _ => ResolveResult::Target(CallTarget::Conflict(Conflict {
-                    candidates: ids,
-                    reason: format!(
-                        "method call `.{method}` has no known receiver type; \
-                         several inherent methods share that name"
-                    ),
-                })),
-            }
-        }
+        // Known receiver type but no inherent method — trait methods
+        // (`.clone`, `.into_response`, …), prelude/external fields (`.as_str`
+        // on `String`), and missing names share this drop.
+        return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
     }
+
+    // No certain receiver type. Do **not** Conflict on same-named inherent
+    // methods elsewhere in the repo — that manufactures false problems for
+    // common std names (`.as_str`, `.len`, `.clone`, …) whose real callee is
+    // external. Without positive evidence the receiver is one of those types,
+    // drop as associated. (Flooding Unresolved was tried and rejected.)
+    ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
+}
+
+/// Declared type of `self.field` on the inherent type enclosing `site`.
+fn self_field_type(site: &PendingCall, field: &str, index: &ResolveIndex) -> Option<String> {
+    let enc = site.enclosing_function.as_ref()?;
+    let func = index.get(enc)?;
+    let (parent, name) = split_parent_name(&func.module_path)?;
+    if name != func.name {
+        return None;
+    }
+    let ty = index.find_type_at_path(&parent)?;
+    ty.fields
+        .iter()
+        .find(|(n, _)| n == field)
+        .map(|(_, path)| path.clone())
 }
 
 fn is_external_root(first: &str, index: &ResolveIndex) -> bool {
@@ -2977,6 +2972,7 @@ mod tests {
             byte_end: 1,
             doc_comments: vec![],
             pending_refs: vec![],
+            fields: vec![],
         }];
         let modules = HashSet::from(["crate".into(), "crate::map".into(), "crate::resolve".into()]);
         let imports = vec![explicit(
@@ -3015,6 +3011,7 @@ mod tests {
             byte_end: 1,
             doc_comments: vec![],
             pending_refs: vec![],
+            fields: vec![],
         }];
         let index = index_with(
             vec![],

@@ -70,22 +70,80 @@ fn inherent_methods_resolve_assoc_and_one_hop_calls() {
         "registry.get should resolve: {resolved_paths:?}"
     );
 
-    let conflict_fn = file
+    // Bare `self.method` inside inherent impl — certain Self type.
+    let via_self = file
         .functions
         .iter()
-        .find(|f| f.name == "conflict_demo")
-        .expect("conflict_demo");
-    let has_conflict = conflict_fn.call_sites.iter().any(|s| {
-        matches!(&s.target, CallTarget::Conflict(c) if c.candidates.len() >= 2)
-    });
+        .find(|f| f.name == "hits_via_self")
+        .expect("hits_via_self");
     assert!(
-        has_conflict,
-        "untyped .get should Conflict across Cache/Registry: {:?}",
-        conflict_fn.call_sites
+        via_self.call_sites.iter().any(|s| {
+            matches!(&s.target, CallTarget::Resolved(id) if id.as_str().ends_with("Cache::get"))
+        }),
+        "self.get inside Cache impl must resolve: {:?}",
+        via_self.call_sites
     );
 
-    // Indexed Type::new / Type::get resolve; the only drops here should be
-    // untyped non-conflicting method calls (none in this fixture's free fns
-    // beyond the Conflict case, which is retained).
+    // `Self::method` rewritten to the impl type.
+    let via_path = file
+        .functions
+        .iter()
+        .find(|f| f.name == "via_self_path")
+        .expect("via_self_path");
+    assert!(
+        via_path.call_sites.iter().any(|s| {
+            matches!(&s.target, CallTarget::Resolved(id) if id.as_str().ends_with("Cache::get"))
+        }),
+        "Self::get inside Cache impl must resolve: {:?}",
+        via_path.call_sites
+    );
+
+    // `self.field.as_str()` on a String field must drop, not Conflict on
+    // Cache::as_str / Registry::as_str.
+    let as_str_method = file
+        .functions
+        .iter()
+        .find(|f| f.module_path.ends_with("Cache::as_str"))
+        .expect("Cache::as_str");
+    assert!(
+        as_str_method
+            .call_sites
+            .iter()
+            .all(|s| !matches!(s.target, CallTarget::Conflict(_))),
+        "String field .as_str must not Conflict: {:?}",
+        as_str_method.call_sites
+    );
+
+    // Untyped receiver with colliding inherent names → associated drop, not Conflict.
+    let untyped = file
+        .functions
+        .iter()
+        .find(|f| f.name == "untyped_demo")
+        .expect("untyped_demo");
+    assert!(
+        untyped
+            .call_sites
+            .iter()
+            .filter(|s| s.call_path == ".get")
+            .all(|s| !matches!(s.target, CallTarget::Conflict(_))),
+        "untyped .get must not Conflict: {:?}",
+        untyped.call_sites
+    );
+
+    // `let Some(c) = wrap_cache()` — return type is a certain hint.
+    let from_ret = file
+        .functions
+        .iter()
+        .find(|f| f.name == "from_return")
+        .expect("from_return");
+    assert!(
+        from_ret.call_sites.iter().any(|s| {
+            matches!(&s.target, CallTarget::Resolved(id) if id.as_str().ends_with("Cache::get"))
+        }),
+        "return-type hint should resolve c.get: {:?}",
+        from_ret.call_sites
+    );
+
     assert_eq!(map.summary.unresolved, 0);
+    assert_eq!(map.summary.conflicts, 0);
 }

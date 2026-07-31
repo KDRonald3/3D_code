@@ -37,7 +37,8 @@
 use horizon_map::{DocComment, DocCommentKind, Function, FunctionId};
 use anyhow::Result;
 use ra_ap_syntax::ast::{
-    self, AstNode, AstToken, HasName, HasVisibility, LiteralKind, PathSegmentKind, VisibilityKind,
+    self, AstNode, AstToken, HasGenericArgs, HasName, HasVisibility, LiteralKind, PathSegmentKind,
+    VisibilityKind,
 };
 use ra_ap_syntax::{SourceFile, SyntaxElement, SyntaxKind, SyntaxNode};
 use std::collections::{HashMap, HashSet};
@@ -141,6 +142,10 @@ pub struct TypeDef {
     pub doc_comments: Vec<DocComment>,
     /// Field / alias type paths named by this definition (unresolved).
     pub pending_refs: Vec<PendingTypeRef>,
+    /// Named struct fields → declared type path (absolutized for locals;
+    /// prelude / external roots kept as written). Drives `self.field.method()`
+    /// one-hop hints; includes paths [`pending_refs`] omits (e.g. `String`).
+    pub fields: Vec<(String, String)>,
 }
 
 impl TypeDef {
@@ -212,14 +217,17 @@ pub enum CallOwnerKind {
 /// One-hop hint for a method-call receiver (`x.method(...)`).
 ///
 /// Anything less than certain stays [`MethodReceiverHint::Unknown`] — resolve
-/// may then emit Conflict (several inherent methods share the name) or
-/// Unresolved, never a guessed type.
+/// drops those as associated (never guesses a winner, never invents a Conflict
+/// from bare same-named inherent methods elsewhere in the repo).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodReceiverHint {
     /// No certain one-hop type (untyped local, parameter without annotation, …).
     Unknown,
-    /// Absolutized type path from an annotation or constructor form.
+    /// Absolutized type path from an annotation, `self`, constructor form, …
     TypePath(String),
+    /// `self.field` inside an `impl` — field name; resolve looks up the field's
+    /// declared type on the enclosing inherent type.
+    SelfField(String),
 }
 
 /// A call expression awaiting resolution (pre-map form).
@@ -404,11 +412,15 @@ pub fn extract_facts(
         }
     }
 
+    // Declared return types of free functions in this file (name → path), for
+    // one-hop `let x = local_fn()` / `let Some(x) = local_fn()` receiver hints.
+    let return_types = file_function_return_types(&raw_defs, file_module_path);
+
     // One-hop receiver types for locals inside each function (annotation /
-    // constructor forms only — never guessed).
+    // constructor / local-call return forms only — never guessed).
     let mut local_types: HashMap<FunctionId, HashMap<String, String>> = HashMap::new();
     for (raw, func) in raw_defs.iter().zip(functions.iter()) {
-        let typed = local_binding_types(&raw.syntax, file_module_path);
+        let typed = local_binding_types(&raw.syntax, file_module_path, &return_types);
         if !typed.is_empty() {
             local_types.insert(func.id.clone(), typed);
         }
@@ -526,12 +538,22 @@ fn pending_from_call_expr(
     from_macro: bool,
 ) -> Option<PendingCall> {
     let callee = call.expr()?;
-    let call_path = squish(&callee.syntax().text().to_string());
+    let mut call_path = squish(&callee.syntax().text().to_string());
     if !is_path_like_callee(&call_path) {
         return None;
     }
     if call_path == MACRO_PROBE_CALLEE {
         return None;
+    }
+    // `Self::method` inside an impl is the impl's type — certain, not a guess.
+    if let Some(rest) = call_path.strip_prefix("Self::") {
+        if let Some(ty) = enclosing_impl_self_type_path(call.syntax(), file_module_path) {
+            call_path = if ty == "crate" {
+                format!("crate::{rest}")
+            } else {
+                format!("{ty}::{rest}")
+            };
+        }
     }
 
     let range = call.syntax().text_range();
@@ -958,6 +980,7 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -
                 byte_end: u32::from(range.end()),
                 doc_comments: extract_outer_docs(en.syntax()),
                 pending_refs,
+                fields: Vec::new(),
             });
             continue;
         }
@@ -969,6 +992,7 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -
             let range = st.syntax().text_range();
             let mut pending_refs = Vec::new();
             collect_field_type_refs(st.field_list(), lines, &mut pending_refs);
+            let fields = collect_named_fields(st.field_list(), file_module_path);
             types.push(TypeDef {
                 name: name.text().to_string(),
                 module_path,
@@ -980,6 +1004,7 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -
                 byte_end: u32::from(range.end()),
                 doc_comments: extract_outer_docs(st.syntax()),
                 pending_refs,
+                fields,
             });
             continue;
         }
@@ -1000,6 +1025,7 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -
                 byte_end: u32::from(range.end()),
                 doc_comments: extract_outer_docs(tr.syntax()),
                 pending_refs: Vec::new(),
+                fields: Vec::new(),
             });
             continue;
         }
@@ -1024,6 +1050,7 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -
                 byte_end: u32::from(range.end()),
                 doc_comments: extract_outer_docs(ta.syntax()),
                 pending_refs,
+                fields: Vec::new(),
             });
         }
     }
@@ -1054,6 +1081,65 @@ fn collect_field_type_refs(
             }
         }
     }
+}
+
+/// Named record fields with declared type paths (including prelude names).
+fn collect_named_fields(
+    fields: Option<ast::FieldList>,
+    file_module_path: &str,
+) -> Vec<(String, String)> {
+    let Some(ast::FieldList::RecordFieldList(list)) = fields else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for field in list.fields() {
+        let Some(name) = field.name() else {
+            continue;
+        };
+        let Some(ty) = field.ty() else {
+            continue;
+        };
+        if let Some(path) = field_type_path(&ty, file_module_path) {
+            out.push((name.text().to_string(), path));
+        }
+    }
+    out
+}
+
+/// Declared field type path for one-hop `self.field` hints.
+///
+/// Unlike [`simple_type_path`], prelude names (`String`, `Vec`, …) are kept so
+/// a method on an external/prelude field can be dropped rather than matched
+/// against unrelated local inherent methods that share the name.
+fn field_type_path(ty: &ast::Type, file_module_path: &str) -> Option<String> {
+    let mut cur = ty.clone();
+    for _ in 0..3 {
+        if let Some(ref_ty) = ast::RefType::cast(cur.syntax().clone()) {
+            cur = ref_ty.ty()?;
+            continue;
+        }
+        if let Some(paren) = ast::ParenType::cast(cur.syntax().clone()) {
+            cur = paren.ty()?;
+            continue;
+        }
+        break;
+    }
+    let path_ty = ast::PathType::cast(cur.syntax().clone())?;
+    let path = path_ty.path()?;
+    let segs = path_segments(&path);
+    if segs.is_empty() {
+        return None;
+    }
+    if segs.len() == 1 {
+        let s = segs[0].as_str();
+        if is_primitive_type_name(s) || is_prelude_type_name(s) {
+            return Some(segs[0].clone());
+        }
+        if s == "Self" || s == "_" {
+            return None;
+        }
+    }
+    Some(absolutize_local_type_path(&segs, file_module_path))
 }
 
 /// Collect path-form type mentions under `ty` (skipping primitives / `Self`).
@@ -1603,20 +1689,39 @@ fn inherent_impl_self_type_path(fn_node: &SyntaxNode, file_module_path: &str) ->
         if impl_.trait_().is_some() {
             return None;
         }
-        let ty = impl_.self_ty()?;
-        let path_ty = ast::PathType::cast(ty.syntax().clone())?;
-        let path = path_ty.path()?;
-        let segs = path_segments(&path);
-        if segs.is_empty() {
-            return None;
-        }
-        // Only simple path types (no dyn/impl Trait receivers as self type).
-        // Bare `Cache` is relative to the file module; `crate::…` / `super::…`
-        // go through the shared absolutizer. (That helper leaves unknown bare
-        // roots untouched for import paths like `serde` — not appropriate here.)
-        return Some(absolutize_local_type_path(&segs, file_module_path));
+        return impl_self_type_path(&impl_, file_module_path);
     }
     None
+}
+
+/// Absolutized `Self` type of the `impl` lexically enclosing `node`.
+///
+/// Accepts inherent and trait impls — the receiver type is still `Type` in
+/// `impl Trait for Type`. Trait *methods* stay out of the map via
+/// [`is_trait_or_trait_impl_item`]; this is only a certain receiver hint.
+fn enclosing_impl_self_type_path(node: &SyntaxNode, file_module_path: &str) -> Option<String> {
+    for ancestor in node.ancestors().skip(1) {
+        let Some(impl_) = ast::Impl::cast(ancestor) else {
+            continue;
+        };
+        return impl_self_type_path(&impl_, file_module_path);
+    }
+    None
+}
+
+fn impl_self_type_path(impl_: &ast::Impl, file_module_path: &str) -> Option<String> {
+    let ty = impl_.self_ty()?;
+    let path_ty = ast::PathType::cast(ty.syntax().clone())?;
+    let path = path_ty.path()?;
+    let segs = path_segments(&path);
+    if segs.is_empty() {
+        return None;
+    }
+    // Only simple path types (no dyn/impl Trait receivers as self type).
+    // Bare `Cache` is relative to the file module; `crate::…` / `super::…`
+    // go through the shared absolutizer. (That helper leaves unknown bare
+    // roots untouched for import paths like `serde` — not appropriate here.)
+    Some(absolutize_local_type_path(&segs, file_module_path))
 }
 
 fn absolutize_local_type_path(segments: &[String], from_module: &str) -> String {
@@ -1673,8 +1778,8 @@ fn pending_from_method_call(
     })
 }
 
-/// One-hop receiver type: typed `let` / parameter, or constructor / associated
-/// call form `Type { … }` / `Type(…)` / `Type::assoc(…)`.
+/// One-hop receiver type: typed `let` / parameter, bare `self`, `self.field`,
+/// or constructor / associated call form `Type { … }` / `Type(…)` / `Type::assoc(…)`.
 fn infer_receiver_hint(
     call: &ast::MethodCallExpr,
     local_types: Option<&HashMap<String, String>>,
@@ -1707,14 +1812,56 @@ fn infer_receiver_hint(
         break;
     }
 
-    // Local name with a known one-hop type.
+    // Bare `self` inside an impl — the impl's Self type is certain.
+    // Not `self.clone()`, `&self` after peel is still path `self`.
     if let Some(path_expr) = ast::PathExpr::cast(expr.syntax().clone()) {
         if let Some(path) = path_expr.path() {
             let segs = path_segments(&path);
+            if segs.len() == 1 && segs[0] == "self" {
+                if let Some(ty) = enclosing_impl_self_type_path(call.syntax(), file_module_path) {
+                    return MethodReceiverHint::TypePath(ty);
+                }
+            }
+            // Local name with a known one-hop type.
             if segs.len() == 1 {
                 if let Some(types) = local_types {
                     if let Some(ty) = types.get(&segs[0]) {
                         return MethodReceiverHint::TypePath(ty.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // `self.field` — field's declared type on the impl's Self (resolved later).
+    if let Some(field_expr) = ast::FieldExpr::cast(expr.syntax().clone()) {
+        if let Some(name_ref) = field_expr.name_ref() {
+            let field = name_ref.text().to_string();
+            if is_ident(&field) {
+                if let Some(base) = field_expr.expr() {
+                    let mut base_expr = base;
+                    for _ in 0..3 {
+                        if let Some(ref_expr) = ast::RefExpr::cast(base_expr.syntax().clone()) {
+                            if let Some(inner) = ref_expr.expr() {
+                                base_expr = inner;
+                                continue;
+                            }
+                        }
+                        if let Some(paren) = ast::ParenExpr::cast(base_expr.syntax().clone()) {
+                            if let Some(inner) = paren.expr() {
+                                base_expr = inner;
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+                    if let Some(path_expr) = ast::PathExpr::cast(base_expr.syntax().clone()) {
+                        if let Some(path) = path_expr.path() {
+                            let segs = path_segments(&path);
+                            if segs.len() == 1 && segs[0] == "self" {
+                                return MethodReceiverHint::SelfField(field);
+                            }
+                        }
                     }
                 }
             }
@@ -1756,9 +1903,42 @@ fn infer_receiver_hint(
     MethodReceiverHint::Unknown
 }
 
-/// Map local binding names → absolutized type paths from annotations or
-/// constructor RHS forms (one hop only).
-fn local_binding_types(fn_node: &SyntaxNode, file_module_path: &str) -> HashMap<String, String> {
+/// Map free-function names in this file to return-type paths with `&` /
+/// `Option` / `Result` peeled. Used only for `let Some(x) = f()` /
+/// `let Ok(x) = f()` bindings — the pattern itself unwraps the wrapper.
+fn file_function_return_types(
+    raw_defs: &[RawDef],
+    file_module_path: &str,
+) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for def in raw_defs {
+        // Inherent methods use `Type::name` paths — skip; callers use bare names.
+        if def.receiver_type_path.is_some() {
+            continue;
+        }
+        let Some(func) = ast::Fn::cast(def.syntax.clone()) else {
+            continue;
+        };
+        let Some(ret) = func.ret_type() else {
+            continue;
+        };
+        let Some(ty) = ret.ty() else {
+            continue;
+        };
+        if let Some(path) = peel_return_type_path(&ty, file_module_path) {
+            out.insert(def.name.clone(), path);
+        }
+    }
+    out
+}
+
+/// Map local binding names → absolutized type paths from annotations,
+/// constructor RHS forms, or a local function's declared return type (one hop).
+fn local_binding_types(
+    fn_node: &SyntaxNode,
+    file_module_path: &str,
+    return_types: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut out = HashMap::new();
 
     // Parameters with explicit types: `cache: Cache`, `cache: &Cache`.
@@ -1780,7 +1960,8 @@ fn local_binding_types(fn_node: &SyntaxNode, file_module_path: &str) -> HashMap<
         }
     }
 
-    // `let name: Type = …` and `let name = Type::…` / `Type { … }`.
+    // `let name: Type = …`, `let name = Type::…` / `Type { … }`, and
+    // `let Some(name) = local_fn()` / `let Ok(name) = local_fn()`.
     for node in fn_node.descendants() {
         // Skip nested free-function / trait-impl bodies.
         if node.kind() == SyntaxKind::FN && &node != fn_node {
@@ -1792,22 +1973,108 @@ fn local_binding_types(fn_node: &SyntaxNode, file_module_path: &str) -> HashMap<
         let Some(pat) = let_stmt.pat() else {
             continue;
         };
-        let Some(name) = single_ident_pat(&pat) else {
+        if let Some(ty) = let_stmt.ty() {
+            if let Some(name) = single_ident_pat(&pat) {
+                if let Some(path) = simple_type_path(&ty, file_module_path) {
+                    out.insert(name, path);
+                    continue;
+                }
+            }
+        }
+        let Some(init) = let_stmt.initializer() else {
             continue;
         };
-        if let Some(ty) = let_stmt.ty() {
-            if let Some(path) = simple_type_path(&ty, file_module_path) {
+        if let Some(name) = single_ident_pat(&pat) {
+            if let Some(path) = constructor_type_path(&init, file_module_path) {
                 out.insert(name, path);
                 continue;
             }
         }
-        if let Some(init) = let_stmt.initializer() {
-            if let Some(path) = constructor_type_path(&init, file_module_path) {
+        // `let Some(name) = local_fn()` / `let Ok(name) = …` — certain from the
+        // callee's declared return type after peeling the matched wrapper.
+        if let Some(name) = option_or_result_binding(&pat) {
+            if let Some(path) = call_return_type_path(&init, return_types) {
                 out.insert(name, path);
             }
         }
     }
     out
+}
+
+fn option_or_result_binding(pat: &ast::Pat) -> Option<String> {
+    let tsp = ast::TupleStructPat::cast(pat.syntax().clone())?;
+    let path = tsp.path()?;
+    let segs = path_segments(&path);
+    let last = segs.last()?.as_str();
+    if !matches!(last, "Some" | "Ok") {
+        return None;
+    }
+    let mut idents = tsp.fields().filter_map(|p| single_ident_pat(&p));
+    let name = idents.next()?;
+    if idents.next().is_some() {
+        return None;
+    }
+    Some(name)
+}
+
+fn call_return_type_path(
+    expr: &ast::Expr,
+    return_types: &HashMap<String, String>,
+) -> Option<String> {
+    let call = ast::CallExpr::cast(expr.syntax().clone())?;
+    let callee = call.expr()?;
+    let path_expr = ast::PathExpr::cast(callee.syntax().clone())?;
+    let path = path_expr.path()?;
+    let segs = path_segments(&path);
+    // Unqualified local call only — same honesty bar as other one-hop hints.
+    if segs.len() != 1 {
+        return None;
+    }
+    return_types.get(&segs[0]).cloned()
+}
+
+/// Peel `&` / `Option` / `Result` wrappers from a return type to a named path.
+fn peel_return_type_path(ty: &ast::Type, file_module_path: &str) -> Option<String> {
+    let mut cur = ty.clone();
+    for _ in 0..6 {
+        if let Some(ref_ty) = ast::RefType::cast(cur.syntax().clone()) {
+            cur = ref_ty.ty()?;
+            continue;
+        }
+        if let Some(paren) = ast::ParenType::cast(cur.syntax().clone()) {
+            cur = paren.ty()?;
+            continue;
+        }
+        let path_ty = ast::PathType::cast(cur.syntax().clone())?;
+        let path = path_ty.path()?;
+        let segs = path_segments(&path);
+        if segs.is_empty() {
+            return None;
+        }
+        if segs.len() == 1 && matches!(segs[0].as_str(), "Option" | "Result") {
+            if let Some(inner) = first_generic_type_arg(&path) {
+                cur = inner;
+                continue;
+            }
+            return None;
+        }
+        if segs.len() == 1 && (is_primitive_type_name(&segs[0]) || is_prelude_type_name(&segs[0])) {
+            return None;
+        }
+        return Some(absolutize_local_type_path(&segs, file_module_path));
+    }
+    None
+}
+
+fn first_generic_type_arg(path: &ast::Path) -> Option<ast::Type> {
+    let seg = path.segment()?;
+    let args = seg.generic_arg_list()?;
+    for arg in args.generic_args() {
+        if let ast::GenericArg::TypeArg(ta) = arg {
+            return ta.ty();
+        }
+    }
+    None
 }
 
 fn single_ident_pat(pat: &ast::Pat) -> Option<String> {
