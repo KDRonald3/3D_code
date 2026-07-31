@@ -2233,6 +2233,10 @@ select {
   border-color: var(--sel);
 }
 
+.fns-node.dragging {
+  box-shadow: 0 6px 18px var(--shadow);
+}
+
 .fns-node.selected {
   border-color: var(--sel);
   box-shadow: 0 0 0 2px var(--selbg);
