@@ -1,0 +1,12 @@
+[package]
+name = "horizon-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JSON contract types for Horizon function maps."
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11.0"

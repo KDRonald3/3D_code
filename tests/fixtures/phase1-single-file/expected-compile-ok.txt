@@ -1,0 +1,6 @@
+cargo check --manifest-path tests/fixtures/phase1-single-file/Cargo.toml
+exit 0
+
+On unix, only `#[cfg(unix)] fn open` is live; on windows, only the windows
+definition. The map tool still sees both in the syntax tree and records a
+Conflict at `open()` — that is intentional and independent of compile status.

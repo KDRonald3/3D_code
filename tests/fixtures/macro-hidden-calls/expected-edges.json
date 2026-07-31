@@ -1,0 +1,59 @@
+{
+  "fixture": "macro-hidden-calls",
+  "edges": [
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "mean",
+      "expect": { "kind": "resolved", "id": "macro_hidden_calls::mean" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "width_of",
+      "expect": { "kind": "resolved", "id": "macro_hidden_calls::width_of" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "helper",
+      "line": 28,
+      "expect": { "kind": "resolved", "id": "macro_hidden_calls::helper" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "helper",
+      "line": 29,
+      "expect": { "kind": "resolved", "id": "macro_hidden_calls::helper" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "nested_target",
+      "expect": { "kind": "resolved", "id": "macro_hidden_calls::nested_target" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "helper",
+      "line": 40,
+      "expect": { "kind": "resolved", "id": "macro_hidden_calls::helper" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "Some",
+      "expect": { "kind": "absent" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "helper",
+      "line": 35,
+      "expect": { "kind": "absent" }
+    },
+    {
+      "caller": "macro_hidden_calls::run",
+      "call_path": "Foo",
+      "expect": { "kind": "absent" }
+    },
+    {
+      "caller": "macro_hidden_calls::uses_macro_rules",
+      "call_path": "mean",
+      "expect": { "kind": "absent" }
+    }
+  ]
+}

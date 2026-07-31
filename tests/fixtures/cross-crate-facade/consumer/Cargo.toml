@@ -1,0 +1,10 @@
+[package]
+name = "consumer"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+text-facade = { path = "../text-facade" }
+# Intentionally does NOT depend on format-engine / parse-engine / mid / leaf /
+# shapes-eng / text-eng. Facade following must work through text-facade alone;
+# naming those crates directly must stay Unresolved (dependency gate).

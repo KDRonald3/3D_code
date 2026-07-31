@@ -1,0 +1,10 @@
+[package]
+name = "exclude-non-functions"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+# Nested fixture: empty workspace so the Horizon root does not claim this package.
+[workspace]

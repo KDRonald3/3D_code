@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Horizon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/viewer.css" />
+</head>
+<body>
+  <div id="app" class="app" data-theme="light">
+
+    <input id="json-input" type="file" accept=".json,application/json" class="sr-only" />
+
+    <header class="topbar">
+      <button type="button" id="toggle-left" class="icon-btn" title="Toggle layers panel" hidden>☰</button>
+      <div class="brand-row">
+        <div class="brand-mark">{}</div>
+        <span class="brand-name" id="project-name">Horizon</span>
+        <span class="brand-sep" id="brand-sep" hidden>/</span>
+        <span class="brand-sub" id="brand-sub" hidden>Codebase Map</span>
+      </div>
+      <div class="topbar-right">
+        <span class="frame-stats" id="frame-stats" hidden></span>
+        <button type="button" id="switch-project" class="text-btn" hidden>Switch project</button>
+        <button type="button" id="toggle-theme" class="icon-btn" title="Theme">☾</button>
+        <button type="button" id="toggle-right" class="icon-btn" title="Toggle inspector panel" hidden>☰</button>
+      </div>
+    </header>
+
+    <!--
+      Import stays hidden until boot finishes and finds no map. Showing it by
+      default raced the async /api/map fetch and looked like a blank-map bug.
+    -->
+    <section id="import-screen" class="import-screen" hidden>
+      <h1 class="import-title">Open a codebase</h1>
+      <p class="import-sub">
+        Analyse a local folder, open a saved map <span class="mono">.json</span>,
+        or restore a Recent project. The server also accepts
+        <span class="mono">--map</span> at startup.
+      </p>
+      <div class="import-actions">
+        <button type="button" id="open-folder" class="import-card" title="Analyse a local Cargo repository via POST /api/analyse">
+          <span class="import-icon">📁</span>
+          <span>
+            <span class="import-card-title">Analyse local folder</span>
+            <span class="import-card-sub">Run the analyser in-process on a repository path (no CLI)</span>
+          </span>
+        </button>
+        <button type="button" class="import-card" disabled title="Not available — single-file import is not in this rebuild">
+          <span class="import-icon">📄</span>
+          <span>
+            <span class="import-card-title">Open source file(s)</span>
+            <span class="import-card-sub">Unavailable — analyse a folder, or open a saved map JSON.</span>
+          </span>
+        </button>
+        <button type="button" id="open-json" class="import-card">
+          <span class="import-icon">🧾</span>
+          <span>
+            <span class="import-card-title">Open map JSON</span>
+            <span class="import-card-sub">Drop a Horizon Repository .json, or click to browse</span>
+          </span>
+        </button>
+      </div>
+      <form id="analyse-form" class="analyse-form" hidden>
+        <label class="analyse-label" for="analyse-path">Repository path</label>
+        <div class="analyse-row">
+          <input
+            type="text"
+            id="analyse-path"
+            class="analyse-path"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="/path/to/cargo/repo"
+          />
+          <button type="submit" id="analyse-run" class="analyse-run">Analyse</button>
+          <button type="button" id="analyse-cancel-form" class="ghost-btn" title="Hide path form">✕</button>
+        </div>
+        <p class="analyse-hint">The server analyses this path on the machine it is running on. Loopback only.</p>
+      </form>
+      <div id="import-error" class="import-error" hidden>
+        <span class="import-error-icon">⚠</span>
+        <span id="import-error-text" class="mono"></span>
+        <button type="button" id="clear-error" class="ghost-btn">✕</button>
+      </div>
+      <div id="recent-block" class="recent-block" hidden>
+        <div class="section-label">Recent</div>
+        <div id="recent-list" class="recent-list"></div>
+      </div>
+    </section>
+
+    <!--
+      Full-screen progress for in-process analysis. Shown while POST /api/analyse
+      is running so a long job never looks like a hung page.
+    -->
+    <div id="analyse-overlay" class="analyse-overlay" hidden>
+      <div class="analyse-overlay-card" role="status" aria-live="polite">
+        <div class="analyse-spinner" aria-hidden="true"></div>
+        <div class="analyse-overlay-title">Analysing repository</div>
+        <div id="analyse-overlay-path" class="analyse-overlay-path mono"></div>
+        <div id="analyse-overlay-elapsed" class="analyse-overlay-elapsed">0s</div>
+        <p class="analyse-overlay-note">Running the Horizon pipeline in this server process. The page stays responsive; this overlay clears when the map is ready or the run fails.</p>
+      </div>
+    </div>
+
+    <div id="main-view" class="main-view" hidden>
+      <div class="workspace">
+
+        <aside id="left-aside" class="left-aside">
+          <div class="pages-block">
+            <div class="section-label">Pages</div>
+            <button type="button" class="page-btn active" data-page="map" id="page-map" title="Codebase map"><span class="page-ico">◇</span>Map</button>
+            <button type="button" class="page-btn" data-page="diff" id="page-diff" disabled title="Placeholder — no diff source in the map contract"><span class="page-ico">◈</span>Diff · PR #142</button>
+            <button type="button" class="page-btn" data-page="fns" id="page-fns" title="Function call DAG for the selected file"><span class="page-ico fn">ƒ</span>Functions<span class="page-trail">⊟</span></button>
+            <button type="button" class="page-btn" data-page="diag" id="page-dock" title="Diagnostics worklist"><span class="page-ico">⊘</span>Diagnostics<span class="page-trail">⊟</span><span class="page-badge" id="page-dock-badge" hidden></span></button>
+            <!-- Data structures omitted until the analyser emits structs (W8). -->
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="layers-block">
+            <div class="section-label">Layers</div>
+            <div class="search-wrap">
+              <span class="search-ico">⌕</span>
+              <input id="layer-search" type="search" placeholder="Find a file…" autocomplete="off" spellcheck="false" />
+            </div>
+            <div id="layer-rows" class="layer-rows"></div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="filter-block">
+            <div class="section-label">Filter</div>
+            <div class="filter-chips" id="filter-chips">
+              <button type="button" class="filter-chip on" data-kind="entry"><span class="swatch entry"></span>Entry</button>
+              <button type="button" class="filter-chip on" data-kind="file"><span class="swatch file"></span>Files</button>
+              <button type="button" class="filter-chip on" data-kind="fn" title="Dim files that have free functions when off"><span class="swatch fn"></span>Fns</button>
+              <button type="button" class="filter-chip on" data-kind="struct" title="Dim files that have type definitions when off"><span class="swatch struct"></span>Types</button>
+            </div>
+          </div>
+        </aside>
+
+        <div id="left-rail" class="resize-rail left-rail" title="Resize layers"></div>
+
+        <div class="center-col">
+          <main id="canvas" class="canvas">
+            <div id="world" class="world">
+              <div id="arch-sticky" class="arch-sticky" hidden>
+                <div class="arch-label">Architecture · auto</div>
+                <p id="arch-text" class="arch-text"></p>
+              </div>
+
+              <svg id="edges-svg" class="edges-svg" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <marker id="cvar" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto">
+                    <path d="M0,0 L8,4 L0,8 z" class="marker-idle"></path>
+                  </marker>
+                  <marker id="cvarh" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+                    <path d="M0,0 L9,4.5 L0,9 z" class="marker-hot"></path>
+                  </marker>
+                </defs>
+                <g id="edge-paths"></g>
+              </svg>
+
+              <div id="cards" class="cards"></div>
+            </div>
+
+            <div id="canvas-empty" class="canvas-empty" hidden>
+              <p>This map has no files to place.</p>
+            </div>
+
+            <div class="zoom-hud">
+              <button type="button" id="zoom-out" title="Zoom out">−</button>
+              <button type="button" id="zoom-reset" title="Fit to content">100%</button>
+              <button type="button" id="zoom-in" title="Zoom in">+</button>
+            </div>
+          </main>
+
+          <div id="bottom-rail" class="resize-rail bottom-rail" hidden title="Resize bottom panel"></div>
+          <aside id="bottom-panel" class="bottom-panel" hidden>
+            <div class="bottom-chrome">
+              <div class="bottom-tabs" role="tablist">
+                <button type="button" class="bottom-tab" data-bottom-tab="fns" id="tab-functions" role="tab" aria-selected="false" title="Function call DAG for the selected file" aria-label="Functions">
+                  <span class="chrome-tab-full">Functions</span>
+                  <span class="chrome-tab-short" aria-hidden="true">Fn</span>
+                </button>
+                <button type="button" class="bottom-tab active" data-bottom-tab="diag" id="tab-diagnostics" role="tab" aria-selected="true" aria-label="Diagnostics">
+                  <span class="chrome-tab-full">Diagnostics</span>
+                  <span class="chrome-tab-short" aria-hidden="true">Diag</span>
+                </button>
+              </div>
+              <!--
+                Controls may compact / scroll; tabs + ✕ stay pinned outside so a
+                squeezed centre column never hides close or tab switching.
+              -->
+              <div class="bottom-controls">
+                <div class="diag-group-mode" id="diag-group-mode" title="Group diagnostics">
+                  <button type="button" data-group="reason" class="on" aria-label="By reason">
+                    <span class="chrome-label-full">By reason</span>
+                    <span class="chrome-label-short" aria-hidden="true">Reason</span>
+                  </button>
+                  <button type="button" data-group="file" aria-label="By file">
+                    <span class="chrome-label-full">By file</span>
+                    <span class="chrome-label-short" aria-hidden="true">File</span>
+                  </button>
+                </div>
+                <div class="fns-controls" id="fns-controls" hidden>
+                  <div
+                    class="fns-depth-mode"
+                    id="fns-depth-mode"
+                    role="group"
+                    aria-label="Call neighborhood depth from the focused function"
+                    title="How many hops from the focused function to show. Busy files open at a budget-grown neighborhood (or All when the full graph is manageable); All always restores every node and edge."
+                  >
+                    <button type="button" data-depth="1" class="on" aria-label="1 hop">
+                      <span class="chrome-label-full">1 hop</span>
+                      <span class="chrome-label-short" aria-hidden="true">1</span>
+                    </button>
+                    <button type="button" data-depth="2" aria-label="2 hops">
+                      <span class="chrome-label-full">2 hops</span>
+                      <span class="chrome-label-short" aria-hidden="true">2</span>
+                    </button>
+                    <button type="button" data-depth="all" aria-label="All hops">
+                      <span class="chrome-label-full">All</span>
+                      <span class="chrome-label-short" aria-hidden="true">∞</span>
+                    </button>
+                  </div>
+                  <button type="button" id="fns-fit" class="ghost-btn" title="Fit DAG in view" aria-label="Fit DAG in view">
+                    <span class="chrome-label-full">Fit</span>
+                    <span class="chrome-label-short" aria-hidden="true">⤢</span>
+                  </button>
+                </div>
+              </div>
+              <button type="button" id="bottom-close" class="ghost-btn bottom-close" title="Close bottom panel">✕</button>
+            </div>
+            <div id="fns-pane" class="fns-pane" hidden>
+              <div id="fns-banner" class="fns-banner"></div>
+              <div id="fns-viewport" class="fns-viewport" tabindex="0">
+                <div id="fns-world" class="fns-world">
+                  <svg id="fns-edges-svg" class="fns-edges-svg" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <marker id="fns-arrow-resolved" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto">
+                        <path d="M0,0 L8,4 L0,8 z" class="fns-marker resolved"></path>
+                      </marker>
+                      <marker id="fns-arrow-conflict" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto">
+                        <path d="M0,0 L8,4 L0,8 z" class="fns-marker conflict"></path>
+                      </marker>
+                      <marker id="fns-arrow-unresolved" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto">
+                        <path d="M0,0 L8,4 L0,8 z" class="fns-marker unresolved"></path>
+                      </marker>
+                    </defs>
+                    <g id="fns-edge-paths"></g>
+                  </svg>
+                  <div id="fns-nodes" class="fns-nodes"></div>
+                </div>
+                <!--
+                  Independent dock viewport HUD — same − N% + idiom as #canvas .zoom-hud.
+                  Lives inside #fns-pane so Diagnostics (a list) never shows it.
+                -->
+                <!--
+                  Compact overlay legend — absolute so it never steals #fns-viewport
+                  flex height (banner must stay one non-wrapping line; viewport ≥ 48px).
+                -->
+                <div class="fns-legend" id="fns-legend" aria-label="Function DAG legend">
+                  <span class="fns-legend-item">
+                    <span class="fns-legend-swatch function" aria-hidden="true"></span>
+                    defined in this file
+                  </span>
+                  <span class="fns-legend-item">
+                    <span class="fns-legend-swatch external" aria-hidden="true"></span>
+                    defined in another file
+                  </span>
+                  <span class="fns-legend-item">
+                    <span class="fns-legend-swatch unresolved" aria-hidden="true"></span>
+                    the analyser could not resolve this call
+                  </span>
+                </div>
+                <div class="zoom-hud" id="fns-zoom-hud">
+                  <button type="button" id="fns-zoom-out" title="Zoom out">−</button>
+                  <button type="button" id="fns-zoom-reset" title="Fit to content">100%</button>
+                  <button type="button" id="fns-zoom-in" title="Zoom in">+</button>
+                </div>
+              </div>
+            </div>
+            <div id="diag-pane" class="diag-pane">
+              <div id="diag-banner" class="diag-banner" hidden></div>
+              <div id="diag-body" class="diag-body"></div>
+            </div>
+          </aside>
+        </div>
+
+        <div id="right-rail" class="resize-rail right-rail" hidden></div>
+
+        <!--
+          Inspector (right aside, default 316px).
+          Selection precedence: selected function → file.
+          SEAM: bottom Diagnostics tab (Slice 3) and function DAG (Slice 4) call
+          into the same selectFunction / selectFile pipeline.
+        -->
+        <aside id="right-aside" class="right-aside" hidden>
+          <div id="inspector" class="inspector">
+            <div class="insp-empty muted">Select a file on the map or in Layers.</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/diagnostics.js"></script>
+  <script src="/static/function_dag.js"></script>
+  <script src="/static/viewer.js"></script>
+</body>
+</html>

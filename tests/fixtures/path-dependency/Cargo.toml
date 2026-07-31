@@ -1,0 +1,15 @@
+[package]
+name = "freecrate"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "freecrate"
+path = "src/lib.rs"
+
+[dependencies]
+# The folder is `engine`, but the PACKAGE is `text-engine`.
+text-engine = { path = "engine" }

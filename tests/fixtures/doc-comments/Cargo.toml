@@ -1,0 +1,11 @@
+[package]
+name = "doc-comments"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "doc_comments"
+path = "src/lib.rs"

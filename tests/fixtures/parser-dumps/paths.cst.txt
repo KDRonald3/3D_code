@@ -1,0 +1,191 @@
+SOURCE_FILE@0..223
+  USE@0..30
+    USE_KW@0..3 "use"
+    WHITESPACE@3..4 " "
+    USE_TREE@4..29
+      PATH@4..29
+        PATH@4..20
+          PATH@4..7
+            PATH_SEGMENT@4..7
+              NAME_REF@4..7
+                IDENT@4..7 "std"
+          COLON2@7..9 "::"
+          PATH_SEGMENT@9..20
+            NAME_REF@9..20
+              IDENT@9..20 "collections"
+        COLON2@20..22 "::"
+        PATH_SEGMENT@22..29
+          NAME_REF@22..29
+            IDENT@22..29 "HashMap"
+    SEMICOLON@29..30 ";"
+  WHITESPACE@30..32 "\r\n"
+  USE@32..56
+    USE_KW@32..35 "use"
+    WHITESPACE@35..36 " "
+    USE_TREE@36..55
+      PATH@36..55
+        PATH@36..48
+          PATH@36..41
+            PATH_SEGMENT@36..41
+              NAME_REF@36..41
+                CRATE_KW@36..41 "crate"
+          COLON2@41..43 "::"
+          PATH_SEGMENT@43..48
+            NAME_REF@43..48
+              IDENT@43..48 "cache"
+        COLON2@48..50 "::"
+        PATH_SEGMENT@50..55
+          NAME_REF@50..55
+            IDENT@50..55 "Cache"
+    SEMICOLON@55..56 ";"
+  WHITESPACE@56..58 "\r\n"
+  USE@58..82
+    USE_KW@58..61 "use"
+    WHITESPACE@61..62 " "
+    USE_TREE@62..81
+      PATH@62..81
+        PATH@62..75
+          PATH@62..72
+            PATH@62..69
+              PATH@62..66
+                PATH@62..63
+                  PATH_SEGMENT@62..63
+                    NAME_REF@62..63
+                      IDENT@62..63 "a"
+                COLON2@63..65 "::"
+                PATH_SEGMENT@65..66
+                  NAME_REF@65..66
+                    IDENT@65..66 "b"
+              COLON2@66..68 "::"
+              PATH_SEGMENT@68..69
+                NAME_REF@68..69
+                  IDENT@68..69 "c"
+            COLON2@69..71 "::"
+            PATH_SEGMENT@71..72
+              NAME_REF@71..72
+                IDENT@71..72 "d"
+          COLON2@72..74 "::"
+          PATH_SEGMENT@74..75
+            NAME_REF@74..75
+              IDENT@74..75 "e"
+        COLON2@75..77 "::"
+        PATH_SEGMENT@77..81
+          NAME_REF@77..81
+            IDENT@77..81 "Deep"
+    SEMICOLON@81..82 ";"
+  WHITESPACE@82..84 "\r\n"
+  USE@84..126
+    USE_KW@84..87 "use"
+    WHITESPACE@87..88 " "
+    USE_TREE@88..125
+      PATH@88..104
+        PATH@88..91
+          PATH_SEGMENT@88..91
+            NAME_REF@88..91
+              IDENT@88..91 "std"
+        COLON2@91..93 "::"
+        PATH_SEGMENT@93..104
+          NAME_REF@93..104
+            IDENT@93..104 "collections"
+      COLON2@104..106 "::"
+      USE_TREE_LIST@106..125
+        L_CURLY@106..107 "{"
+        USE_TREE@107..115
+          PATH@107..115
+            PATH_SEGMENT@107..115
+              NAME_REF@107..115
+                IDENT@107..115 "BTreeMap"
+        COMMA@115..116 ","
+        WHITESPACE@116..117 " "
+        USE_TREE@117..124
+          PATH@117..124
+            PATH_SEGMENT@117..124
+              NAME_REF@117..124
+                IDENT@117..124 "HashSet"
+        R_CURLY@124..125 "}"
+    SEMICOLON@125..126 ";"
+  WHITESPACE@126..128 "\r\n"
+  USE@128..175
+    USE_KW@128..131 "use"
+    WHITESPACE@131..132 " "
+    USE_TREE@132..174
+      PATH@132..144
+        PATH@132..137
+          PATH_SEGMENT@132..137
+            NAME_REF@132..137
+              CRATE_KW@132..137 "crate"
+        COLON2@137..139 "::"
+        PATH_SEGMENT@139..144
+          NAME_REF@139..144
+            IDENT@139..144 "cache"
+      COLON2@144..146 "::"
+      USE_TREE_LIST@146..174
+        L_CURLY@146..147 "{"
+        USE_TREE@147..157
+          PATH@147..157
+            PATH_SEGMENT@147..157
+              NAME_REF@147..157
+                IDENT@147..157 "count_hits"
+        COMMA@157..158 ","
+        WHITESPACE@158..159 " "
+        USE_TREE@159..173
+          PATH@159..164
+            PATH_SEGMENT@159..164
+              NAME_REF@159..164
+                IDENT@159..164 "Cache"
+          WHITESPACE@164..165 " "
+          RENAME@165..173
+            AS_KW@165..167 "as"
+            WHITESPACE@167..168 " "
+            NAME@168..173
+              IDENT@168..173 "Alias"
+        R_CURLY@173..174 "}"
+    SEMICOLON@174..175 ";"
+  WHITESPACE@175..177 "\r\n"
+  USE@177..221
+    USE_KW@177..180 "use"
+    WHITESPACE@180..181 " "
+    USE_TREE@181..220
+      PATH@181..193
+        PATH@181..186
+          PATH_SEGMENT@181..186
+            NAME_REF@181..186
+              CRATE_KW@181..186 "crate"
+        COLON2@186..188 "::"
+        PATH_SEGMENT@188..193
+          NAME_REF@188..193
+            IDENT@188..193 "outer"
+      COLON2@193..195 "::"
+      USE_TREE_LIST@195..220
+        L_CURLY@195..196 "{"
+        USE_TREE@196..200
+          PATH@196..200
+            PATH_SEGMENT@196..200
+              NAME_REF@196..200
+                SELF_KW@196..200 "self"
+        COMMA@200..201 ","
+        WHITESPACE@201..202 " "
+        USE_TREE@202..219
+          PATH@202..207
+            PATH_SEGMENT@202..207
+              NAME_REF@202..207
+                IDENT@202..207 "inner"
+          COLON2@207..209 "::"
+          USE_TREE_LIST@209..219
+            L_CURLY@209..210 "{"
+            USE_TREE@210..213
+              PATH@210..213
+                PATH_SEGMENT@210..213
+                  NAME_REF@210..213
+                    IDENT@210..213 "One"
+            COMMA@213..214 ","
+            WHITESPACE@214..215 " "
+            USE_TREE@215..218
+              PATH@215..218
+                PATH_SEGMENT@215..218
+                  NAME_REF@215..218
+                    IDENT@215..218 "Two"
+            R_CURLY@218..219 "}"
+        R_CURLY@219..220 "}"
+    SEMICOLON@220..221 ";"
+  WHITESPACE@221..223 "\r\n"

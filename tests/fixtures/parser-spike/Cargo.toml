@@ -1,0 +1,24 @@
+[package]
+name = "ast-spike"
+version = "0.0.0"
+edition = "2021"
+default-run = "dump"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+# The tree dumper: takes ONE file.   cargo run --release -- demo/cache.rs
+[[bin]]
+name = "dump"
+path = "src/main.rs"
+
+# The call resolver: takes a DIRECTORY.  cargo run --release --bin calls -- demo
+[[bin]]
+name = "calls"
+path = "src/bin/calls.rs"
+
+[dependencies]
+ra_ap_syntax = "0.0.338"
+
+[profile.dev]
+debug = 0

@@ -1,0 +1,13 @@
+[package]
+# NOTE: the package name is NOT the folder name, and it has a dash in it.
+name = "text-engine"
+version = "0.1.0"
+edition = "2021"
+
+# No `[workspace]` here: freecrate's root already declares one, and a nested
+# workspace root makes `cargo metadata` on freecrate fail. text-engine is
+# reached as a path dependency (and, under freecrate's workspace, as a member).
+
+[lib]
+name = "text_engine"
+path = "src/lib.rs"

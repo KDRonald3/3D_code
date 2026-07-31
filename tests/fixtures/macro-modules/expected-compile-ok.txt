@@ -1,0 +1,6 @@
+exit 0
+
+Multi-branch `cfg_if!` expands to the union of all branches (same policy as
+Horizon). `cfg_missing!` is a no-op so `absent_file` is never linked by rustc;
+Horizon must still recover the declaration and skip the missing file.
+`stringify!` must not introduce `must_not_appear`.

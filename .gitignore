@@ -1,1 +1,19 @@
 /target
+
+# Scratch target dir used when a background agent builds in parallel
+/target-agent
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Generated maps and screenshots used while developing the viewer
+/crates/horizon-server/testdata/
+
+# Compiled report; the .tex source is tracked instead
+/docs/horizon-report.pdf

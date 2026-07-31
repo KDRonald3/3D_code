@@ -1,0 +1,3 @@
+This fixture is expected to compile successfully (`cargo check` exit 0).
+It exists to prove Horizon resolves a cross-crate free-function call when the
+dependency is renamed in Cargo.toml (`alias = { package = "text-engine", … }`).

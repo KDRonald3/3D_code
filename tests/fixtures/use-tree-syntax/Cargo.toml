@@ -1,0 +1,11 @@
+[package]
+name = "use-tree-syntax"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "use_tree_syntax"
+path = "lib.rs"

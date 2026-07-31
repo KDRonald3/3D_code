@@ -1,0 +1,16 @@
+{
+  "fixture": "glob-ambiguity",
+  "edges": [
+    {
+      "caller": "glob_ambiguity::app::run",
+      "call_path": "get",
+      "expect": {
+        "kind": "conflict",
+        "candidates": [
+          "glob_ambiguity::shapes::get",
+          "glob_ambiguity::text::get"
+        ]
+      }
+    }
+  ]
+}

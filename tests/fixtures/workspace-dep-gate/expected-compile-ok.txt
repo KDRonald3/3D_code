@@ -1,0 +1,7 @@
+# consumer depends only on dep_a. dep_b::shared in wrong_sibling is a rustc error
+# (E0433) — the fixture is intentional mid-edit / negative-case source for the
+# map tool. Do not require `cargo check` success for this workspace.
+#
+# Positive path: consumer::run → dep_a::shared compiles in isolation if the
+# wrong_sibling function is removed. The map must still resolve run's edge and
+# refuse the dep_b edge via the dependency gate.

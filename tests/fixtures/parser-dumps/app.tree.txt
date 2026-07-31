@@ -1,0 +1,73 @@
+FILE
+  DOC COMMENT [parent SOURCE_FILE] L1 "//! Caller. Exercises every non-impl call form, including th…"
+  DOC COMMENT [parent SOURCE_FILE] L2 "//! exist because there is a `lib.rs` crate root above us."
+  fn pub run   L9-70
+    DOC COMMENT [parent FN] L9 "/// Every line below is a distinct call form we have to clas…"
+    comment [parent STMT_LIST] L11 "// within-file, callee defined LATER in this file"
+    CALL -> normalize()
+    comment [parent STMT_LIST] L14 "// cross-file, plain import naming the defining module"
+    CALL -> mean()
+    comment [parent STMT_LIST] L17 "// cross-file through an ALIASED import: written name is not…"
+    CALL -> total()
+    comment [parent STMT_LIST] L20 "// cross-file, module-qualified via `use crate::text`"
+    CALL -> text::upper()
+    comment [parent STMT_LIST] L23 "// cross-file, NESTED module path"
+    CALL -> text::case::snake()
+    comment [parent STMT_LIST] L26 "// cross-file, fully qualified from the crate root"
+    CALL -> crate::numbers::mean()
+    comment [parent STMT_LIST] L29 "// through the lib.rs RE-EXPORT: two segments, root-qualifie…"
+    CALL -> crate::mean()
+    comment [parent STMT_LIST] L32 "// through a re-export that RENAMED the function"
+    CALL -> shout_upper()
+    comment [parent STMT_LIST] L35 "// a function defined in lib.rs itself"
+    CALL -> summarize()
+    comment [parent STMT_LIST] L38 "// a lib.rs function, root-qualified"
+    CALL -> crate::width_of()
+    comment [parent STMT_LIST] L41 "// cross-file through a GLOB import, name never written in a…"
+    CALL -> area()
+    comment [parent STMT_LIST] L44 "// within-file, self-qualified"
+    CALL -> self::normalize()
+    comment [parent STMT_LIST] L47 "// within-file, INLINE module"
+    CALL -> helpers::indent()
+    comment [parent STMT_LIST] L50 "// within-file recursion target"
+    CALL -> countdown()
+    comment [parent STMT_LIST] L53 "// callee named but NOT called here; passed as a value"
+    CALL -> apply()
+    comment [parent STMT_LIST] L56 "// call sited inside a CLOSURE body"
+    closure   L58
+      CALL -> normalize()
+    CALL -> k()
+    comment [parent STMT_LIST] L62 "// EXTERNAL crate: must be refused, not guessed"
+    CALL -> std::cmp::max()
+    comment [parent STMT_LIST] L67 "// COLLIDES with shapes::describe pulled in by the glob abov…"
+    comment [parent STMT_LIST] L68 "// Rust rule: an explicit local definition beats a glob impo…"
+    CALL -> describe()
+  fn normalize   L72-75
+    DOC COMMENT [parent FN] L72 "/// Within-file free function. No impl, no receiver."
+    METHOD CALL -> s.trim().to_lowercase()
+      METHOD CALL -> s.trim()
+  fn countdown   L77-80
+    DOC COMMENT [parent FN] L77 "/// Calls itself."
+    CALL -> countdown()
+  fn apply   L82-85
+    DOC COMMENT [parent FN] L82 "/// The call happens through a parameter, so no name is avai…"
+    CALL -> f()
+  fn describe   L87-90
+    DOC COMMENT [parent FN] L87 "/// Same name as `shapes::describe`."
+    MACRO CALL -> format!
+  fn pub outer   L92-98
+    DOC COMMENT [parent FN] L92 "/// Contains a nested function, visible only inside this bod…"
+    fn inner   L94-96
+      METHOD CALL -> v.len()
+    CALL -> inner()
+    CALL -> mean()
+  mod helpers   L100-115
+    fn pub indent   L101-104
+      DOC COMMENT [parent FN] L101 "/// Free function inside an inline module."
+      MACRO CALL -> format!
+    fn pub shout   L106-109
+      DOC COMMENT [parent FN] L106 "/// Calls OUT of the inline module, up to the parent module."
+      CALL -> super::normalize()
+    fn pub measure   L111-114
+      DOC COMMENT [parent FN] L111 "/// Calls all the way up to the crate root."
+      CALL -> crate::width_of()

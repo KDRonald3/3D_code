@@ -1,0 +1,35 @@
+FILE
+  DOC COMMENT [parent SOURCE_FILE] L1 "//! Storage layer."
+  struct Item   L5-9
+    DOC COMMENT [parent STRUCT] L5 "/// A cached item."
+    field payload : String   L7
+    field hits : u32   L8
+  trait Store   L11-15
+    DOC COMMENT [parent TRAIT] L11 "/// Anything that can store items."
+    fn Store::get   L13-14
+      DOC COMMENT [parent FN] L13 "/// Required: fetch by key."
+  struct Cache   L17-20
+    DOC COMMENT [parent STRUCT] L17 "/// An in-memory cache."
+    field map : HashMap<String, Item>   L19
+  impl Cache   L22-35
+    fn pub Cache::new   L23-26
+      DOC COMMENT [parent FN] L23 "/// Build an empty cache."
+      CALL -> HashMap::new()
+    fn pub Cache::get   L28-32
+      DOC COMMENT [parent FN] L28 "/// Inherent `get` -- collides with the trait `get` below."
+      METHOD CALL -> self.touch()
+      METHOD CALL -> self.map.get()
+    fn Cache::touch   L34
+  impl Store for Cache   L37-42
+    fn <Cache as Store>::get   L38-41
+      DOC COMMENT [parent FN] L38 "/// Trait `get` -- same name, same type, different origin."
+      METHOD CALL -> self.map.get()
+  fn pub describe   L44-47
+    DOC COMMENT [parent FN] L44 "/// A free function whose name also exists in the other file…"
+    METHOD CALL -> item.payload.clone()
+  fn pub count_hits   L49-52
+    DOC COMMENT [parent FN] L49 "/// Unique free function, should resolve cleanly across file…"
+    METHOD CALL -> items.iter().map(|i| i.hits).sum()
+      METHOD CALL -> items.iter().map()
+        METHOD CALL -> items.iter()
+        closure   L51

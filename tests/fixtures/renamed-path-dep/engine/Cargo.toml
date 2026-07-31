@@ -1,0 +1,8 @@
+[package]
+name = "text-engine"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+name = "text_engine"
+path = "src/lib.rs"

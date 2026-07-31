@@ -1,0 +1,3 @@
+# Nested fixture crates produce their own build artifacts; never commit them.
+**/target/
+**/Cargo.lock

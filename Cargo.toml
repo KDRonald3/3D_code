@@ -1,8 +1,29 @@
-[package]
-name = "codebase_visualizer"
+[workspace]
+resolver = "2"
+members = [
+    "crates/horizon-map",
+    "crates/horizon-engine",
+    "crates/horizon",
+    "crates/horizon-server",
+    "crates/horizon-correctness",
+]
+default-members = ["crates/horizon"]
+exclude = ["tests/fixtures"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Build a navigable function map of a Rust repository."
 
-[dependencies]
-tree-sitter = "0.22"
-tree-sitter-rust = "0.21"
+[workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+ra_ap_syntax = "0.0.343"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+horizon-map = { path = "crates/horizon-map" }
+horizon-engine = { path = "crates/horizon-engine" }
+
+[profile.release]
+opt-level = 2

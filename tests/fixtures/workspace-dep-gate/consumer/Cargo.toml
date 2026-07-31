@@ -1,0 +1,11 @@
+[package]
+name = "consumer"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dep_a = { path = "../dep_a" }
+# Deliberately does NOT depend on dep_b — same `shared` name must not resolve.

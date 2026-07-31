@@ -1,0 +1,13 @@
+FILE
+  DOC COMMENT [parent SOURCE_FILE] L1 "//! Half-typed file, as if someone is editing it right now."
+  struct Cache   L5-8
+    DOC COMMENT [parent STRUCT] L5 "/// A cache being written."
+    field map : HashMap<String,   L7
+  impl Cache   L10-18
+    fn pub new   L11-12
+      DOC COMMENT [parent FN] L11 "/// Build one."
+    fn pub get   L14-17
+      DOC COMMENT [parent FN] L14 "/// Fetch a key."
+      METHOD CALL -> .get
+  fn pub <unnamed>   L20-22
+    DOC COMMENT [parent FN] L20 "/// Just started typing this one."

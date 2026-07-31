@@ -1,0 +1,30 @@
+{
+  "fixture": "use-tree-syntax",
+  "edges": [
+    {
+      "caller": "use_tree_syntax::drive",
+      "call_path": "one",
+      "expect": { "kind": "resolved", "id": "use_tree_syntax::alpha::one" }
+    },
+    {
+      "caller": "use_tree_syntax::drive",
+      "call_path": "second",
+      "expect": { "kind": "resolved", "id": "use_tree_syntax::alpha::two" }
+    },
+    {
+      "caller": "use_tree_syntax::drive",
+      "call_path": "three",
+      "expect": { "kind": "resolved", "id": "use_tree_syntax::beta::three" }
+    },
+    {
+      "caller": "use_tree_syntax::drive",
+      "call_path": "buried",
+      "expect": { "kind": "resolved", "id": "use_tree_syntax::beta::deep::buried" }
+    },
+    {
+      "caller": "use_tree_syntax::drive",
+      "call_path": "HashMap::new",
+      "expect": { "kind": "absent" }
+    }
+  ]
+}

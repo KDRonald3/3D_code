@@ -1,0 +1,10 @@
+{
+  "fixture": "renamed-path-dep",
+  "edges": [
+    {
+      "caller": "renamed_path_dep::run",
+      "call_path": "alias::greet",
+      "expect": { "kind": "resolved", "id": "text_engine::greet" }
+    }
+  ]
+}

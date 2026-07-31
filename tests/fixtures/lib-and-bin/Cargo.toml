@@ -1,0 +1,15 @@
+[package]
+name = "lib-and-bin"
+version = "0.0.0"
+edition = "2021"
+
+# Standalone fixture crate — do not join the Horizon workspace.
+[workspace]
+
+[lib]
+name = "lib_and_bin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lib_and_bin"
+path = "src/main.rs"
