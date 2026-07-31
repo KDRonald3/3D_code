@@ -118,6 +118,25 @@ browser-driven (covered by the attach branch in JS + HTTP conflict shape).
 
 ---
 
+## W9 — Theme, Recent, Pages rail — DONE
+
+**Why.** Slice 5 chrome was still stubbed: theme did not persist, there was no
+Recent list, and Pages had a single Diagnostics dock button.
+
+**Change.** Theme toggle persists to `localStorage` (`horizon.theme`) and
+survives reload. Loading a map records it under `horizon.recent` (capped at 5,
+skips maps over ~1.5 MiB); the import screen shows chips that restore via
+`loadMap` + `POST /api/map`. Pages rail is Map / Diff (disabled, honest title)
+/ Functions / Diagnostics — Functions and Diagnostics open the dock on the
+right tab; Map closes the dock. Diff stays inert.
+
+**Measured.** Theme light→dark (icon ☀, `data-theme=dark`, localStorage);
+reload keeps dark. Pages: Functions opens fns pane, Diagnostics opens diag,
+Map closes dock. Recent chip restores 23-file self-map. smokeCheck ok.
+Screenshots: `w9-theme-dark.png`, `w9-pages-fns.png`, `w9-recent.png`.
+
+---
+
 ## Queue status
 
 | Item | Status |
@@ -125,6 +144,6 @@ browser-driven (covered by the attach branch in JS + HTTP conflict shape).
 | W11 | done |
 | W6 | done |
 | W7 | done |
-| W9 | next |
-| W10 | pending |
+| W9 | done |
+| W10 | next |
 | W8 | pending / may stop cleanly |

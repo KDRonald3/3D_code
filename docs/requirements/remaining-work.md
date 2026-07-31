@@ -237,11 +237,15 @@ extension of the contract rather than a UI afterthought. Method receiver typing
 is the hard part: one-hop inference at most, and anything less than certain must
 be `Conflict` or `Unresolved` — never a guess.
 
-### W9 — Slice 5: remaining shell chrome
+### W9 — Slice 5: remaining shell chrome — DONE
 
 **Done when.** Theme toggle (`☾`), the Recent list, and the Pages rail behave as
 in the Desktop spec. `Diff · PR #142` is a design placeholder and stays disabled
 unless a real diff source exists — do not fake it.
+
+**Resolved as:** theme persists in `localStorage`; Recent chips restore stored
+`Repository` JSON (size-capped); Pages are Map / Diff (disabled) / Functions /
+Diagnostics. Diff title states there is no diff source — not faked.
 
 ### W10 — Collapse the duplicated rail arithmetic
 
