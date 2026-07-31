@@ -182,13 +182,29 @@
           <aside id="bottom-panel" class="bottom-panel" hidden>
             <div class="bottom-chrome">
               <div class="bottom-tabs" role="tablist">
-                <button type="button" class="bottom-tab" data-bottom-tab="fns" id="tab-functions" role="tab" aria-selected="false" title="Function call DAG for the selected file">Functions</button>
-                <button type="button" class="bottom-tab active" data-bottom-tab="diag" id="tab-diagnostics" role="tab" aria-selected="true">Diagnostics</button>
+                <button type="button" class="bottom-tab" data-bottom-tab="fns" id="tab-functions" role="tab" aria-selected="false" title="Function call DAG for the selected file" aria-label="Functions">
+                  <span class="chrome-tab-full">Functions</span>
+                  <span class="chrome-tab-short" aria-hidden="true">Fn</span>
+                </button>
+                <button type="button" class="bottom-tab active" data-bottom-tab="diag" id="tab-diagnostics" role="tab" aria-selected="true" aria-label="Diagnostics">
+                  <span class="chrome-tab-full">Diagnostics</span>
+                  <span class="chrome-tab-short" aria-hidden="true">Diag</span>
+                </button>
               </div>
+              <!--
+                Controls may compact / scroll; tabs + ✕ stay pinned outside so a
+                squeezed centre column never hides close or tab switching.
+              -->
               <div class="bottom-controls">
                 <div class="diag-group-mode" id="diag-group-mode" title="Group diagnostics">
-                  <button type="button" data-group="reason" class="on">By reason</button>
-                  <button type="button" data-group="file">By file</button>
+                  <button type="button" data-group="reason" class="on" aria-label="By reason">
+                    <span class="chrome-label-full">By reason</span>
+                    <span class="chrome-label-short" aria-hidden="true">Reason</span>
+                  </button>
+                  <button type="button" data-group="file" aria-label="By file">
+                    <span class="chrome-label-full">By file</span>
+                    <span class="chrome-label-short" aria-hidden="true">File</span>
+                  </button>
                 </div>
                 <div class="fns-controls" id="fns-controls" hidden>
                   <div
@@ -198,14 +214,26 @@
                     aria-label="Call neighborhood depth from the focused function"
                     title="How many hops from the focused function to show. Busy files open at a budget-grown neighborhood (or All when the full graph is manageable); All always restores every node and edge."
                   >
-                    <button type="button" data-depth="1" class="on">1 hop</button>
-                    <button type="button" data-depth="2">2 hops</button>
-                    <button type="button" data-depth="all">All</button>
+                    <button type="button" data-depth="1" class="on" aria-label="1 hop">
+                      <span class="chrome-label-full">1 hop</span>
+                      <span class="chrome-label-short" aria-hidden="true">1</span>
+                    </button>
+                    <button type="button" data-depth="2" aria-label="2 hops">
+                      <span class="chrome-label-full">2 hops</span>
+                      <span class="chrome-label-short" aria-hidden="true">2</span>
+                    </button>
+                    <button type="button" data-depth="all" aria-label="All hops">
+                      <span class="chrome-label-full">All</span>
+                      <span class="chrome-label-short" aria-hidden="true">∞</span>
+                    </button>
                   </div>
-                  <button type="button" id="fns-fit" class="ghost-btn" title="Fit DAG in view">Fit</button>
+                  <button type="button" id="fns-fit" class="ghost-btn" title="Fit DAG in view" aria-label="Fit DAG in view">
+                    <span class="chrome-label-full">Fit</span>
+                    <span class="chrome-label-short" aria-hidden="true">⤢</span>
+                  </button>
                 </div>
-                <button type="button" id="bottom-close" class="ghost-btn" title="Close bottom panel">✕</button>
               </div>
+              <button type="button" id="bottom-close" class="ghost-btn bottom-close" title="Close bottom panel">✕</button>
             </div>
             <div id="fns-pane" class="fns-pane" hidden>
               <div id="fns-banner" class="fns-banner"></div>

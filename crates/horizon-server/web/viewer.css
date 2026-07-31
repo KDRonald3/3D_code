@@ -1874,21 +1874,23 @@ select {
 }
 
 .bottom-chrome {
-  flex: 0 0 auto;
+  /*
+   * Fixed 40px border-box — side-rail squeeze must never grow this bar (label
+   * wrap used to add ~11px and steal the same from #fns-viewport). Compact
+   * classes shorten labels; height stays locked by construction.
+   */
+  flex: 0 0 40px;
+  height: 40px;
+  max-height: 40px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: nowrap;
-  gap: 10px;
-  padding: 6px 10px;
+  gap: 8px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  /*
-   * Side-rail resize narrows the dock. Chrome labels (esp. "2 hops") used to
-   * wrap a second ~11px line under flex-shrink, growing this bar and stealing
-   * the same height from #fns-viewport — the DAG jumped down while fnsPanY
-   * stayed put. Clip overflow; never grow a second line.
-   */
   white-space: nowrap;
   overflow: hidden;
 }
@@ -1923,11 +1925,76 @@ select {
   cursor: not-allowed;
 }
 
+.chrome-tab-short,
+.chrome-label-short {
+  display: none;
+}
+
+/*
+ * ≤ ~420px chrome: shorten depth / group / Fit labels so controls stay
+ * clickable without wrapping. Tabs stay full-width until .is-tight.
+ */
+.bottom-chrome.is-compact .chrome-label-full {
+  display: none;
+}
+
+.bottom-chrome.is-compact .chrome-label-short {
+  display: inline;
+}
+
+.bottom-chrome.is-compact .bottom-tab {
+  padding-left: 7px;
+  padding-right: 7px;
+}
+
+.bottom-chrome.is-compact .fns-depth-mode button,
+.bottom-chrome.is-compact .diag-group-mode button {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+/*
+ * ≤ ~300px chrome: also shorten tab labels so Functions / Diagnostics + ✕
+ * remain reachable when rails aggressively squeeze the centre column.
+ */
+.bottom-chrome.is-tight .chrome-tab-full {
+  display: none;
+}
+
+.bottom-chrome.is-tight .chrome-tab-short {
+  display: inline;
+}
+
+.bottom-chrome.is-tight .bottom-tab {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
 .bottom-controls {
   display: flex;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  /*
+   * Safety net after compaction: scroll sideways, never vertically. Hidden
+   * scrollbars so a classic OS bar cannot grow the locked 40px chrome.
+   */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.bottom-controls::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.bottom-close {
+  flex-shrink: 0;
 }
 
 .fns-controls[hidden],
@@ -2272,6 +2339,7 @@ select {
 
 .diag-group-mode {
   display: flex;
+  flex-shrink: 0;
   border: 1px solid var(--border);
   border-radius: 7px;
   overflow: hidden;
@@ -2286,6 +2354,7 @@ select {
   font-weight: 600;
   padding: 4px 9px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .diag-group-mode button.on {

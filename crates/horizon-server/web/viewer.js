@@ -31,6 +31,13 @@
   const BOTTOM_MIN = 120;
   /** Floor for #fns-viewport / .diag-body so rail squeeze cannot collapse them. */
   const FNS_VIEWPORT_MIN = 48;
+  /*
+   * Dock chrome width → progressive label compaction. Full Functions chrome
+   * overflow began near 360px centre-column; compact by 420px (margin). Tight
+   * shortens tab labels so tabs + ✕ stay hittable near 180px centre column.
+   */
+  const BOTTOM_CHROME_COMPACT_PX = 420;
+  const BOTTOM_CHROME_TIGHT_PX = 300;
 
   const els = {
     app: document.getElementById("app"),
@@ -159,6 +166,12 @@
   let bottomOpen = false;
   let bottomH = BOTTOM_DEFAULT;
   let bottomHomeH = BOTTOM_DEFAULT;
+  /** Last measured .bottom-chrome width (px); 0 until observed. */
+  let bottomChromeWidth = 0;
+  /** True when chrome width ≤ BOTTOM_CHROME_COMPACT_PX (short control labels). */
+  let bottomChromeCompact = false;
+  /** True when chrome width ≤ BOTTOM_CHROME_TIGHT_PX (short tab labels too). */
+  let bottomChromeTight = false;
   /**
    * Bottom dock sits *below* the canvas, so growing it shortens the viewport
    * from the bottom — canvas top (origin Y) does not move. Unlike left-occupied
@@ -718,6 +731,27 @@
     els.app.style.setProperty("--bottom-h", `${bottomH}px`);
     els.app.style.setProperty("--bottom-occupied", `${occ}px`);
     if (els.bottomRail) els.bottomRail.style.bottom = "";
+    syncBottomChromeCompact();
+  }
+
+  /**
+   * Apply .is-compact / .is-tight on .bottom-chrome from its measured width.
+   * Labels shorten; chrome height stays 40px (CSS-locked) — never wrap.
+   */
+  function syncBottomChromeCompact() {
+    const chrome = els.bottomPanel
+      ? els.bottomPanel.querySelector(".bottom-chrome")
+      : null;
+    if (!chrome) return;
+    // Hidden panel has no useful width; keep prior classes until shown.
+    if (els.bottomPanel.hidden) return;
+    const w = chrome.getBoundingClientRect().width;
+    if (!(w > 0)) return;
+    bottomChromeWidth = w;
+    bottomChromeCompact = w <= BOTTOM_CHROME_COMPACT_PX;
+    bottomChromeTight = w <= BOTTOM_CHROME_TIGHT_PX;
+    chrome.classList.toggle("is-compact", bottomChromeCompact);
+    chrome.classList.toggle("is-tight", bottomChromeTight);
   }
 
   /**
@@ -2134,7 +2168,7 @@
    * Invariants while dock is open on the Functions tab:
    * - banner height stays constant across dock widths (no wrap)
    * - chrome height / contentTopInset stay constant across side-rail resizes
-   *   (chrome labels must not wrap a second line and steal viewport height)
+   *   (chrome is height-locked at 40px; labels compact instead of wrapping)
    * - viewport height stays > 0
    */
   function getFnsPaneMetrics() {
@@ -2161,11 +2195,14 @@
       panelTop: panelRect ? panelRect.top : 0,
       panelHeight: panelRect ? panelRect.height : 0,
       chromeHeight: chromeRect ? chromeRect.height : 0,
+      chromeWidth: chromeRect ? chromeRect.width : bottomChromeWidth,
       // Panel top → banner top. Stable across left/right rail resizes.
       contentTopInset:
         panelRect && Number.isFinite(br.top)
           ? br.top - panelRect.top
           : 0,
+      compact: bottomChromeCompact,
+      tight: bottomChromeTight,
       bottomOpen,
       tab: bottomTab,
       fnsVisible,
@@ -3772,6 +3809,15 @@
     setBottomOpen(false);
     syncPagesActive();
 
+    // Side-rail / window resize changes chrome width — re-apply compact classes.
+    const bottomChrome = els.bottomPanel
+      ? els.bottomPanel.querySelector(".bottom-chrome")
+      : null;
+    if (bottomChrome && typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => syncBottomChromeCompact());
+      ro.observe(bottomChrome);
+    }
+
     try {
       window
         .matchMedia("(prefers-color-scheme: dark)")
@@ -4174,6 +4220,9 @@
                 typeof m.bannerHeight !== "number" ||
                 typeof m.viewportHeight !== "number" ||
                 typeof m.viewportTop !== "number" ||
+                typeof m.chromeWidth !== "number" ||
+                typeof m.compact !== "boolean" ||
+                typeof m.tight !== "boolean" ||
                 m.viewportMinPx !== FNS_VIEWPORT_MIN
               ) {
                 checks.push({
