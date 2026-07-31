@@ -46,7 +46,9 @@ round of debugging). Current members:
 `getFunctionDag`, `renderFunctionDag`, `fitFunctionDag`, `openDiagnosticEntry`,
 `renderDiagnostics`, `inspectorOpenPolicy`, `getLastCardGesture`, `smokeCheck`,
 `applyRightWidth`, `applyLeftWidth`, `commitLeftHome`, `commitRightHome`,
-`runLayoutAcceptance`, `fitView`.
+`runLayoutAcceptance`, `fitView`, `getFilters`, `setFilter`, `getFnsDepth`,
+`setFnsDepth`, `getTheme`, `setTheme`, `getRecent`, `startAnalyse`,
+`analyseOverlayVisible`, `runRailFixtureTable`.
 
 `smokeCheck()` runs at boot and must return `ok: true`. Any new hook gets a
 probe there, so a broken surface fails loudly on load instead of silently in a
@@ -312,8 +314,8 @@ count badge.
 crate group collapse arrows · `(crate root)` folder arrows · file rows including
 `[bin]` crates and the `!` warning badge · a `★` entry-point row.
 
-**Filter chips:** `Entry` · `Files` · `Fns` (disabled until W8) · `Types`
-(disabled until W8).
+**Filter chips:** `Entry` · `Files` · `Fns` · `Types` (content chips dim file
+cards by `fnCount` / `typeCount`; methods still out of the map until W8b).
 
 **Canvas:** pan by background drag · wheel zoom · HUD `−` / `%` / `+` · card
 click selects · card drag moves without selecting or opening the Inspector
