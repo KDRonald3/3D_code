@@ -403,18 +403,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-types"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "horizon-engine",
- "horizon-map",
- "ra_ap_syntax",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

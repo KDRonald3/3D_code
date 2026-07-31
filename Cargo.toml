@@ -3,13 +3,16 @@ resolver = "2"
 members = [
     "crates/horizon-map",
     "crates/horizon-engine",
-    "crates/horizon-types",
     "crates/horizon",
     "crates/horizon-server",
     "crates/horizon-correctness",
 ]
 default-members = ["crates/horizon"]
-exclude = ["tests/fixtures"]
+# `horizon-types` is parked: the type / inherent-method analysis is kept for a
+# future design pass but takes no part in building, testing, or running the
+# project. It duplicates the free-function resolve calculus, so keeping it in
+# the build would demand fixing every resolution change twice.
+exclude = ["tests/fixtures", "crates/horizon-types"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,7 +28,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 horizon-map = { path = "crates/horizon-map" }
 horizon-engine = { path = "crates/horizon-engine" }
-horizon-types = { path = "crates/horizon-types" }
 
 [profile.release]
 opt-level = 2

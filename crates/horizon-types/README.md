@@ -3,6 +3,26 @@
 Type definitions and inherent-method analysis for Horizon — **outside** the
 free-function map algorithm.
 
+> **Parked.** This crate is listed under `exclude` in the root manifest, so it
+> takes no part in building, testing, or running the project. `cargo
+> build`/`cargo test --workspace` never compile it, and no shipping crate
+> depends on it. It exists so the analysis is not lost before the type/`impl`
+> side gets its own design pass.
+>
+> It reaches its conclusions by carrying its own copy of the free-function
+> resolve calculus (`resolve.rs` here differs from the engine's by roughly 330
+> lines out of 2,875; `extract.rs` by roughly 940 out of 1,710). Keeping that
+> copy inside the build would mean every future change to import resolution,
+> glob handling, re-export hops, or visibility had to be made twice or the two
+> maps would silently disagree. Sharing the calculus is the problem to solve
+> before this is wired back in.
+>
+> Build or test it on demand:
+>
+> ```
+> cargo test --manifest-path crates/horizon-types/Cargo.toml
+> ```
+
 The free-function pipeline (`horizon-engine` / `horizon-map`) deliberately
 stops at free functions. Calls of the form `Type::assoc(...)` and
 `receiver.method(...)` are dropped as `associated_dropped`. This crate owns
