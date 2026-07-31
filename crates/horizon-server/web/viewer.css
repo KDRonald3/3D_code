@@ -486,6 +486,62 @@ select {
   width: 100%;
 }
 
+.recent-block {
+  margin-top: 28px;
+  width: 100%;
+  max-width: 480px;
+}
+
+.recent-block[hidden] {
+  display: none !important;
+}
+
+.recent-block .section-label {
+  margin-bottom: 8px;
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recent-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.recent-chip:hover {
+  border-color: var(--sel);
+}
+
+.recent-chip-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-chip-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+}
+
 .import-error-icon {
   color: var(--warn);
   font-size: 13px;

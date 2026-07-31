@@ -37,8 +37,9 @@
     <section id="import-screen" class="import-screen" hidden>
       <h1 class="import-title">Open a codebase</h1>
       <p class="import-sub">
-        Load a Horizon function-map <span class="mono">.json</span> file
-        (or start the server with <span class="mono">--map</span>).
+        Analyse a local folder, open a saved map <span class="mono">.json</span>,
+        or restore a Recent project. The server also accepts
+        <span class="mono">--map</span> at startup.
       </p>
       <div class="import-actions">
         <button type="button" id="open-folder" class="import-card" title="Analyse a local Cargo repository via POST /api/analyse">
@@ -84,6 +85,10 @@
         <span id="import-error-text" class="mono"></span>
         <button type="button" id="clear-error" class="ghost-btn">✕</button>
       </div>
+      <div id="recent-block" class="recent-block" hidden>
+        <div class="section-label">Recent</div>
+        <div id="recent-list" class="recent-list"></div>
+      </div>
     </section>
 
     <!--
@@ -106,11 +111,11 @@
         <aside id="left-aside" class="left-aside">
           <div class="pages-block">
             <div class="section-label">Pages</div>
-            <button type="button" class="page-btn active" data-page="map"><span class="page-ico">◇</span>Map</button>
-            <button type="button" class="page-btn" data-page="diff" disabled title="Stub — Diff not in Slice 1"><span class="page-ico">◈</span>Diff · PR #142</button>
-            <!-- Opens the bottom dock (Diagnostics now; Functions DAG in Slice 4). -->
-            <button type="button" class="page-btn" data-page="dock" id="page-dock" title="Open bottom dock"><span class="page-ico fn">ƒ</span>Diagnostics<span class="page-trail">⊟</span><span class="page-badge" id="page-dock-badge" hidden></span></button>
-            <!-- Data structures omitted until the analyser emits structs (owner decision). -->
+            <button type="button" class="page-btn active" data-page="map" id="page-map" title="Codebase map"><span class="page-ico">◇</span>Map</button>
+            <button type="button" class="page-btn" data-page="diff" id="page-diff" disabled title="Placeholder — no diff source in the map contract"><span class="page-ico">◈</span>Diff · PR #142</button>
+            <button type="button" class="page-btn" data-page="fns" id="page-fns" title="Function call DAG for the selected file"><span class="page-ico fn">ƒ</span>Functions<span class="page-trail">⊟</span></button>
+            <button type="button" class="page-btn" data-page="diag" id="page-dock" title="Diagnostics worklist"><span class="page-ico">⊘</span>Diagnostics<span class="page-trail">⊟</span><span class="page-badge" id="page-dock-badge" hidden></span></button>
+            <!-- Data structures omitted until the analyser emits structs (W8). -->
           </div>
 
           <div class="divider"></div>

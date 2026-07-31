@@ -56,6 +56,11 @@
     importError: document.getElementById("import-error"),
     importErrorText: document.getElementById("import-error-text"),
     clearError: document.getElementById("clear-error"),
+    recentBlock: document.getElementById("recent-block"),
+    recentList: document.getElementById("recent-list"),
+    pageMap: document.getElementById("page-map"),
+    pageDiff: document.getElementById("page-diff"),
+    pageFns: document.getElementById("page-fns"),
     mainView: document.getElementById("main-view"),
     leftAside: document.getElementById("left-aside"),
     leftRail: document.getElementById("left-rail"),
@@ -258,9 +263,152 @@
       .replace(/"/g, "&quot;");
   }
 
+  const THEME_KEY = "horizon.theme";
+  const RECENT_KEY = "horizon.recent";
+  const RECENT_MAX = 5;
+  /** Skip storing maps larger than this — localStorage is ~5 MiB total. */
+  const RECENT_MAX_BYTES = 1_500_000;
+
   function applyTheme() {
     els.app.dataset.theme = dark ? "dark" : "light";
-    els.toggleTheme.textContent = dark ? "☀" : "☾";
+    if (els.toggleTheme) {
+      els.toggleTheme.textContent = dark ? "☀" : "☾";
+      els.toggleTheme.title = dark ? "Switch to light theme" : "Switch to dark theme";
+    }
+  }
+
+  function persistTheme() {
+    try {
+      localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+    } catch (_) {
+      /* private mode / quota — theme still works for the session */
+    }
+  }
+
+  function readRecent() {
+    try {
+      const raw = localStorage.getItem(RECENT_KEY);
+      if (!raw) return [];
+      const list = JSON.parse(raw);
+      return Array.isArray(list) ? list : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeRecent(list) {
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+    } catch (err) {
+      // Quota — drop oldest until it fits, then give up silently.
+      let trimmed = list.slice();
+      while (trimmed.length > 1) {
+        trimmed = trimmed.slice(0, -1);
+        try {
+          localStorage.setItem(RECENT_KEY, JSON.stringify(trimmed));
+          return;
+        } catch (_) {
+          /* keep trimming */
+        }
+      }
+    }
+  }
+
+  /**
+   * Remember a loaded map for the import Recent list. Stores the Repository
+   * JSON itself (honest restore — no re-analyse). Oversized maps are skipped
+   * rather than corrupting localStorage.
+   */
+  function rememberRecent(map, label) {
+    if (!map || typeof map !== "object") return;
+    let json;
+    try {
+      json = JSON.stringify(map);
+    } catch (_) {
+      return;
+    }
+    if (json.length > RECENT_MAX_BYTES) return;
+    const root = map.root != null ? String(map.root) : "";
+    const id = root || label || `map-${Date.now()}`;
+    const entry = {
+      id,
+      label: label || basename(root) || "Untitled map",
+      root,
+      savedAt: Date.now(),
+      summary: map.summary || null,
+      map,
+    };
+    const prev = readRecent().filter((e) => e && e.id !== id);
+    writeRecent([entry, ...prev].slice(0, RECENT_MAX));
+    renderRecent();
+  }
+
+  function renderRecent() {
+    const list = els.recentList;
+    const block = els.recentBlock;
+    if (!list || !block) return;
+    const items = readRecent().filter((e) => e && e.map && typeof e.map === "object");
+    list.replaceChildren();
+    if (!items.length) {
+      block.hidden = true;
+      return;
+    }
+    block.hidden = false;
+    for (const item of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "recent-chip";
+      btn.title = item.root || item.label;
+      const label = document.createElement("span");
+      label.className = "recent-chip-label";
+      label.textContent = item.label || "Untitled map";
+      const meta = document.createElement("span");
+      meta.className = "recent-chip-meta";
+      const s = item.summary || item.map.summary || {};
+      const unresolved = s.unresolved ?? 0;
+      const conflicts = s.conflicts ?? 0;
+      meta.textContent =
+        conflicts || unresolved
+          ? `${conflicts} conflict · ${unresolved} unresolved`
+          : "clean";
+      btn.appendChild(label);
+      btn.appendChild(meta);
+      btn.addEventListener("click", async () => {
+        try {
+          const text = JSON.stringify(item.map);
+          try {
+            await fetch("/api/map", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: text,
+            });
+          } catch (_) {
+            /* canvas can still load without server store */
+          }
+          loadMap(item.map, item.label || "recent");
+        } catch (err) {
+          showImport(`Failed to restore recent map: ${err.message || err}`);
+        }
+      });
+      list.appendChild(btn);
+    }
+  }
+
+  /** Pages rail active state — Map, or the open dock tab. Diff stays inert. */
+  function syncPagesActive() {
+    const page =
+      bottomOpen && bottomTab === "fns"
+        ? "fns"
+        : bottomOpen && bottomTab === "diag"
+          ? "diag"
+          : "map";
+    document.querySelectorAll(".page-btn[data-page]").forEach((btn) => {
+      if (btn.disabled) {
+        btn.classList.remove("active");
+        return;
+      }
+      btn.classList.toggle("active", btn.dataset.page === page);
+    });
   }
 
   function workspaceWidth() {
@@ -538,18 +686,19 @@
       els.bottomPanel.setAttribute("aria-hidden", bottomOpen ? "false" : "true");
     }
     if (els.bottomRail) els.bottomRail.hidden = !bottomOpen;
-    if (els.pageDock) els.pageDock.classList.toggle("active", bottomOpen);
     if (bottomOpen) {
       layoutBottomHeight(bottomHomeH);
       applyBottomTab();
     } else {
       publishBottomVars();
     }
+    syncPagesActive();
   }
 
   function setBottomTab(tab) {
     bottomTab = tab === "fns" ? "fns" : "diag";
     applyBottomTab();
+    syncPagesActive();
   }
 
   function applyBottomTab() {
@@ -2711,6 +2860,7 @@
     setBottomOpen(false);
     els.mainView.hidden = true;
     els.importScreen.hidden = false;
+    renderRecent();
     els.brandSep.hidden = true;
     els.brandSub.hidden = true;
     els.frameStats.hidden = true;
@@ -2792,8 +2942,8 @@
     if (selectedId) revealCard(selectedId);
     renderInspector();
     if (diagFocus) requestAnimationFrame(() => scrollDiagFocusIntoInspector());
-
-    void label;
+    rememberRecent(map, label);
+    syncPagesActive();
   }
 
   // —— Interaction ——
@@ -2921,7 +3071,23 @@
     dark = !dark;
     userSetTheme = true;
     applyTheme();
+    persistTheme();
   });
+
+  // Pages rail — Map focuses the canvas; Functions / Diagnostics open the dock.
+  // Diff · PR #142 stays disabled (no diff source in the contract).
+  if (els.pageMap) {
+    els.pageMap.addEventListener("click", () => {
+      setBottomOpen(false);
+      syncPagesActive();
+    });
+  }
+  if (els.pageFns) {
+    els.pageFns.addEventListener("click", () => {
+      if (!bottomOpen) setBottomOpen(true);
+      setBottomTab("fns");
+    });
+  }
 
   els.toggleLeft.addEventListener("click", () => {
     setLeftOpen(!leftOpen);
@@ -3085,7 +3251,12 @@
   }
   if (els.pageDock) {
     els.pageDock.addEventListener("click", () => {
-      setBottomOpen(!bottomOpen);
+      if (!bottomOpen || bottomTab !== "diag") {
+        setBottomOpen(true);
+        setBottomTab("diag");
+      } else {
+        setBottomOpen(false);
+      }
     });
   }
   if (els.tabFunctions) {
@@ -3469,12 +3640,24 @@
         dark = false;
         userSetTheme = true;
       } else {
-        dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        let stored = null;
+        try {
+          stored = localStorage.getItem(THEME_KEY);
+        } catch (_) {
+          /* ignore */
+        }
+        if (stored === "dark" || stored === "light") {
+          dark = stored === "dark";
+          userSetTheme = true;
+        } else {
+          dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        }
       }
     } catch (_) {
       dark = false;
     }
     applyTheme();
+    renderRecent();
     // Publish defaults without treating the initial occupied width as a delta.
     lastLeftOccupied = null;
     lastBottomOccupied = null;
@@ -3482,6 +3665,7 @@
     setRightWidth(RIGHT_DEFAULT);
     publishBottomVars();
     setBottomOpen(false);
+    syncPagesActive();
 
     try {
       window
@@ -3505,6 +3689,25 @@
       /** Whether the analyse progress overlay is visible. */
       analyseOverlayVisible: () =>
         !!(els.analyseOverlay && !els.analyseOverlay.hidden),
+      /** Current theme: `'light'` | `'dark'`. */
+      getTheme: () => (dark ? "dark" : "light"),
+      /** Toggle or set theme; persists when the user sets it. */
+      setTheme: (next) => {
+        if (next === "dark" || next === "light") dark = next === "dark";
+        else dark = !dark;
+        userSetTheme = true;
+        applyTheme();
+        persistTheme();
+        return dark ? "dark" : "light";
+      },
+      /** Recent maps stored in localStorage (labels only — not full JSON). */
+      getRecent: () =>
+        readRecent().map((e) => ({
+          id: e.id,
+          label: e.label,
+          root: e.root,
+          savedAt: e.savedAt,
+        })),
       getUiState: () => ({
         bootStatus,
         importHidden: !!els.importScreen?.hidden,
@@ -3702,6 +3905,9 @@
           "setFnsDepth",
           "startAnalyse",
           "analyseOverlayVisible",
+          "getTheme",
+          "setTheme",
+          "getRecent",
           "getSelection",
           "getUiState",
           "inspectorOpenPolicy",
@@ -3885,6 +4091,8 @@
               // Side-effecting network call — probe presence only.
             } else if (name === "setFnsDepth") {
               // Would re-render the DAG; presence is enough here.
+            } else if (name === "setTheme") {
+              // Persist + swap tokens — presence is enough; boot already applied.
             } else {
               fn();
             }
