@@ -196,7 +196,7 @@ this repository is either dropped (local binding) or resolved. Re-run this
 accounting after any further resolver change; the goal is not zero unresolved
 but that every remaining one is **honest**.
 
-### W6 — The DAG is unreadable for busy files
+### W6 — The DAG is unreadable for busy files — DONE
 
 **Problem.** `resolve.rs` renders 58 nodes and 199 edges as a hairball. Correct,
 but useless for review.
@@ -204,6 +204,12 @@ but useless for review.
 **Done when.** A busy graph is navigable: depth limiting from the seed, callee
 collapsing, or focus-plus-context, with the control discoverable and the honest
 edge semantics preserved. Zoom alone does not close this.
+
+**Resolved as:** focus-plus-context with a discoverable `1 hop` / `2 hops` /
+`All` control in the Functions chrome. Busy files (`>24` nodes or `>40` edges)
+default to 1 hop around the selected function (else first seed by line); the
+banner counts hidden nodes/edges. Measured on `resolve.rs` (now 66 / 227 after
+W11): depth 1 shows 2 nodes, depth 2 shows 7, All restores 66 / 227.
 
 ### W7 — Live in-process analysis
 
