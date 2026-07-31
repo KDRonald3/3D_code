@@ -1724,6 +1724,39 @@ select {
   display: none !important;
 }
 
+.fns-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/*
+ * Same segmented control idiom as .diag-group-mode — depth is a review
+ * instrument, not a zoom knob, so it lives in the dock chrome beside Fit.
+ */
+.fns-depth-mode {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.fns-depth-mode button {
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.fns-depth-mode button.on {
+  background: var(--panel2);
+  color: var(--text);
+}
+
 .diag-pane,
 .fns-pane {
   flex: 1 1 auto;
@@ -1923,6 +1956,11 @@ select {
 .fns-node.selected {
   border-color: var(--sel);
   box-shadow: 0 0 0 2px var(--selbg);
+}
+
+/* Neighborhood focus when depth-limited — the seed of the visible remnant. */
+.fns-node.focus:not(.selected) {
+  border-color: var(--text2);
 }
 
 .fns-node.function {

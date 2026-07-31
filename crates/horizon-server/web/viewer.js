@@ -84,6 +84,7 @@
     fnsEdgePaths: document.getElementById("fns-edge-paths"),
     fnsNodes: document.getElementById("fns-nodes"),
     fnsControls: document.getElementById("fns-controls"),
+    fnsDepthMode: document.getElementById("fns-depth-mode"),
     fnsFit: document.getElementById("fns-fit"),
     fnsZoomHud: document.getElementById("fns-zoom-hud"),
     fnsZoomOut: document.getElementById("fns-zoom-out"),
@@ -162,6 +163,17 @@
   let diagCollapsed = new Set();
   /** @type {object|null} last built function DAG (for verification). */
   let fnsGraph = null;
+  /**
+   * Neighborhood depth for the Functions DAG: 1 | 2 | 'all'.
+   * Reset (via auto default) when the selected file changes so a busy file
+   * opens readable and a small one still shows everything.
+   * @type {1|2|'all'}
+   */
+  let fnsDepth = "all";
+  /** File id the current `fnsDepth` was chosen for — null until first build. */
+  let fnsDepthFileId = null;
+  /** @type {object|null} last full (unfiltered) DAG build for depth meta. */
+  let fnsFullGraph = null;
   /** Dock Functions canvas transform — fully independent of map zoom/pan. */
   let fnsZoom = 1;
   let fnsPanX = 0;
@@ -1942,6 +1954,36 @@
    * Build + paint the Functions DAG for the selected file.
    * @param {{fit?: boolean}} opts
    */
+  function syncFnsDepthButtons() {
+    const root = els.fnsDepthMode;
+    if (!root) return;
+    root.querySelectorAll("button[data-depth]").forEach((btn) => {
+      const v = btn.getAttribute("data-depth");
+      const on =
+        v === "all" ? fnsDepth === "all" : String(fnsDepth) === String(v);
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  /**
+   * @param {1|2|'all'} depth
+   * @param {{fit?: boolean}} [opts]
+   */
+  function setFnsDepth(depth, opts = {}) {
+    const next =
+      depth === "all" || depth === 2 || depth === "2"
+        ? depth === "all"
+          ? "all"
+          : 2
+        : 1;
+    fnsDepth = next;
+    syncFnsDepthButtons();
+    if (bottomOpen && bottomTab === "fns") {
+      renderFunctionDag({ fit: !!opts.fit });
+    }
+  }
+
   function renderFunctionDag(opts = {}) {
     const fit = !!opts.fit;
     const nodesEl = els.fnsNodes;
@@ -1954,6 +1996,7 @@
       nodesEl.innerHTML =
         `<div class="fns-empty">Function DAG module failed to load.</div>`;
       fnsGraph = null;
+      fnsFullGraph = null;
       return;
     }
 
@@ -1962,6 +2005,8 @@
       : null;
     if (!fileNode) {
       fnsGraph = null;
+      fnsFullGraph = null;
+      fnsDepthFileId = null;
       setFnsBanner(
         `Select a file on the map or in Layers to see its function call DAG.`
       );
@@ -1970,22 +2015,37 @@
       return;
     }
 
+    let full;
     let graph;
     let laid;
+    let meta;
     try {
-      graph = HD.build(fileNode.file, fileNode.id, fnIndex);
+      full = HD.build(fileNode.file, fileNode.id, fnIndex);
+      // Per-file depth default: busy graphs open at 1 hop; small ones stay All.
+      if (fnsDepthFileId !== fileNode.id) {
+        fnsDepthFileId = fileNode.id;
+        fnsDepth = HD.defaultDepth(full);
+        syncFnsDepthButtons();
+      }
+      const focusId = selectedFnId;
+      const sliced = HD.neighborhood(full, focusId, fnsDepth);
+      graph = { nodes: sliced.nodes, edges: sliced.edges, scope: sliced.scope };
+      meta = sliced.meta;
       laid = HD.layout(graph);
     } catch (err) {
       console.error("[HorizonViewer.renderFunctionDag]", err);
       fnsGraph = null;
+      fnsFullGraph = null;
       setFnsBanner(`Function DAG failed to layout this file.`);
       nodesEl.innerHTML =
         `<div class="fns-empty">Could not build the call DAG for this file. See console for details.</div>`;
       pathsEl.replaceChildren();
       return;
     }
+    fnsFullGraph = full;
     fnsGraph = {
       ...graph,
+      meta,
       layout: {
         worldW: laid.worldW,
         worldH: laid.worldH,
@@ -1998,12 +2058,32 @@
     fnsWorldH = laid.worldH;
 
     const sc = graph.scope;
+    const focusName = (() => {
+      if (!meta?.focusId) return null;
+      const n = (full.nodes || []).find((x) => x.id === meta.focusId);
+      return n?.name || String(meta.focusId).split("::").pop() || meta.focusId;
+    })();
+    let depthNote = "";
+    if (meta && meta.depth !== "all") {
+      depthNote =
+        ` · focus <strong>${escapeHtml(focusName || "?")}</strong>` +
+        ` · ${meta.depth} hop${meta.depth === 1 ? "" : "s"}` +
+        ` · showing ${meta.shownNodes} of ${meta.totalNodes} nodes` +
+        `, ${meta.shownEdges} of ${meta.totalEdges} edges`;
+      if (meta.truncated) {
+        depthNote +=
+          ` <span title="Nodes and edges outside this neighborhood are hidden, not deleted. Widen depth or choose All to see every analyser outcome.">(neighborhood — widen depth to see the rest)</span>`;
+      }
+    } else if (meta) {
+      depthNote = ` · all ${meta.totalNodes} nodes`;
+    }
     setFnsBanner(
       `<strong>${escapeHtml(sc.fileName || "file")}</strong>` +
         ` · ${sc.seedCount} function${sc.seedCount === 1 ? "" : "s"}` +
         ` · ${sc.resolvedEdges} resolved` +
         ` · ${sc.conflictEdges} conflict` +
         ` · ${sc.unresolvedEdges} unresolved` +
+        depthNote +
         ` <span title="Unresolved stubs mean the analyser could not resolve the call — not that a callee is missing from the repo.">(stubs are analyser outcomes)</span>`
     );
 
@@ -2065,12 +2145,14 @@
           : null;
       const stubActive =
         !!stubEdge && !!fnsActiveEdgeId && stubEdge.id === fnsActiveEdgeId;
+      const isFocus = !!(meta?.focusId && node.id === meta.focusId);
       el.className =
         `fns-node ${node.kind}` +
         (node.external ? " external" : "") +
         (node.kind === "function" && node.fnId === selectedFnId
           ? " selected"
           : "") +
+        (isFocus ? " focus" : "") +
         (stubActive ? " stub-active" : "");
       el.style.left = `${p.x}px`;
       el.style.top = `${p.y}px`;
@@ -2688,8 +2770,10 @@
     renderEdges();
     renderLayers();
     rebuildDiagnostics();
-    // New map → drop stale DAG; keep dock transform only if Functions re-fits.
+    // New map → drop stale DAG; depth will re-default for the next file.
     fnsGraph = null;
+    fnsFullGraph = null;
+    fnsDepthFileId = null;
     fnsActiveEdgeId = null;
     if (bottomOpen) {
       if (bottomTab === "fns") renderFunctionDag({ fit: true });
@@ -3009,6 +3093,16 @@
   }
   if (els.fnsFit) {
     els.fnsFit.addEventListener("click", () => fitFunctionDag());
+  }
+  if (els.fnsDepthMode) {
+    els.fnsDepthMode.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-depth]");
+      if (!btn || !els.fnsDepthMode.contains(btn)) return;
+      const raw = btn.getAttribute("data-depth");
+      const depth = raw === "all" ? "all" : raw === "2" ? 2 : 1;
+      setFnsDepth(depth, { fit: true });
+    });
+    syncFnsDepthButtons();
   }
   if (els.fnsZoomIn) {
     els.fnsZoomIn.addEventListener("click", (ev) => {
@@ -3352,8 +3446,19 @@
           selectedFnId,
           selectedFileId: selectedId,
           tab: bottomTab,
+          depth: fnsDepth,
+          meta: fnsGraph.meta || null,
+          fullNodeCount: fnsFullGraph ? fnsFullGraph.nodes.length : null,
+          fullEdgeCount: fnsFullGraph ? fnsFullGraph.edges.length : null,
         };
       },
+      /** Current Functions neighborhood depth (`1` | `2` | `'all'`). */
+      getFnsDepth: () => fnsDepth,
+      /**
+       * Set neighborhood depth and re-render. Busy files default to 1 hop;
+       * pass `'all'` for the full subgraph.
+       */
+      setFnsDepth: (depth, opts) => setFnsDepth(depth, opts || {}),
       renderFunctionDag: (opts) => renderFunctionDag(opts || {}),
       fitFunctionDag,
       openDiagnosticEntry,
@@ -3409,6 +3514,8 @@
           "getBottom",
           "getBottomRailHit",
           "getFunctionDag",
+          "getFnsDepth",
+          "setFnsDepth",
           "getSelection",
           "getUiState",
           "inspectorOpenPolicy",

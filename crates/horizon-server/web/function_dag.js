@@ -6,6 +6,12 @@
  * Unresolved sites become stub sinks — never guessed function nodes — so
  * analyser false-positives read as "could not resolve", not as missing callees.
  *
+ * Busy files (many seeds, dense internal edges) are navigated with
+ * focus-plus-context: [`neighborhood`] keeps the focused function and every
+ * node within N hops along the undirected call graph. Depth `all` restores the
+ * full subgraph. Hidden nodes/edges are counted so the banner can stay honest
+ * — edge kinds on the visible remnant are unchanged.
+ *
  * Layout: deterministic layered placement (no RNG). Seed functions ordered by
  * source line occupy the leftmost columns by topo depth within the subgraph;
  * stubs and external callees sit in the column after their caller.
@@ -324,9 +330,162 @@
     };
   }
 
+  /**
+   * Suggest a starting depth for a built graph. Small files stay fully visible;
+   * busy ones open at 1 hop so the dock is readable until the reviewer widens it.
+   * @param {{nodes?: object[], edges?: object[]}} graph
+   * @returns {1|2|'all'}
+   */
+  function defaultDepth(graph) {
+    const n = (graph?.nodes || []).length;
+    const e = (graph?.edges || []).length;
+    if (n > 24 || e > 40) return 1;
+    return "all";
+  }
+
+  /**
+   * Pick the neighborhood focus: preferred id when present, else the first seed
+   * by source line (then id). Returns null only for an empty graph.
+   * @param {{nodes?: object[]}} graph
+   * @param {string|null|undefined} preferredId
+   */
+  function pickFocus(graph, preferredId) {
+    const nodes = graph?.nodes || [];
+    if (!nodes.length) return null;
+    const prefer = preferredId != null ? String(preferredId) : "";
+    if (prefer && nodes.some((n) => n.id === prefer)) return prefer;
+    const seeds = nodes
+      .filter((n) => n.kind === "function" && n.role === "seed")
+      .sort(
+        (a, b) => (a.line || 0) - (b.line || 0) || a.id.localeCompare(b.id)
+      );
+    if (seeds.length) return seeds[0].id;
+    return nodes.slice().sort((a, b) => a.id.localeCompare(b.id))[0].id;
+  }
+
+  /**
+   * Restrict `graph` to the undirected neighborhood of `focusId` within
+   * `depth` hops. `depth === 'all'` (or non-finite) returns the graph unchanged
+   * aside from meta. Edges keep their kind / call-site payload — filtering
+   * never invents or rewrites targets.
+   *
+   * @param {{nodes: object[], edges: object[], scope?: object}} graph
+   * @param {string|null} focusId
+   * @param {number|'all'} depth
+   */
+  function neighborhood(graph, focusId, depth) {
+    const nodes = graph?.nodes || [];
+    const edges = graph?.edges || [];
+    const totalNodes = nodes.length;
+    const totalEdges = edges.length;
+    const unlimited =
+      depth === "all" ||
+      depth == null ||
+      depth === Infinity ||
+      (typeof depth === "number" && !Number.isFinite(depth));
+
+    if (!nodes.length) {
+      return {
+        nodes: [],
+        edges: [],
+        scope: graph?.scope || {},
+        meta: {
+          focusId: null,
+          depth: unlimited ? "all" : depth,
+          totalNodes: 0,
+          totalEdges: 0,
+          shownNodes: 0,
+          shownEdges: 0,
+          hiddenNodes: 0,
+          hiddenEdges: 0,
+          truncated: false,
+        },
+      };
+    }
+
+    const focus = pickFocus(graph, focusId);
+    if (unlimited) {
+      return {
+        nodes,
+        edges,
+        scope: graph?.scope || {},
+        meta: {
+          focusId: focus,
+          depth: "all",
+          totalNodes,
+          totalEdges,
+          shownNodes: totalNodes,
+          shownEdges: totalEdges,
+          hiddenNodes: 0,
+          hiddenEdges: 0,
+          truncated: false,
+        },
+      };
+    }
+
+    const hopLimit = Math.max(0, Math.floor(Number(depth) || 0));
+    /** @type {Map<string, string[]>} */
+    const adj = new Map();
+    for (const n of nodes) adj.set(n.id, []);
+    for (const e of edges) {
+      if (!adj.has(e.from) || !adj.has(e.to)) continue;
+      adj.get(e.from).push(e.to);
+      adj.get(e.to).push(e.from);
+    }
+
+    /** @type {Map<string, number>} */
+    const dist = new Map();
+    const queue = [];
+    if (focus && adj.has(focus)) {
+      dist.set(focus, 0);
+      queue.push(focus);
+    }
+    let qi = 0;
+    while (qi < queue.length) {
+      const id = queue[qi++];
+      const d = dist.get(id) || 0;
+      if (d >= hopLimit) continue;
+      for (const nb of adj.get(id) || []) {
+        if (dist.has(nb)) continue;
+        dist.set(nb, d + 1);
+        queue.push(nb);
+      }
+    }
+
+    const keep = dist;
+    // Depth 0 with a focus still shows the focus node alone.
+    if (focus && !keep.has(focus)) keep.set(focus, 0);
+
+    const keptNodes = nodes.filter((n) => keep.has(n.id));
+    const keptIds = new Set(keptNodes.map((n) => n.id));
+    const keptEdges = edges.filter(
+      (e) => keptIds.has(e.from) && keptIds.has(e.to)
+    );
+
+    return {
+      nodes: keptNodes,
+      edges: keptEdges,
+      scope: graph?.scope || {},
+      meta: {
+        focusId: focus,
+        depth: hopLimit,
+        totalNodes,
+        totalEdges,
+        shownNodes: keptNodes.length,
+        shownEdges: keptEdges.length,
+        hiddenNodes: totalNodes - keptNodes.length,
+        hiddenEdges: totalEdges - keptEdges.length,
+        truncated: keptNodes.length < totalNodes || keptEdges.length < totalEdges,
+      },
+    };
+  }
+
   window.HorizonFunctionDag = {
     build,
     layout,
+    defaultDepth,
+    pickFocus,
+    neighborhood,
     NODE_W,
     NODE_H,
   };
