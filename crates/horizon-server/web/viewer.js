@@ -6,13 +6,23 @@
     repoRoot: document.getElementById("repo-root"),
     stats: document.getElementById("stats"),
     toolbar: document.getElementById("toolbar"),
+    viewSwitch: document.getElementById("view-switch"),
+    treeControls: document.getElementById("tree-controls"),
+    diagControls: document.getElementById("diag-controls"),
     search: document.getElementById("search"),
     filterConflicts: document.getElementById("filter-conflicts"),
     filterUnresolved: document.getElementById("filter-unresolved"),
     matchCount: document.getElementById("match-count"),
+    diagCount: document.getElementById("diag-count"),
     empty: document.getElementById("empty-state"),
     tree: document.getElementById("tree"),
+    diagnostics: document.getElementById("diagnostics"),
     fileInput: document.getElementById("file-input"),
+    diagLayoutGrouped: document.getElementById("diag-layout-grouped"),
+    diagLayoutFile: document.getElementById("diag-layout-file"),
+    diagKindAll: document.getElementById("diag-kind-all"),
+    diagKindConflict: document.getElementById("diag-kind-conflict"),
+    diagKindUnresolved: document.getElementById("diag-kind-unresolved"),
   };
 
   /** @type {Map<string, {fn: object, file: object, filePath: string, el: HTMLElement|null}>} */
@@ -23,6 +33,14 @@
   let fileNodeByPath = new Map();
   let filterState = { text: "", conflicts: false, unresolved: false };
   let sourceLabel = "";
+  /** @type {object|null} */
+  let currentMap = null;
+  /** @type {"tree"|"diagnostics"} */
+  let activeView = "tree";
+  /** @type {Array<object>} */
+  let diagEntries = [];
+  /** @type {{walkedConflicts: number, walkedUnresolved: number, summaryConflicts: number, summaryUnresolved: number, match: boolean}|null} */
+  let diagReconcile = null;
 
   function basename(path) {
     if (!path) return "";
@@ -417,8 +435,6 @@
    * only that file — not every file in the tree (old-viewer rough edge #1).
    */
   function materializeFile(filePath) {
-    // Crates and folders start open and lazy-build on first ensureBuilt.
-    // Force-build the containment spine so the target file node exists.
     const containers = els.tree.querySelectorAll(
       ".node.kind-crate, .node.kind-folder"
     );
@@ -426,7 +442,6 @@
 
     let fileNode = fileNodeByPath.get(filePath);
     if (!fileNode) {
-      // Fallback: locate by stored path on node data (e.g. after rebuild).
       for (const node of els.tree.querySelectorAll(".node.kind-file")) {
         const data = nodeData.get(node);
         if (data && data.filePath === filePath) {
@@ -437,6 +452,14 @@
       }
     }
     if (fileNode) setOpen(fileNode, true);
+    return fileNode || null;
+  }
+
+  function flashRow(row) {
+    if (!row) return;
+    row.classList.add("highlight");
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => row.classList.remove("highlight"), 1600);
   }
 
   function jumpToFunction(id) {
@@ -458,11 +481,19 @@
     node.classList.remove("hidden-by-filter");
 
     const row = node.querySelector(":scope > .node-row");
-    if (row) {
-      row.classList.add("highlight");
-      row.scrollIntoView({ behavior: "smooth", block: "center" });
-      setTimeout(() => row.classList.remove("highlight"), 1600);
-    }
+    flashRow(row);
+    return true;
+  }
+
+  /** Jump to a file node (module-level call sites have no enclosing FunctionId). */
+  function jumpToFile(filePath) {
+    const fileNode = materializeFile(filePath);
+    if (!fileNode) return false;
+    expandAncestors(fileNode);
+    setOpen(fileNode, true);
+    fileNode.classList.remove("hidden-by-filter");
+    const row = fileNode.querySelector(":scope > .node-row");
+    flashRow(row);
     return true;
   }
 
@@ -537,16 +568,386 @@
     els.matchCount.textContent = sourceLabel ? `${base} · ${sourceLabel}` : base;
   }
 
+  // —— Diagnostics worklist (Phase F) ——
+
+  /**
+   * Walk every Conflict and Unresolved CallSite in the loaded map.
+   * Deliberate drops (external/constructor/associated) are never in the tree.
+   */
+  function collectDiagnostics(map) {
+    const entries = [];
+    let walkedConflicts = 0;
+    let walkedUnresolved = 0;
+
+    const pushSite = (site, filePath, enclosing) => {
+      const kind = site.target?.kind;
+      if (kind !== "conflict" && kind !== "unresolved") return;
+      if (kind === "conflict") walkedConflicts += 1;
+      else walkedUnresolved += 1;
+      const data = site.target.data || {};
+      entries.push({
+        kind,
+        callPath: site.call_path || "",
+        line: site.line ?? 0,
+        fromMacro: !!site.from_macro,
+        reason: data.reason || "",
+        candidates: kind === "conflict" ? data.candidates || [] : [],
+        filePath: String(filePath || ""),
+        enclosing,
+      });
+    };
+
+    const visitFile = (file) => {
+      const filePath = String(file.path || "");
+      for (const site of file.call_sites || []) {
+        pushSite(site, filePath, {
+          type: "file",
+          label: `file ${basename(filePath)}`,
+          filePath,
+        });
+      }
+      for (const fn of file.functions || []) {
+        for (const site of fn.call_sites || []) {
+          pushSite(site, filePath, {
+            type: "function",
+            label: fn.id,
+            functionId: fn.id,
+            filePath,
+          });
+        }
+      }
+    };
+
+    const visitFolder = (folder) => {
+      for (const file of folder.files || []) visitFile(file);
+      for (const child of folder.folders || []) visitFolder(child);
+    };
+
+    for (const crate of map.crates || []) {
+      for (const file of crate.files || []) visitFile(file);
+      for (const folder of crate.folders || []) visitFolder(folder);
+    }
+
+    const summary = map.summary || {};
+    const summaryConflicts = summary.conflicts ?? 0;
+    const summaryUnresolved = summary.unresolved ?? 0;
+    return {
+      entries,
+      reconcile: {
+        walkedConflicts,
+        walkedUnresolved,
+        summaryConflicts,
+        summaryUnresolved,
+        match:
+          walkedConflicts === summaryConflicts &&
+          walkedUnresolved === summaryUnresolved,
+      },
+    };
+  }
+
+  function diagKindFilter() {
+    if (els.diagKindConflict.checked) return "conflict";
+    if (els.diagKindUnresolved.checked) return "unresolved";
+    return "all";
+  }
+
+  function diagLayoutMode() {
+    return els.diagLayoutFile.checked ? "file" : "grouped";
+  }
+
+  function filteredDiagEntries() {
+    const kind = diagKindFilter();
+    if (kind === "all") return diagEntries;
+    return diagEntries.filter((e) => e.kind === kind);
+  }
+
+  function groupByReason(entries) {
+    /** @type {Map<string, {reason: string, kinds: Set<string>, entries: object[]}>} */
+    const groups = new Map();
+    for (const e of entries) {
+      const key = e.reason || "(no reason)";
+      let g = groups.get(key);
+      if (!g) {
+        g = { reason: key, kinds: new Set(), entries: [] };
+        groups.set(key, g);
+      }
+      g.kinds.add(e.kind);
+      g.entries.push(e);
+    }
+    return Array.from(groups.values()).sort((a, b) => {
+      if (b.entries.length !== a.entries.length) {
+        return b.entries.length - a.entries.length;
+      }
+      return a.reason.localeCompare(b.reason);
+    });
+  }
+
+  function groupByFile(entries) {
+    /** @type {Map<string, {filePath: string, kinds: Set<string>, entries: object[]}>} */
+    const groups = new Map();
+    for (const e of entries) {
+      const key = e.filePath || "(no path)";
+      let g = groups.get(key);
+      if (!g) {
+        g = { filePath: key, kinds: new Set(), entries: [] };
+        groups.set(key, g);
+      }
+      g.kinds.add(e.kind);
+      g.entries.push(e);
+    }
+    for (const g of groups.values()) {
+      g.entries.sort((a, b) => {
+        if (a.line !== b.line) return a.line - b.line;
+        return a.callPath.localeCompare(b.callPath);
+      });
+    }
+    return Array.from(groups.values()).sort((a, b) =>
+      a.filePath.localeCompare(b.filePath)
+    );
+  }
+
+  function countClassForKinds(kinds) {
+    if (kinds.size === 1) {
+      return kinds.has("conflict") ? "conflict" : "unresolved";
+    }
+    return "mixed";
+  }
+
+  function renderDiagEntry(entry) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `diag-entry ${entry.kind}`;
+    btn.title = "Jump to this site in the tree";
+
+    const macro = entry.fromMacro
+      ? `<span class="badge macro" title="Recovered from macro token tree">macro</span>`
+      : "";
+
+    let candidatesHtml = "";
+    if (entry.kind === "conflict" && entry.candidates.length) {
+      candidatesHtml =
+        `<ul class="candidates">` +
+        entry.candidates
+          .map((id) => `<li>${escapeHtml(id)}</li>`)
+          .join("") +
+        `</ul>`;
+    }
+
+    const enclosingLabel =
+      entry.enclosing.type === "function"
+        ? `in ${entry.enclosing.label}`
+        : `module-level · ${entry.enclosing.label}`;
+
+    btn.innerHTML =
+      `<span class="call-line">L${entry.line}</span>` +
+      `<span class="call-path">${escapeHtml(entry.callPath)}` +
+      `<span class="badge kind-${entry.kind}">${entry.kind}</span>${macro}</span>` +
+      `<div class="diag-entry-body">` +
+      (entry.reason
+        ? `<span class="reason">${escapeHtml(entry.reason)}</span>`
+        : "") +
+      `<span class="enclosing">${escapeHtml(enclosingLabel)}</span>` +
+      `<span class="path">${escapeHtml(entry.filePath)}</span>` +
+      candidatesHtml +
+      `</div>`;
+
+    btn.addEventListener("click", () => navigateFromDiagnostics(entry));
+    return btn;
+  }
+
+  /**
+   * Navigate to the enclosing function (or file) in the tree.
+   * Phase C seam: after jump, openSourceForDiagnostics(entry) will fetch
+   * /api/source and show the highlighted source panel. Not built in Phase F.
+   */
+  function navigateFromDiagnostics(entry) {
+    setActiveView("tree");
+    let ok = false;
+    if (entry.enclosing.type === "function" && entry.enclosing.functionId) {
+      ok = jumpToFunction(entry.enclosing.functionId);
+    } else {
+      ok = jumpToFile(entry.filePath);
+    }
+    // Phase C: openSourceForDiagnostics(entry);
+    void ok;
+  }
+
+  function renderDiagGroup({ title, meta, count, countClass, entries, open }) {
+    const group = document.createElement("div");
+    group.className = "diag-group" + (open ? " open" : "");
+
+    const header = document.createElement("button");
+    header.type = "button";
+    header.className = "diag-group-header";
+    header.innerHTML =
+      `<span class="twisty">${open ? "▼" : "▶"}</span>` +
+      `<span class="diag-group-title">` +
+      `<span class="diag-group-reason">${escapeHtml(title)}</span>` +
+      (meta ? `<span class="diag-group-meta">${escapeHtml(meta)}</span>` : "") +
+      `</span>` +
+      `<span class="diag-group-count ${countClass}">${count}</span>`;
+
+    const body = document.createElement("div");
+    body.className = "diag-group-body";
+
+    let built = false;
+    const ensureBuilt = () => {
+      if (built) return;
+      built = true;
+      for (const e of entries) body.appendChild(renderDiagEntry(e));
+    };
+
+    if (open) ensureBuilt();
+
+    header.addEventListener("click", () => {
+      const willOpen = !group.classList.contains("open");
+      if (willOpen) ensureBuilt();
+      group.classList.toggle("open", willOpen);
+      header.querySelector(".twisty").textContent = willOpen ? "▼" : "▶";
+    });
+
+    group.appendChild(header);
+    group.appendChild(body);
+    return group;
+  }
+
+  function renderDiagnostics() {
+    if (!currentMap) return;
+    const root = els.diagnostics;
+    root.replaceChildren();
+
+    const summary = currentMap.summary || {};
+    const r = diagReconcile;
+
+    const banner = document.createElement("div");
+    if (r && r.match) {
+      banner.className = "diag-banner ok";
+      banner.textContent =
+        `Walked ${r.walkedConflicts} conflict` +
+        (r.walkedConflicts === 1 ? "" : "s") +
+        ` and ${r.walkedUnresolved} unresolved — matches MapSummary.`;
+    } else if (r) {
+      banner.className = "diag-banner mismatch";
+      banner.innerHTML =
+        `<strong>Count mismatch</strong> — walked ` +
+        `<strong>${r.walkedConflicts}</strong> conflict / ` +
+        `<strong>${r.walkedUnresolved}</strong> unresolved, but MapSummary says ` +
+        `<strong>${r.summaryConflicts}</strong> / ` +
+        `<strong>${r.summaryUnresolved}</strong>. ` +
+        `Either the walk or the summary is wrong; do not trust either silently.`;
+    } else {
+      banner.className = "diag-banner";
+      banner.textContent = "No reconciliation data.";
+    }
+    root.appendChild(banner);
+
+    const dropped = document.createElement("div");
+    dropped.className = "diag-dropped-note";
+    dropped.innerHTML =
+      `<strong>Not listed (deliberate drops):</strong> ` +
+      `<span class="drop-count">${summary.external_dropped ?? 0}</span> external, ` +
+      `<span class="drop-count">${summary.constructor_dropped ?? 0}</span> constructor, ` +
+      `<span class="drop-count">${summary.associated_dropped ?? 0}</span> associated. ` +
+      `These sites are excluded from the tree on purpose — their absence here is not a gap in this worklist.`;
+    root.appendChild(dropped);
+
+    const entries = filteredDiagEntries();
+    const conflictN = entries.filter((e) => e.kind === "conflict").length;
+    const unresolvedN = entries.filter((e) => e.kind === "unresolved").length;
+    els.diagCount.textContent =
+      `${entries.length} sites` +
+      ` · ${conflictN} conflict` +
+      (conflictN === 1 ? "" : "s") +
+      ` · ${unresolvedN} unresolved` +
+      (sourceLabel ? ` · ${sourceLabel}` : "");
+
+    if (!entries.length) {
+      const empty = document.createElement("p");
+      empty.className = "diag-empty";
+      empty.textContent =
+        diagEntries.length === 0
+          ? "No conflicts or unresolved call sites in this map."
+          : "No sites match the current kind filter.";
+      root.appendChild(empty);
+      return;
+    }
+
+    const list = document.createElement("div");
+    list.className = "diag-groups";
+
+    if (diagLayoutMode() === "file") {
+      const groups = groupByFile(entries);
+      groups.forEach((g, i) => {
+        list.appendChild(
+          renderDiagGroup({
+            title: basename(g.filePath) || g.filePath,
+            meta: g.filePath,
+            count: g.entries.length,
+            countClass: countClassForKinds(g.kinds),
+            entries: g.entries,
+            open: i === 0,
+          })
+        );
+      });
+    } else {
+      const groups = groupByReason(entries);
+      groups.forEach((g, i) => {
+        const kindMeta =
+          g.kinds.size === 1
+            ? [...g.kinds][0]
+            : "conflict + unresolved";
+        list.appendChild(
+          renderDiagGroup({
+            title: g.reason,
+            meta: kindMeta,
+            count: g.entries.length,
+            countClass: countClassForKinds(g.kinds),
+            entries: g.entries,
+            open: i === 0,
+          })
+        );
+      });
+    }
+
+    root.appendChild(list);
+  }
+
+  function setActiveView(view) {
+    activeView = view;
+    const isTree = view === "tree";
+
+    for (const btn of els.viewSwitch.querySelectorAll(".view-btn")) {
+      const on = btn.getAttribute("data-view") === view;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    }
+
+    els.treeControls.hidden = !isTree;
+    els.diagControls.hidden = isTree;
+    els.tree.hidden = !isTree || !currentMap;
+    els.diagnostics.hidden = isTree || !currentMap;
+
+    if (!isTree && currentMap) {
+      renderDiagnostics();
+    }
+  }
+
   function showMapError(message) {
+    currentMap = null;
+    diagEntries = [];
+    diagReconcile = null;
     els.empty.hidden = false;
     els.empty.textContent = message;
     els.tree.hidden = true;
     els.tree.replaceChildren();
+    els.diagnostics.hidden = true;
+    els.diagnostics.replaceChildren();
     els.summaryBar.hidden = true;
     els.toolbar.hidden = true;
     els.repoRoot.textContent = "";
     els.stats.innerHTML = "";
     els.matchCount.textContent = "";
+    els.diagCount.textContent = "";
     els.search.value = "";
     els.filterConflicts.checked = false;
     els.filterUnresolved.checked = false;
@@ -554,6 +955,7 @@
     fileNodeByPath = new Map();
     sourceLabel = "";
     document.title = "Horizon Map Viewer";
+    activeView = "tree";
   }
 
   function loadMap(map, label) {
@@ -564,7 +966,12 @@
       return;
     }
 
+    currentMap = map;
     buildIndex(map);
+    const collected = collectDiagnostics(map);
+    diagEntries = collected.entries;
+    diagReconcile = collected.reconcile;
+
     const fnCount = countFunctions(map);
     sourceLabel = label || "";
 
@@ -573,8 +980,8 @@
     els.summaryBar.hidden = false;
     els.toolbar.hidden = false;
     els.empty.hidden = true;
-    els.tree.hidden = false;
     els.tree.replaceChildren();
+    els.diagnostics.replaceChildren();
     fileNodeByPath = new Map();
 
     for (const crate of map.crates) {
@@ -585,6 +992,7 @@
     els.matchCount.textContent =
       `${fnCount} functions` + (sourceLabel ? ` · ${sourceLabel}` : "");
     applyFilters();
+    setActiveView(activeView);
   }
 
   // Event wiring
@@ -599,6 +1007,24 @@
   els.search.addEventListener("input", applyFilters);
   els.filterConflicts.addEventListener("change", applyFilters);
   els.filterUnresolved.addEventListener("change", applyFilters);
+
+  for (const btn of els.viewSwitch.querySelectorAll(".view-btn")) {
+    btn.addEventListener("click", () => {
+      setActiveView(btn.getAttribute("data-view"));
+    });
+  }
+
+  for (const el of [
+    els.diagLayoutGrouped,
+    els.diagLayoutFile,
+    els.diagKindAll,
+    els.diagKindConflict,
+    els.diagKindUnresolved,
+  ]) {
+    el.addEventListener("change", () => {
+      if (activeView === "diagnostics") renderDiagnostics();
+    });
+  }
 
   els.fileInput.addEventListener("change", () => {
     const file = els.fileInput.files && els.fileInput.files[0];
@@ -618,7 +1044,28 @@
     reader.readAsText(file);
   });
 
+  function applyQueryPrefs() {
+    try {
+      const q = new URLSearchParams(location.search);
+      const v = q.get("view");
+      if (v === "diagnostics" || v === "tree") activeView = v;
+      const layout = q.get("layout");
+      if (layout === "file") {
+        els.diagLayoutFile.checked = true;
+      } else if (layout === "grouped") {
+        els.diagLayoutGrouped.checked = true;
+      }
+      const kind = q.get("kind");
+      if (kind === "conflict") els.diagKindConflict.checked = true;
+      else if (kind === "unresolved") els.diagKindUnresolved.checked = true;
+      else if (kind === "all") els.diagKindAll.checked = true;
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   async function boot() {
+    applyQueryPrefs();
     try {
       const res = await fetch("/api/map");
       if (res.ok) {

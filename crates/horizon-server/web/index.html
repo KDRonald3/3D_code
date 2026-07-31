@@ -26,29 +26,65 @@
   </section>
 
   <section class="toolbar" id="toolbar" hidden>
-    <input
-      id="search"
-      type="search"
-      placeholder="Filter functions by name or id…"
-      autocomplete="off"
-      spellcheck="false"
-    />
-    <div class="quick-filters">
-      <label class="chip-toggle">
-        <input type="checkbox" id="filter-conflicts" />
-        <span>Has conflicts</span>
-      </label>
-      <label class="chip-toggle">
-        <input type="checkbox" id="filter-unresolved" />
-        <span>Has unresolved</span>
-      </label>
+    <div class="view-switch" id="view-switch" role="tablist" aria-label="View">
+      <button type="button" class="view-btn active" data-view="tree" role="tab" aria-selected="true">Tree</button>
+      <button type="button" class="view-btn" data-view="diagnostics" role="tab" aria-selected="false">Diagnostics</button>
     </div>
-    <div class="match-count" id="match-count"></div>
+
+    <div class="tree-controls" id="tree-controls">
+      <input
+        id="search"
+        type="search"
+        placeholder="Filter functions by name or id…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="quick-filters">
+        <label class="chip-toggle">
+          <input type="checkbox" id="filter-conflicts" />
+          <span>Has conflicts</span>
+        </label>
+        <label class="chip-toggle">
+          <input type="checkbox" id="filter-unresolved" />
+          <span>Has unresolved</span>
+        </label>
+      </div>
+      <div class="match-count" id="match-count"></div>
+    </div>
+
+    <div class="diag-controls" id="diag-controls" hidden>
+      <div class="quick-filters">
+        <label class="chip-toggle">
+          <input type="radio" name="diag-layout" id="diag-layout-grouped" value="grouped" checked />
+          <span>Grouped by reason</span>
+        </label>
+        <label class="chip-toggle">
+          <input type="radio" name="diag-layout" id="diag-layout-file" value="file" />
+          <span>By file</span>
+        </label>
+      </div>
+      <div class="quick-filters">
+        <label class="chip-toggle">
+          <input type="radio" name="diag-kind" id="diag-kind-all" value="all" checked />
+          <span>All</span>
+        </label>
+        <label class="chip-toggle">
+          <input type="radio" name="diag-kind" id="diag-kind-conflict" value="conflict" />
+          <span>Conflicts</span>
+        </label>
+        <label class="chip-toggle">
+          <input type="radio" name="diag-kind" id="diag-kind-unresolved" value="unresolved" />
+          <span>Unresolved</span>
+        </label>
+      </div>
+      <div class="match-count" id="diag-count"></div>
+    </div>
   </section>
 
   <main id="main">
     <p class="empty-state" id="empty-state">Loading map…</p>
     <div id="tree" class="tree" hidden></div>
+    <div id="diagnostics" class="diagnostics" hidden></div>
   </main>
 
   <script src="/static/viewer.js"></script>
