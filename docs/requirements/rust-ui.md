@@ -1,5 +1,12 @@
 # Horizon Function-Map Review UI
 
+> **Supersession (30 July 2026):** the tree-viewer IA and Phases A–G build plan
+> below are superseded by
+> [`desktop-ui-rebuild.md`](desktop-ui-rebuild.md) (Desktop spatial Map +
+> Inspector + bottom DAG). Server/security, `/api/source`, map field names,
+> non-guessing rule, diagnostics *requirement*, and `POST /api/analyse` still
+> stand; only the front-end shape and phase sequence moved.
+
 **Status:** draft requirements + vertical build plan (technical decisions
 closed 30 July 2026; one lifespan question remains)  
 **Date:** 30 July 2026  
@@ -9,7 +16,8 @@ closed 30 July 2026; one lifespan question remains)
 [`old-viewer-spec.md`](../ui/old-viewer-spec.md),
 [`branch-ui-survey.md`](../ui/branch-ui-survey.md),
 [`workspace-split-analysis.md`](../workspace-split-analysis.md),
-[`unresolved-analysis.md`](../unresolved-analysis.md)
+[`unresolved-analysis.md`](../unresolved-analysis.md),
+[`desktop-ui-rebuild.md`](desktop-ui-rebuild.md)
 
 Filename and section shape follow [`rust-function-map.md`](rust-function-map.md)
 (Summary → Goals → Non-goals → Users → Behaviour → Decisions → Open → Deferred,
