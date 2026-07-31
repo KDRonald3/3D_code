@@ -315,6 +315,18 @@ async fn serves_index_and_static_assets() {
         ("/", "defined in another file"),
         ("/", "the analyser could not resolve this call"),
         ("/", "/static/function_dag.js"),
+        // W6 neighborhood depth control.
+        ("/", "id=\"fns-depth-mode\""),
+        ("/", "data-depth=\"1\""),
+        ("/static/function_dag.js", "function neighborhood"),
+        ("/static/viewer.js", "setFnsDepth"),
+        // W7 in-process analysis.
+        ("/", "id=\"analyse-form\""),
+        ("/", "id=\"analyse-overlay\""),
+        ("/", "id=\"open-folder\""),
+        ("/static/viewer.js", "startAnalyse"),
+        ("/static/viewer.js", "/api/analyse"),
+        ("/static/viewer.css", "analyse-overlay"),
         ("/static/diagnostics.js", "collectDiagnostics"),
         ("/static/diagnostics.js", "groupByReason"),
         ("/static/diagnostics.js", "groupByFile"),
@@ -615,4 +627,130 @@ async fn source_404_when_no_map_loaded() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"], "no_map");
+}
+
+// —— W7: POST /api/analyse ——
+
+fn fixture_repo(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root")
+        .join("tests/fixtures")
+        .join(name)
+}
+
+#[tokio::test]
+async fn analyse_status_starts_idle() {
+    let router = app(AppState::new(None));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/analyse")
+                .header("Host", "127.0.0.1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+        .unwrap();
+    assert_eq!(body["status"], "idle");
+}
+
+#[tokio::test]
+async fn analyse_rejects_missing_path() {
+    let router = app(AppState::new(None));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/analyse")
+                .header("Host", "127.0.0.1")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"path":"/no/such/horizon/repo"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn analyse_runs_fixture_and_stores_map() {
+    let state = AppState::new(None);
+    let router = app(state.clone());
+    let path = fixture_repo("phase1-single-file");
+    assert!(path.is_dir(), "fixture missing: {}", path.display());
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/analyse")
+                .header("Host", "127.0.0.1")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({ "path": path.to_string_lossy() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let accepted: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(accepted["status"], "running");
+
+    // Poll until done (fixture is tiny — should finish quickly).
+    let mut last = json!({ "status": "running" });
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/analyse")
+                    .header("Host", "127.0.0.1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        last = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+        if last["status"] != "running" {
+            break;
+        }
+    }
+    assert_eq!(last["status"], "done", "{last}");
+
+    let guard = state.map.read().await;
+    let repo = guard.as_ref().expect("map stored after analyse");
+    assert!(
+        !repo.crates.is_empty(),
+        "analysed map should contain at least one crate"
+    );
+    assert!(repo.summary.unresolved + repo.summary.conflicts + 1 >= 1);
+}
+
+#[tokio::test]
+async fn analyse_rejects_non_local_host() {
+    let router = app(AppState::new(None));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/analyse")
+                .header("Host", "evil.example")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"path":"/tmp"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

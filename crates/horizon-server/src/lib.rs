@@ -3,6 +3,7 @@
 //! The binary (`main.rs`) binds loopback, optionally loads `--map`, and opens
 //! a browser. Tests exercise the router in-process.
 
+pub mod analyse;
 pub mod app;
 pub mod host_guard;
 pub mod rail_layout;

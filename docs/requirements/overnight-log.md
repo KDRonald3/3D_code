@@ -82,13 +82,49 @@ round (I1 zoom constancy was). Favicon 404 is pre-existing noise, ignored.
 
 ---
 
+## W7 — Live in-process analysis — DONE
+
+**Why.** The server could only display a map the CLI had already written. The
+owner needs to point the UI at a repository and get a map without a separate
+tool invocation.
+
+**Change.** `POST /api/analyse` with `{ "path": "…" }` runs
+`horizon_engine::build_function_map` on a blocking thread, stores the result in
+the shared map slot, and returns `202 Accepted` immediately. `GET /api/analyse`
+exposes `idle | running | failed | done` with elapsed time so the UI can poll.
+Only one job at a time (409 if busy). Host guard unchanged. Import screen:
+"Analyse local folder" opens a path form; a full-screen overlay shows the path
+and ticking elapsed seconds so a long run never looks hung.
+
+**Bug found while testing.** `smokeCheck` invoked every exported helper with no
+args, so `startAnalyse()` POSTed an empty path on boot. Side-effecting helpers
+are now presence-only in the smoke probe. Also, the first `watchAnalyseJob`
+returned after the first poll; it now resolves a Promise only when the job
+leaves `running`.
+
+**Measured.**
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | pass (4 new HTTP tests) |
+| Analyse `phase1-single-file` via UI | overlay shown, map loaded (1 file), smoke ok, ~420ms |
+| Bad path | throws, overlay stays hidden |
+| Host `evil.example` | 403 |
+| Screenshots | `w7-analyse-form.png`, `w7-analyse-done.png` |
+
+**Not verified.** Analysing the full Horizon workspace from the UI (would work;
+fixture coverage is enough for the contract). Concurrent 409 attach path not
+browser-driven (covered by the attach branch in JS + HTTP conflict shape).
+
+---
+
 ## Queue status
 
 | Item | Status |
 |---|---|
 | W11 | done |
 | W6 | done |
-| W7 | next |
-| W9 | pending |
+| W7 | done |
+| W9 | next |
 | W10 | pending |
 | W8 | pending / may stop cleanly |

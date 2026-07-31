@@ -19,8 +19,8 @@ use tokio::net::TcpListener;
 lets you audit call sites, conflicts, unresolved edges, and drop counters.\n\n\
 Binds 127.0.0.1 on an OS-assigned ephemeral port, prints the URL, and opens \
 the default browser unless --no-open is given. Pass --map to preload a saved \
-map JSON so the page shows it immediately; otherwise use Open JSON… in the \
-browser."
+map JSON so the page shows it immediately; otherwise use Open JSON… or \
+Analyse a local folder (POST /api/analyse) in the browser."
 )]
 struct Cli {
     /// Path to a saved Horizon map JSON to load at startup.

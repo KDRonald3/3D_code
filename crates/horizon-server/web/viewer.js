@@ -45,6 +45,14 @@
     switchProject: document.getElementById("switch-project"),
     importScreen: document.getElementById("import-screen"),
     openJson: document.getElementById("open-json"),
+    openFolder: document.getElementById("open-folder"),
+    analyseForm: document.getElementById("analyse-form"),
+    analysePath: document.getElementById("analyse-path"),
+    analyseRun: document.getElementById("analyse-run"),
+    analyseCancelForm: document.getElementById("analyse-cancel-form"),
+    analyseOverlay: document.getElementById("analyse-overlay"),
+    analyseOverlayPath: document.getElementById("analyse-overlay-path"),
+    analyseOverlayElapsed: document.getElementById("analyse-overlay-elapsed"),
     importError: document.getElementById("import-error"),
     importErrorText: document.getElementById("import-error-text"),
     clearError: document.getElementById("clear-error"),
@@ -3225,6 +3233,176 @@
     els.importErrorText.textContent = "";
   });
 
+  /** @type {number|null} */
+  let analysePollTimer = null;
+  /** @type {number|null} */
+  let analyseTickTimer = null;
+  let analyseStartedAt = 0;
+
+  function setAnalyseOverlay(visible, pathText) {
+    if (!els.analyseOverlay) return;
+    els.analyseOverlay.hidden = !visible;
+    if (els.analyseOverlayPath && pathText != null) {
+      els.analyseOverlayPath.textContent = pathText;
+    }
+  }
+
+  function stopAnalyseTimers() {
+    if (analysePollTimer != null) {
+      clearInterval(analysePollTimer);
+      analysePollTimer = null;
+    }
+    if (analyseTickTimer != null) {
+      clearInterval(analyseTickTimer);
+      analyseTickTimer = null;
+    }
+  }
+
+  function updateAnalyseElapsed() {
+    if (!els.analyseOverlayElapsed || !analyseStartedAt) return;
+    const sec = Math.max(0, Math.floor((Date.now() - analyseStartedAt) / 1000));
+    els.analyseOverlayElapsed.textContent = `${sec}s`;
+  }
+
+  /**
+   * Poll GET /api/analyse until the job leaves `running`, then load the map
+   * or surface the failure. Resolves only when the job finishes (or contact
+   * is lost) so callers can await a complete run. Elapsed seconds tick on the
+   * overlay so a long analysis never looks frozen.
+   */
+  function watchAnalyseJob() {
+    stopAnalyseTimers();
+    analyseTickTimer = setInterval(updateAnalyseElapsed, 250);
+    return new Promise((resolve) => {
+      const finish = (result) => {
+        stopAnalyseTimers();
+        setAnalyseOverlay(false);
+        if (els.analyseRun) els.analyseRun.disabled = false;
+        resolve(result);
+      };
+      const poll = async () => {
+        let body;
+        try {
+          const res = await fetch("/api/analyse");
+          body = await res.json();
+        } catch (err) {
+          showImport(`Lost contact with /api/analyse: ${err.message || err}`);
+          finish({ status: "error", error: String(err.message || err) });
+          return;
+        }
+        if (body.status === "running") {
+          if (body.path && els.analyseOverlayPath) {
+            els.analyseOverlayPath.textContent = body.path;
+          }
+          if (typeof body.elapsed_ms === "number" && els.analyseOverlayElapsed) {
+            els.analyseOverlayElapsed.textContent = `${Math.floor(
+              body.elapsed_ms / 1000
+            )}s`;
+          }
+          return;
+        }
+        if (body.status === "failed") {
+          showImport(
+            `Analysis failed${body.path ? ` for ${body.path}` : ""}: ${
+              body.error || "unknown error"
+            }`
+          );
+          finish(body);
+          return;
+        }
+        if (body.status === "done") {
+          try {
+            const mapRes = await fetch("/api/map");
+            if (!mapRes.ok) {
+              showImport(
+                `Analysis finished but /api/map returned ${mapRes.status}`
+              );
+              finish({ status: "error", error: `map ${mapRes.status}` });
+              return;
+            }
+            const map = await mapRes.json();
+            loadMap(map, body.path || "analyse");
+            if (els.analyseForm) els.analyseForm.hidden = true;
+            finish(body);
+          } catch (err) {
+            showImport(
+              `Analysis finished but map load failed: ${err.message || err}`
+            );
+            finish({ status: "error", error: String(err.message || err) });
+          }
+          return;
+        }
+        // idle — nothing to load
+        finish(body);
+      };
+      poll();
+      analysePollTimer = setInterval(poll, 400);
+    });
+  }
+
+  /**
+   * Start POST /api/analyse for `path`. Returns the accepted status body.
+   * @param {string} path
+   */
+  async function startAnalyse(path) {
+    const res = await fetch("/api/analyse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      // Already running — attach to the in-flight job rather than erroring.
+      analyseStartedAt = Date.now() - (Number(body.elapsed_ms) || 0);
+      setAnalyseOverlay(true, body.path || path);
+      if (els.analyseRun) els.analyseRun.disabled = true;
+      return watchAnalyseJob();
+    }
+    if (!res.ok) {
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    analyseStartedAt = Date.now();
+    setAnalyseOverlay(true, body.path || path);
+    updateAnalyseElapsed();
+    if (els.analyseRun) els.analyseRun.disabled = true;
+    return watchAnalyseJob();
+  }
+
+  if (els.openFolder) {
+    els.openFolder.addEventListener("click", () => {
+      if (!els.analyseForm) return;
+      els.analyseForm.hidden = false;
+      els.analysePath?.focus();
+      // Sensible default: the workspace that produced the current map, if any.
+      if (els.analysePath && !els.analysePath.value) {
+        els.analysePath.value = "";
+      }
+    });
+  }
+  if (els.analyseCancelForm) {
+    els.analyseCancelForm.addEventListener("click", () => {
+      if (els.analyseForm) els.analyseForm.hidden = true;
+    });
+  }
+  if (els.analyseForm) {
+    els.analyseForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const path = (els.analysePath?.value || "").trim();
+      if (!path) {
+        showImport("Enter a repository path to analyse.");
+        return;
+      }
+      els.importError.hidden = true;
+      try {
+        await startAnalyse(path);
+      } catch (err) {
+        setAnalyseOverlay(false);
+        if (els.analyseRun) els.analyseRun.disabled = false;
+        showImport(`Could not start analysis: ${err.message || err}`);
+      }
+    });
+  }
+
   els.jsonInput.addEventListener("change", () => {
     const file = els.jsonInput.files && els.jsonInput.files[0];
     if (!file) return;
@@ -3322,6 +3500,11 @@
       goBack,
       getSelection: () => snapshotSelection(),
       loadMap: (map, label) => loadMap(map, label || "api"),
+      /** Start in-process analysis of a repo path (POST /api/analyse). */
+      startAnalyse: (path) => startAnalyse(String(path || "")),
+      /** Whether the analyse progress overlay is visible. */
+      analyseOverlayVisible: () =>
+        !!(els.analyseOverlay && !els.analyseOverlay.hidden),
       getUiState: () => ({
         bootStatus,
         importHidden: !!els.importScreen?.hidden,
@@ -3517,6 +3700,8 @@
           "getFunctionDag",
           "getFnsDepth",
           "setFnsDepth",
+          "startAnalyse",
+          "analyseOverlayVisible",
           "getSelection",
           "getUiState",
           "inspectorOpenPolicy",
@@ -3696,6 +3881,10 @@
                 });
                 continue;
               }
+            } else if (name === "startAnalyse") {
+              // Side-effecting network call — probe presence only.
+            } else if (name === "setFnsDepth") {
+              // Would re-render the DAG; presence is enough here.
             } else {
               fn();
             }

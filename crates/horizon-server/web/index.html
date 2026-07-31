@@ -41,18 +41,18 @@
         (or start the server with <span class="mono">--map</span>).
       </p>
       <div class="import-actions">
-        <button type="button" class="import-card" disabled title="Not available — analysis is CLI-only in this rebuild">
+        <button type="button" id="open-folder" class="import-card" title="Analyse a local Cargo repository via POST /api/analyse">
           <span class="import-icon">📁</span>
           <span>
-            <span class="import-card-title">Open local folder</span>
-            <span class="import-card-sub">Unavailable here — run the Horizon CLI, then open the map JSON.</span>
+            <span class="import-card-title">Analyse local folder</span>
+            <span class="import-card-sub">Run the analyser in-process on a repository path (no CLI)</span>
           </span>
         </button>
-        <button type="button" class="import-card" disabled title="Not available">
+        <button type="button" class="import-card" disabled title="Not available — single-file import is not in this rebuild">
           <span class="import-icon">📄</span>
           <span>
             <span class="import-card-title">Open source file(s)</span>
-            <span class="import-card-sub">Unavailable — the map is produced by the analyzer, not this UI.</span>
+            <span class="import-card-sub">Unavailable — analyse a folder, or open a saved map JSON.</span>
           </span>
         </button>
         <button type="button" id="open-json" class="import-card">
@@ -63,12 +63,42 @@
           </span>
         </button>
       </div>
+      <form id="analyse-form" class="analyse-form" hidden>
+        <label class="analyse-label" for="analyse-path">Repository path</label>
+        <div class="analyse-row">
+          <input
+            type="text"
+            id="analyse-path"
+            class="analyse-path"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="/path/to/cargo/repo"
+          />
+          <button type="submit" id="analyse-run" class="analyse-run">Analyse</button>
+          <button type="button" id="analyse-cancel-form" class="ghost-btn" title="Hide path form">✕</button>
+        </div>
+        <p class="analyse-hint">The server analyses this path on the machine it is running on. Loopback only.</p>
+      </form>
       <div id="import-error" class="import-error" hidden>
         <span class="import-error-icon">⚠</span>
         <span id="import-error-text" class="mono"></span>
         <button type="button" id="clear-error" class="ghost-btn">✕</button>
       </div>
     </section>
+
+    <!--
+      Full-screen progress for in-process analysis. Shown while POST /api/analyse
+      is running so a long job never looks like a hung page.
+    -->
+    <div id="analyse-overlay" class="analyse-overlay" hidden>
+      <div class="analyse-overlay-card" role="status" aria-live="polite">
+        <div class="analyse-spinner" aria-hidden="true"></div>
+        <div class="analyse-overlay-title">Analysing repository</div>
+        <div id="analyse-overlay-path" class="analyse-overlay-path mono"></div>
+        <div id="analyse-overlay-elapsed" class="analyse-overlay-elapsed">0s</div>
+        <p class="analyse-overlay-note">Running the Horizon pipeline in this server process. The page stays responsive; this overlay clears when the map is ready or the run fails.</p>
+      </div>
+    </div>
 
     <div id="main-view" class="main-view" hidden>
       <div class="workspace">

@@ -1,5 +1,6 @@
 //! Router construction for the Horizon map viewer server.
 
+use crate::analyse::{get_analyse, post_analyse};
 use crate::host_guard::reject_non_local_host;
 use crate::routes::{get_map, health, post_map};
 use crate::source::get_source;
@@ -23,6 +24,7 @@ pub fn app(state: AppState) -> Router {
         .route("/static/function_dag.js", get(function_dag_js))
         .route("/api/health", get(health))
         .route("/api/map", get(get_map).post(post_map))
+        .route("/api/analyse", get(get_analyse).post(post_analyse))
         .route("/api/source", get(get_source))
         .layer(middleware::from_fn(reject_non_local_host))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))

@@ -211,7 +211,7 @@ default to 1 hop around the selected function (else first seed by line); the
 banner counts hidden nodes/edges. Measured on `resolve.rs` (now 66 / 227 after
 W11): depth 1 shows 2 nodes, depth 2 shows 7, All restores 66 / 227.
 
-### W7 — Live in-process analysis
+### W7 — Live in-process analysis — DONE
 
 **Problem.** The server can only display a map produced earlier by the CLI.
 
@@ -219,6 +219,10 @@ W11): depth 1 shows 2 nodes, depth 2 shows 7, All restores 66 / 227.
 repository path, stores the result in the shared map slot, and the UI can
 trigger it and show progress and failures without the CLI. Keep the loopback
 bind and Host guard. Long analyses must not appear as a hung page.
+
+**Resolved as:** async job (`202` + poll `GET /api/analyse`) with a path form
+and elapsed-time overlay on the import screen. Host guard still rejects
+non-loopback. Fixture `phase1-single-file` analysed end-to-end in the browser.
 
 ### W8 — Extend the analyser to structs and impls
 

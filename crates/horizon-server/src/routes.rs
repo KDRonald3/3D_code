@@ -19,7 +19,9 @@ pub async fn get_map(State(state): State<AppState>) -> Response {
         Some(repo) => Json(repo).into_response(),
         None => (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "no map loaded; pass --map <file> or POST /api/map" })),
+            Json(json!({
+                "error": "no map loaded; pass --map <file>, POST /api/map, or POST /api/analyse"
+            })),
         )
             .into_response(),
     }
