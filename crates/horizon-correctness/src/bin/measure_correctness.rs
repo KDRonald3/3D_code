@@ -10,14 +10,26 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use horizon::correctness::{
+use horizon_correctness::{
     ExclusionAudit, FixtureOracle, LsifReport, OracleReport, audit_exclusions, check_oracle,
     collect_call_outcomes, compare_lsif, load_oracle,
 };
-use horizon::{build_function_map, map_to_string};
+use horizon_engine::{build_function_map, map_to_string};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
+}
+
+fn default_fixtures_dir() -> PathBuf {
+    workspace_root().join("tests/fixtures")
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -34,7 +46,7 @@ enum Cmd {
     /// Run hand-annotated fixture oracles (and the adversarial fixture).
     Fixtures {
         /// Directory containing fixture crates (default: tests/fixtures).
-        #[arg(long, default_value = "tests/fixtures")]
+        #[arg(long, default_value_os_t = default_fixtures_dir())]
         fixtures_dir: PathBuf,
         /// Write a JSON report to this path.
         #[arg(short, long)]
@@ -70,7 +82,7 @@ enum Cmd {
     },
     /// Run fixtures + self-map exclusions (no LSIF unless --lsif is passed).
     All {
-        #[arg(long, default_value = "tests/fixtures")]
+        #[arg(long, default_value_os_t = default_fixtures_dir())]
         fixtures_dir: PathBuf,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -170,7 +182,7 @@ fn main() -> Result<()> {
 
 #[derive(Debug, serde::Serialize)]
 struct SelfMapReport {
-    summary: horizon::MapSummary,
+    summary: horizon_map::MapSummary,
     resolved_edges: usize,
     conflicts: usize,
     unresolved: usize,
@@ -213,8 +225,8 @@ fn run_self_map(
     let mut conflicts = 0usize;
     let mut unresolved = 0usize;
     for krate in &map.crates {
-        let mut files: Vec<&horizon::File> = krate.files.iter().collect();
-        let mut stack: Vec<&horizon::Folder> = krate.folders.iter().collect();
+        let mut files: Vec<&horizon_map::File> = krate.files.iter().collect();
+        let mut stack: Vec<&horizon_map::Folder> = krate.folders.iter().collect();
         while let Some(folder) = stack.pop() {
             files.extend(folder.files.iter());
             stack.extend(folder.folders.iter());
@@ -223,17 +235,17 @@ fn run_self_map(
             for func in &f.functions {
                 for site in &func.call_sites {
                     match &site.target {
-                        horizon::CallTarget::Resolved(_) => resolved += 1,
-                        horizon::CallTarget::Conflict(_) => conflicts += 1,
-                        horizon::CallTarget::Unresolved(_) => unresolved += 1,
+                        horizon_map::CallTarget::Resolved(_) => resolved += 1,
+                        horizon_map::CallTarget::Conflict(_) => conflicts += 1,
+                        horizon_map::CallTarget::Unresolved(_) => unresolved += 1,
                     }
                 }
             }
             for site in &f.call_sites {
                 match &site.target {
-                    horizon::CallTarget::Resolved(_) => resolved += 1,
-                    horizon::CallTarget::Conflict(_) => conflicts += 1,
-                    horizon::CallTarget::Unresolved(_) => unresolved += 1,
+                    horizon_map::CallTarget::Resolved(_) => resolved += 1,
+                    horizon_map::CallTarget::Conflict(_) => conflicts += 1,
+                    horizon_map::CallTarget::Unresolved(_) => unresolved += 1,
                 }
             }
         }
@@ -354,7 +366,7 @@ fn print_self_summary(report: &SelfMapReport) {
     }
 }
 
-fn print_lsif_cohort(label: &str, c: &horizon::correctness::LsifCohort) {
+fn print_lsif_cohort(label: &str, c: &horizon_correctness::LsifCohort) {
     if c.compared == 0 {
         println!("  LSIF {label}: (none)");
         return;

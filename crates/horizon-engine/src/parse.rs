@@ -1,4 +1,4 @@
-//! Stage 4: thin wrapper over `ra_ap_syntax`.
+//! Thin wrapper over `ra_ap_syntax`.
 //!
 //! Parses source text at the crate's real edition. Error-tolerant: broken
 //! mid-edit code still yields a syntax tree.

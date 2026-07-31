@@ -30,7 +30,8 @@ deliberately broken code (SCIP/LSIF need a toolchain and a compiling-ish project
 codebase’s hundreds of edges.
 
 The harness never changes the resolver’s answers; it only compares them. Extract
-and resolve-index construction go through the shared [`src/pipeline.rs`](../src/pipeline.rs)
+and resolve-index construction go through the shared
+[`crates/horizon-engine/src/pipeline.rs`](../crates/horizon-engine/src/pipeline.rs)
 path used by `build_function_map`, so the harness measures the same pipeline the
 CLI runs.
 
@@ -38,35 +39,35 @@ CLI runs.
 
 ```bash
 # Standing check (CI-friendly): fixture + adversarial oracles
-cargo test --test correctness_measurement
-cargo run --bin measure_correctness -- fixtures
+cargo test -p horizon-correctness --test correctness_measurement
+cargo run -p horizon-correctness --bin measure_correctness -- fixtures
 
 # Exclusion samples on a repo (default: .)
-cargo run --bin measure_correctness -- exclusions .
+cargo run -p horizon-correctness --bin measure_correctness -- exclusions .
 
 # Self-map + LSIF precision (requires rust-analyzer component)
 rustup component add rust-analyzer   # once
-cargo run --bin measure_correctness -- self-map . --generate-lsif
+cargo run -p horizon-correctness --bin measure_correctness -- self-map . --generate-lsif
 
 # Or reuse an existing index (must be generated against the same tree as the map)
-cargo run --bin measure_correctness -- self-map . --lsif target/correctness/horizon.lsif
+cargo run -p horizon-correctness --bin measure_correctness -- self-map . --lsif target/correctness/horizon.lsif
 
 # Everything → target/correctness/report.json
-cargo run --bin measure_correctness -- all --generate-lsif
+cargo run -p horizon-correctness --bin measure_correctness -- all --generate-lsif
 ```
 
 Implementation lives in:
 
-- `src/correctness.rs` — oracle check, exclusion audit, LSIF compare  
-- `src/pipeline.rs` — shared extract → resolve-index path  
-- `src/bin/measure_correctness.rs` — CLI  
-- `tests/correctness_measurement.rs` — always-on fixture tests  
+- `crates/horizon-correctness/src/lib.rs` — oracle check, exclusion audit, LSIF compare  
+- `crates/horizon-engine/src/pipeline.rs` — shared extract → resolve-index path  
+- `crates/horizon-correctness/src/bin/measure_correctness.rs` — CLI  
+- `crates/horizon-correctness/tests/correctness_measurement.rs` — always-on fixture tests  
 - `tests/fixtures/*/expected-edges.json` — hand annotations  
 - `tests/fixtures/adversarial-resolution/` — false-positive traps  
 
 ## Snapshot results (26 July 2026, refreshed)
 
-> Counts shift when `src/**` or discovery rules change. Re-run the harness; do
+> Counts shift when engine sources or discovery rules change. Re-run the harness; do
 > not treat the numbers below as frozen product KPIs.
 
 ### 1. Fixture oracle (certain)
@@ -173,7 +174,7 @@ block to paste here.)
 ## Scope note for maintainers
 
 Measurement code must not quietly change resolver answers. Prefer additive
-changes under `src/correctness.rs` / the measure binary / fixtures. Edit
+changes under `crates/horizon-correctness/` / the measure binary / fixtures. Edit
 `resolve` / `extract` / `discover` / `modules` only for a proven bug with a
 surgical fix, and re-run this harness afterwards. Keep the harness on the
 shared `pipeline` path — do not reintroduce a twin walk.

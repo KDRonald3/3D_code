@@ -50,7 +50,7 @@ claimed by Horizon's root workspace when checked via `--manifest-path`.
 
 Fixtures that participate in the standing correctness harness also carry
 `expected-edges.json` (hand-annotated ground truth). Re-run with
-`cargo run --bin measure_correctness -- fixtures` or
+`cargo run -p horizon-correctness --bin measure_correctness -- fixtures` or
 `cargo test --test correctness_measurement`. See
 [`docs/correctness-measurement.md`](../../docs/correctness-measurement.md).
 
@@ -639,10 +639,16 @@ The Horizon root manifest already excludes fixtures from the package/workspace
 build:
 
 ```toml
-exclude = ["tests/fixtures"]
-
 [workspace]
-members = ["."]
+resolver = "2"
+members = [
+    "crates/horizon-map",
+    "crates/horizon-engine",
+    "crates/horizon",
+    "crates/horizon-server",
+    "crates/horizon-correctness",
+]
+default-members = ["crates/horizon"]
 exclude = ["tests/fixtures"]
 ```
 

@@ -3,12 +3,20 @@
 //! Re-run the full harness (including optional LSIF) with:
 //! `cargo run --bin measure_correctness -- all`
 
-use horizon::correctness::{check_oracle, load_oracle};
-use horizon::build_function_map;
+use horizon_correctness::{check_oracle, load_oracle};
+use horizon_engine::build_function_map;
 use std::path::PathBuf;
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
+}
+
 fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    workspace_root().join("tests/fixtures")
 }
 
 fn check_fixture(name: &str) {

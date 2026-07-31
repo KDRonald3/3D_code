@@ -38,7 +38,7 @@ LSIF remains the only external LSIF spot-check from that pass.
 
 ### How measured
 
-- Binary: `cargo build --release --bin horizon`.
+- Binary: `cargo build --release -p horizon`.
 - Command: `horizon <repo> -o <map.json> --compact`.
 - Wall clock: process stopwatch around the child.
 - Peak RSS: polled `PeakWorkingSet64` during the run (coarse; short runs may

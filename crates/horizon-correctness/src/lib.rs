@@ -4,11 +4,11 @@
 //! be re-run as the map shifts under concurrent work. It never guesses on
 //! behalf of the resolver; it only compares Horizon's output to ground truth.
 
-use crate::discover;
-use crate::extract::PendingCall;
-use crate::map::{CallSite, CallTarget, Crate, File, Folder, FunctionId, Repository};
-use crate::pipeline::{extract_repository, resolve_index_for};
-use crate::resolve::{ExclusionKind, ResolveIndex, ResolveResult, resolve_call};
+use horizon_engine::discover;
+use horizon_engine::extract::PendingCall;
+use horizon_map::{CallSite, CallTarget, Crate, File, Folder, FunctionId, Repository};
+use horizon_engine::pipeline::{extract_repository, resolve_index_for};
+use horizon_engine::resolve::{ExclusionKind, ResolveIndex, ResolveResult, resolve_call};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

@@ -1,16 +1,23 @@
 //! Integration tests: Phase 3 import table and glob precedence.
 
-use horizon::{CallTarget, File, Folder, build_function_map, map_to_string};
+use horizon_engine::{CallTarget, File, Folder, build_function_map, map_to_string};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-fn fixture(name: &str) -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
+}
+
+fn fixture(name: &str) -> PathBuf {
+    workspace_root().join("tests/fixtures")
         .join(name)
 }
 
-fn all_files(krate: &horizon::Crate) -> Vec<&File> {
+fn all_files(krate: &horizon_engine::Crate) -> Vec<&File> {
     let mut out = Vec::new();
     fn walk<'a>(files: &'a [File], folders: &'a [Folder], out: &mut Vec<&'a File>) {
         out.extend(files.iter());
@@ -22,7 +29,7 @@ fn all_files(krate: &horizon::Crate) -> Vec<&File> {
     out
 }
 
-fn find_fn<'a>(files: &[&'a File], id_suffix: &str) -> &'a horizon::Function {
+fn find_fn<'a>(files: &[&'a File], id_suffix: &str) -> &'a horizon_engine::Function {
     for file in files {
         for func in &file.functions {
             if func.id.as_str() == id_suffix || func.id.as_str().ends_with(id_suffix) {
@@ -185,9 +192,9 @@ fn private_fn_not_reachable_by_sibling_glob() {
     // Unit-level coverage also exists in resolve.rs; this guards the
     // path-dependency engine shapes: private `never_visible` must not appear
     // as a glob candidate when a sibling module glob-imports `format`.
-    use horizon::extract::{CallOwnerKind, PendingCall, assign_function_ids, extract_facts};
-    use horizon::parse::parse_source;
-    use horizon::resolve::{ResolveIndex, ResolveResult, resolve_call};
+    use horizon_engine::extract::{CallOwnerKind, PendingCall, assign_function_ids, extract_facts};
+    use horizon_engine::parse::parse_source;
+    use horizon_engine::resolve::{ResolveIndex, ResolveResult, resolve_call};
     use std::collections::{HashMap, HashSet};
 
     let source = r#"

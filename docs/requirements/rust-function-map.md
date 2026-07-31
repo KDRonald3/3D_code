@@ -226,7 +226,7 @@ by design" is never conflated with "could not resolve".
    `cargo metadata --no-deps --format-version 1 --offline` per manifest.
    When analysing the Horizon repository itself, skip `tests/fixtures/` —
    those crates are deliberately broken/ambiguous fixtures, not real source.
-   Emit one [`Crate`](../../src/map.rs) node per **mapped** target:
+   Emit one [`Crate`](../../crates/horizon-map/src/map.rs) node per **mapped** target:
    library-like kinds (`lib`, `rlib`, `dylib`, `cdylib`, `staticlib`,
    `proc-macro`) and `bin`. **Deliberately excluded** (not an accident):
    `example`, `test`, `bench` (secondary surfaces that inflate maps and hit
@@ -328,7 +328,7 @@ Partial / deferred:
 |---|---|
 | Bare first segment (`use numbers::mean`) | Normalized at index-build time: local child module of the importing module wins over an external crate of the same name (edition 2018+); otherwise kept as an external root when the name is a known dependency / language crate |
 | `pub(in path)` on globbed items | Best-effort path check; not a full rustc privacy lattice |
-| `use` inside a function body | Recorded against the enclosing **module** with `scope_widened = true` — see Decisions |
+| `use` inside a function body | Recorded against the enclosing **module** (module-wide) — see Decisions |
 
 Not handled (remain absent or unresolved as appropriate):
 
@@ -553,7 +553,7 @@ B as a path dependency (dependency gate). Then:
    still needs A→B. Two foreign glob re-exports offering the same name →
    `Conflict` (never a pick).
 5. Re-export hops — within or across crates — stay bounded by
-   [`REEXPORT_HOP_LIMIT`](../../src/resolve.rs) (32). Exhausting the bound
+   [`REEXPORT_HOP_LIMIT`](../../crates/horizon-engine/src/resolve.rs) (32). Exhausting the bound
    yields `Unresolved` with a reason that names the limit, so a cycle
    (A re-exports B which re-exports A) cannot hang the tool. Each hop
    increments the same counter; there is no separate unbounded walk.
@@ -584,17 +584,19 @@ Matches rustc, verified against `glob-ambiguity` (`E0659`) and `glob-resolved`:
 ### Re-export hop bound
 
 Re-export / import-target chains are followed at most **32** hops
-(`resolve::REEXPORT_HOP_LIMIT`). Exhausting the bound yields `Unresolved`
-with a reason that names the limit, so a cycle cannot hang the tool.
+(`resolve::REEXPORT_HOP_LIMIT`), within-crate and cross-crate. Exhausting the
+bound yields `Unresolved` with a reason that names the limit, so a cycle
+cannot hang the tool.
 
 ### Function-body `use` scoping (known limitation)
 
 In Rust, a `use` inside a function body is scoped to that body. Extraction
-still attributes such imports to the enclosing **module** and sets
-`Import::scope_widened`. Resolution therefore treats them as module-wide.
-This is wider than rustc; the flag exists so the limitation is never silent.
-Module-level `use` (including inside inline `mod` blocks) is attributed to
-that module correctly.
+still attributes such imports to the enclosing **module**. Resolution
+therefore treats them as module-wide. This is wider than rustc; the widening
+is a documented limitation rather than a field resolution consults.
+Narrowing body-scoped imports would change resolution outcomes and is a
+separate design pass. Module-level `use` (including inside inline `mod`
+blocks) is attributed to that module correctly.
 
 ### File-level call sites (no synthetic function)
 
@@ -680,7 +682,7 @@ Known limitations to accept:
   the same module name with different `#[path]` targets keep only the first
   declaration’s file. One module path maps to one file.
 - **Function-body `use`.** Imports inside function bodies are attributed to the
-  enclosing module (`scope_widened`); wider than rustc's real scope. Inline
+  enclosing module (module-wide); wider than rustc's real scope. Inline
   module-level `use` is attributed to that module correctly.
 - **Re-export chains** are followed at most 32 hops.
 - **Feature-gated and target-specific dependencies** cannot be resolved without
@@ -702,7 +704,7 @@ Known limitations to accept:
 
 1. **JSON schema.** Closed. The consumer contract is
    [`docs/json-output.md`](../json-output.md), matching the serde types in
-   [`src/map.rs`](../../src/map.rs) (adjacent-tagged `CallTarget`, summary
+   [`crates/horizon-map/src/map.rs`](../../crates/horizon-map/src/map.rs) (adjacent-tagged `CallTarget`, summary
    drop counters, optional `from_macro`, `{name}[bin]` FunctionIds).
 2. **Correctness measurement.** Closed as far as the standing harness reaches.
    Fixture oracles (including adversarial, rename, and proc-macro fixtures)
@@ -725,7 +727,7 @@ Known limitations to accept:
    (`lib` / `rlib` / `dylib` / `cdylib` / `staticlib` / `proc-macro`) and
    `bin`. Exclude `example` / `test` / `bench` / `custom-build` deliberately
    (secondary surfaces; `build.rs` is build machinery). Reasoning in Discover
-   pipeline step and [`src/discover.rs`](../../src/discover.rs) module docs.
+   pipeline step and [`crates/horizon-engine/src/discover.rs`](../../crates/horizon-engine/src/discover.rs) module docs.
 5. **Item-macro `mod` recovery scope.** Closed for the allowlist
    (`cfg_if!` + `cfg_*`) with union-of-branches and depth bound 8. Explicitly
    **not** recovering definition-body expanders (`crate_root!()`) — see

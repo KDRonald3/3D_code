@@ -309,10 +309,10 @@ miss source that is genuinely compiled.
 
 \verb|use| is legal inside functions and modules, not only at file top level.
 A \verb|use| inside a function body is attributed to the enclosing
-\emph{module} with \verb|Import::scope_widened = true| --- wider than rustc.
-Module-level \verb|use| (including inside inline \verb|mod| blocks) is
-attributed to that module correctly. The flag exists so the limitation is never
-silent.
+\emph{module} (module-wide) --- wider than rustc. Module-level \verb|use|
+(including inside inline \verb|mod| blocks) is attributed to that module
+correctly. The widening is a documented limitation; narrowing body-scoped
+imports would change resolution outcomes and is deferred.
 
 \subsection{Glob imports into dependencies}
 

@@ -1,4 +1,4 @@
-//! Stage 1–2: discover crates via `cargo metadata`.
+//! Discover crates via `cargo metadata`.
 //!
 //! Finds every `Cargo.toml` under the given root and runs
 //! `cargo metadata --no-deps --format-version 1 --offline` per manifest.
@@ -44,7 +44,7 @@
 //! would corrupt every self-test of the tool. Implementors of this stage must
 //! honour that exclusion — it is not optional.
 
-use crate::map::{Crate, Dependency, DependencyKind};
+use horizon_map::{Crate, Dependency, DependencyKind};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};

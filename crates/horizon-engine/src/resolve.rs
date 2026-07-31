@@ -1,4 +1,4 @@
-//! Stage 6: path resolution within one crate, plus gated cross-crate edges.
+//! Path resolution within one crate, plus gated cross-crate edges.
 //!
 //! Resolve each pending call to a [`CallTarget`]: exactly one definition,
 //! a [`Conflict`] (several candidates), or unresolved (none). Refuse anything
@@ -21,7 +21,9 @@
 //!    and both names are real candidates the author wrote.
 //!
 //! Re-export chains (`pub use`, renamed `pub use`) are followed with a hop
-//! bound of [`REEXPORT_HOP_LIMIT`] so a cycle cannot hang the tool.
+//! bound of [`REEXPORT_HOP_LIMIT`] so a cycle cannot hang the tool. Exhausting
+//! the bound yields [`CallTarget::Unresolved`] with a reason that names the
+//! limit (within-crate and cross-crate).
 //!
 //! # Phase 4 — cross-crate
 //!
@@ -42,10 +44,11 @@
 //! `pub use` into *another* path crate that the foreign crate declares, and
 //! `pub use glob::*` candidate sets. Chains A→B→C are followed with the same
 //! [`REEXPORT_HOP_LIMIT`] as within-crate hops; exhausting it yields
-//! `Unresolved` so a cycle cannot hang the tool. Following a facade must not
-//! bypass the dependency gate for *initial* entry: crate A still cannot start
-//! a path at crate C unless A declares C. Once inside a declared dependency
-//! B, B's own `pub use C::…` may be followed when B declares C.
+//! `Unresolved` naming the limit so a cycle cannot hang the tool. Following a
+//! facade must not bypass the dependency gate for *initial* entry: crate A
+//! still cannot start a path at crate C unless A declares C. Once inside a
+//! declared dependency B, B's own `pub use C::…` may be followed when B
+//! declares C.
 //!
 //! That is deliberately stricter than within-crate **direct** edges, which
 //! still do not filter visibility (Phase 2): a call the author wrote is worth
@@ -71,18 +74,19 @@
 //! # Non-function CallExpr forms
 //!
 //! Same exclusions as Phase 2b. Once imports bind names, classification still
-//! applies: `use crate::map::CallTarget` then `CallTarget::Resolved(..)` is a
+//! applies: `use horizon_map::CallTarget` then `CallTarget::Resolved(..)` is a
 //! constructor drop; `use std::fs` then `fs::write(..)` is an external drop.
 //! Prefer known import / module / type facts over the leading-uppercase
 //! type-name convention whenever the table can tell the truth.
 //!
 //! # Function-body `use` limitation
 //!
-//! Imports marked [`Import::scope_widened`] are treated as module-wide even
-//! though rustc scopes them to the function body. See `extract` module docs.
+//! Imports extracted from inside a function body are attributed to the
+//! enclosing module and therefore treated as module-wide, even though rustc
+//! scopes them to the body. See `extract` module docs.
 
 use crate::extract::{Import, ItemVisibility, PendingCall, TypeDef, TypeKind};
-use crate::map::{CallTarget, Conflict, Function, FunctionId, UnresolvedCall};
+use horizon_map::{CallTarget, Conflict, Function, FunctionId, UnresolvedCall};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -90,8 +94,20 @@ use std::collections::{HashMap, HashSet};
 ///
 /// Chosen high enough for real facade crates, low enough that a cycle cannot
 /// hang the tool. Exhausting the bound yields `Unresolved` with a reason that
-/// names the limit.
+/// names the limit — both within-crate and cross-crate following.
 pub const REEXPORT_HOP_LIMIT: usize = 32;
+
+fn hop_limit_reason(path: &str) -> String {
+    format!("re-export chain exceeded {REEXPORT_HOP_LIMIT} hops resolving `{path}`")
+}
+
+fn hop_limit_unresolved(path: &str) -> CallTarget {
+    unresolved(hop_limit_reason(path))
+}
+
+fn is_hop_limit_reason(reason: &str) -> bool {
+    reason.starts_with("re-export chain exceeded ")
+}
 
 /// Why a recognised CallExpr was deliberately omitted from the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +121,7 @@ pub enum ExclusionKind {
 /// Result of resolving one call site.
 #[derive(Debug, Clone)]
 pub enum ResolveResult {
-    /// Attach this target to the map's [`crate::map::CallSite`].
+    /// Attach this target to the map's [`horizon_map::CallSite`].
     Target(CallTarget),
     /// Call into `std` / a registry dependency — dropped from the map.
     External,
@@ -665,7 +681,7 @@ fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> 
                 }
                 TargetResolve::External => {}
                 TargetResolve::Type(_) | TargetResolve::Module(_) => {}
-                TargetResolve::Unresolved => {}
+                TargetResolve::Unresolved | TargetResolve::HopLimit => {}
                 TargetResolve::Excluded(kind) => {
                     return ResolveResult::Excluded(kind);
                 }
@@ -745,6 +761,7 @@ fn resolve_explicit_bindings(
 ) -> ResolveResult {
     let mut fn_ids = Vec::new();
     let mut saw_external = false;
+    let mut saw_hop_limit = false;
     let mut exclusion: Option<ExclusionKind> = None;
 
     for binding in explicits {
@@ -764,6 +781,7 @@ fn resolve_explicit_bindings(
                 // Calling a module name is nonsense — unresolved.
             }
             TargetResolve::Excluded(kind) => exclusion = Some(kind),
+            TargetResolve::HopLimit => saw_hop_limit = true,
             TargetResolve::Unresolved => {}
         }
     }
@@ -782,6 +800,9 @@ fn resolve_explicit_bindings(
     }
     if saw_external {
         return ResolveResult::External;
+    }
+    if saw_hop_limit {
+        return ResolveResult::Target(hop_limit_unresolved(name));
     }
     ResolveResult::Target(unresolved(format!(
         "import `{name}` in `{}` did not resolve to a free function",
@@ -893,6 +914,9 @@ fn resolve_qualified(segments: &[&str], site: &PendingCall, index: &ResolveIndex
             "call path `{path}` names a module, not a function"
         ))),
         TargetResolve::Excluded(kind) => ResolveResult::Excluded(kind),
+        TargetResolve::HopLimit => {
+            ResolveResult::Target(hop_limit_unresolved(&path))
+        }
         TargetResolve::Unresolved => {
             if index.find_type(&module, func_name).is_some()
                 || index.has_variant_in_module(&module, func_name)
@@ -908,11 +932,13 @@ fn resolve_qualified(segments: &[&str], site: &PendingCall, index: &ResolveIndex
     }
 }
 
-#[allow(dead_code)] // Functions: import binds a fn used as a path prefix (rare).
 enum SegmentBind {
     Module(String),
     External,
     Type(String),
+    /// Import binds a function used as a path prefix (not a free-fn call).
+    /// Payload is retained for diagnostics but callers only need the kind.
+    #[allow(dead_code)]
     Functions(Vec<FunctionId>),
     Ambiguous,
     None,
@@ -944,7 +970,9 @@ fn resolve_segment_binding(
                 ty = Some(t);
             }
             TargetResolve::Functions(ids) => fns.extend(ids),
-            TargetResolve::Excluded(_) | TargetResolve::Unresolved => {}
+            TargetResolve::Excluded(_)
+            | TargetResolve::Unresolved
+            | TargetResolve::HopLimit => {}
         }
     }
 
@@ -989,7 +1017,18 @@ fn classify_from_type_path(
     ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
 }
 
-/// Look up `name` in `module`: local fn, visible re-export, or type/module.
+/// Look up `name` in `module`: local fn, re-export, or type/module.
+///
+/// Visibility here is deliberately asymmetric (do not "unify"):
+/// - **Re-exports** on a qualified path are filtered with
+///   [`is_visible_from`] — private `use` in a foreign module must not leak.
+/// - **Same-module private `use`** (`self::name` after navigating to this
+///   module) is accepted without a descendant check: the call site is already
+///   in `module`.
+/// - **Direct within-crate edges** to local functions still do **not** filter
+///   item visibility (Phase 2): a path the author wrote is worth mapping even
+///   if rustc would reject it. Glob candidate sets and cross-crate reachability
+///   enforce visibility elsewhere.
 fn lookup_item_in_module(
     module: &str,
     name: &str,
@@ -998,7 +1037,7 @@ fn lookup_item_in_module(
     hops: usize,
 ) -> TargetResolve {
     if hops > REEXPORT_HOP_LIMIT {
-        return TargetResolve::Unresolved;
+        return TargetResolve::HopLimit;
     }
 
     let locals = index.lookup_full(&extend_module_path(module, name));
@@ -1006,56 +1045,49 @@ fn lookup_item_in_module(
         return TargetResolve::Functions(locals);
     }
 
-    // Visible re-exports (and same-module private uses when caller is in module).
+    // Re-exports visible from the call site, plus same-module private uses.
     let mut targets = Vec::new();
     for binding in index.explicits_in(module, name) {
-        let visible = if binding.is_reexport {
-            is_visible_from(&binding.visibility, module, &site.module_path)
-        } else {
-            // Private `use` only binds inside the importing module.
-            module == site.module_path
-                || is_descendant(&site.module_path, module)
-        };
-        // For qualified paths like `crate::mean` from another module, only
-        // re-exports apply. When already navigating inside `module` as the
-        // path prefix, the call site may still be elsewhere — re-export
-        // visibility is the right filter for path segments after the first.
-        // Exception: if the path was built by walking into `module` from the
-        // call site, names resolved *in* that module for the final segment
-        // should include re-exports visible from the call site.
-        let _ = visible;
         if binding.is_reexport {
+            // For qualified paths like `crate::mean` from another module, only
+            // re-exports apply. Re-export visibility is the filter for path
+            // segments after the first.
             if is_visible_from(&binding.visibility, module, &site.module_path) {
                 targets.push(binding.target.clone());
             }
         } else if module == site.module_path {
             // Unqualified already handled; for `self::name` after self→module,
-            // private uses in the same module count.
+            // private uses in the same module count. Private uses in *other*
+            // modules must NOT contribute when looking up via a fully
+            // qualified path into `module`.
             targets.push(binding.target.clone());
         }
     }
-
-    // Also: when looking up via a fully qualified path into `module`, private
-    // uses there must NOT be visible. Only the re-export branch above applies.
-    // The `module == site.module_path` branch covers `self::foo` where foo is
-    // imported privately in the same module.
 
     if targets.len() == 1 {
         return resolve_target_path(&targets[0], site, index, hops + 1);
     }
     if targets.len() > 1 {
         let mut ids = Vec::new();
+        let mut saw_hop_limit = false;
         for t in &targets {
-            if let TargetResolve::Functions(found) = resolve_target_path(t, site, index, hops + 1) {
-                for id in found {
-                    if !ids.contains(&id) {
-                        ids.push(id);
+            match resolve_target_path(t, site, index, hops + 1) {
+                TargetResolve::Functions(found) => {
+                    for id in found {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
                     }
                 }
+                TargetResolve::HopLimit => saw_hop_limit = true,
+                _ => {}
             }
         }
         if !ids.is_empty() {
             return TargetResolve::Functions(ids);
+        }
+        if saw_hop_limit {
+            return TargetResolve::HopLimit;
         }
     }
 
@@ -1069,14 +1101,16 @@ fn lookup_item_in_module(
     TargetResolve::Unresolved
 }
 
-#[allow(dead_code)] // Excluded: reserved when import targets classify as non-fn.
 enum TargetResolve {
     Functions(Vec<FunctionId>),
     Module(String),
     Type(String),
     External,
+    /// Import target classified as a non-function form.
     Excluded(ExclusionKind),
     Unresolved,
+    /// Re-export / import-target chain exceeded [`REEXPORT_HOP_LIMIT`].
+    HopLimit,
 }
 
 fn resolve_target_path(
@@ -1086,7 +1120,7 @@ fn resolve_target_path(
     hops: usize,
 ) -> TargetResolve {
     if hops > REEXPORT_HOP_LIMIT {
-        return TargetResolve::Unresolved;
+        return TargetResolve::HopLimit;
     }
 
     let segments: Vec<&str> = target.split("::").filter(|s| !s.is_empty()).collect();
@@ -1107,6 +1141,11 @@ fn resolve_target_path(
             }
             ResolveResult::External => TargetResolve::External,
             ResolveResult::Excluded(kind) => TargetResolve::Excluded(kind),
+            ResolveResult::Target(CallTarget::Unresolved(u))
+                if is_hop_limit_reason(&u.reason) =>
+            {
+                TargetResolve::HopLimit
+            }
             ResolveResult::Target(CallTarget::Unresolved(_)) => TargetResolve::Unresolved,
         };
     }
@@ -1148,19 +1187,25 @@ fn resolve_target_path(
         }
         if targets.len() > 1 {
             let mut ids = Vec::new();
+            let mut saw_hop_limit = false;
             for t in &targets {
-                if let TargetResolve::Functions(found) =
-                    resolve_target_path(t, site, index, hops + 1)
-                {
-                    for id in found {
-                        if !ids.contains(&id) {
-                            ids.push(id);
+                match resolve_target_path(t, site, index, hops + 1) {
+                    TargetResolve::Functions(found) => {
+                        for id in found {
+                            if !ids.contains(&id) {
+                                ids.push(id);
+                            }
                         }
                     }
+                    TargetResolve::HopLimit => saw_hop_limit = true,
+                    _ => {}
                 }
             }
             if !ids.is_empty() {
                 return TargetResolve::Functions(ids);
+            }
+            if saw_hop_limit {
+                return TargetResolve::HopLimit;
             }
         }
 
@@ -1190,9 +1235,7 @@ fn resolve_cross_crate_path(
     index: &ResolveIndex,
 ) -> ResolveResult {
     if hops > REEXPORT_HOP_LIMIT {
-        return ResolveResult::Target(unresolved(format!(
-            "re-export chain exceeded {REEXPORT_HOP_LIMIT} hops resolving `{full_path}`"
-        )));
+        return ResolveResult::Target(hop_limit_unresolved(full_path));
     }
     let Some(foreign) = foreign_index(index, crate_key) else {
         return ResolveResult::Target(unresolved(format!(
@@ -1259,6 +1302,9 @@ fn resolve_cross_crate_path(
             CrossLookup::Type => {
                 return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
             }
+            CrossLookup::HopLimit => {
+                return ResolveResult::Target(hop_limit_unresolved(full_path));
+            }
             CrossLookup::None => {
                 return ResolveResult::Target(unresolved(format!(
                     "no public module `{seg}` in `{}` for `{full_path}`",
@@ -1295,6 +1341,7 @@ fn resolve_cross_crate_path(
             )))
         }
         CrossLookup::Type => ResolveResult::Excluded(ExclusionKind::VariantOrConstructor),
+        CrossLookup::HopLimit => ResolveResult::Target(hop_limit_unresolved(full_path)),
         CrossLookup::None => {
             if foreign.find_type(&module, name).is_some() || looks_like_type_name(name) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
@@ -1324,6 +1371,8 @@ enum CrossLookup {
     ForeignModule { crate_key: String, module: String },
     Type,
     None,
+    /// Re-export / facade chain exceeded [`REEXPORT_HOP_LIMIT`].
+    HopLimit,
 }
 
 fn lookup_cross_crate_name(
@@ -1334,7 +1383,7 @@ fn lookup_cross_crate_name(
     index: &ResolveIndex,
 ) -> CrossLookup {
     if hops > REEXPORT_HOP_LIMIT {
-        return CrossLookup::None;
+        return CrossLookup::HopLimit;
     }
 
     // Direct function definitions — must be `pub`, and parent module chain already checked.
@@ -1367,27 +1416,34 @@ fn lookup_cross_crate_name(
     }
     if reexport_targets.len() > 1 {
         let mut ids = Vec::new();
+        let mut saw_hop_limit = false;
         for t in &reexport_targets {
-            if let CrossLookup::Functions(found) =
-                resolve_foreign_reexport(foreign, t, hops + 1, index)
-            {
-                for id in found {
-                    if !ids.contains(&id) {
-                        ids.push(id);
+            match resolve_foreign_reexport(foreign, t, hops + 1, index) {
+                CrossLookup::Functions(found) => {
+                    for id in found {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
                     }
                 }
+                CrossLookup::HopLimit => saw_hop_limit = true,
+                _ => {}
             }
         }
         if !ids.is_empty() {
             return CrossLookup::Functions(ids);
         }
+        if saw_hop_limit {
+            return CrossLookup::HopLimit;
+        }
     }
 
     // Public glob re-exports (`pub use format::*;`, `pub use engine_a::*;`).
     // Two globs offering the same name → every candidate (Conflict upstream).
-    let glob_ids = collect_foreign_glob_function_candidates(foreign, module, name, hops, index);
-    if !glob_ids.is_empty() {
-        return CrossLookup::Functions(glob_ids);
+    match collect_foreign_glob_function_candidates(foreign, module, name, hops, index) {
+        None => return CrossLookup::HopLimit,
+        Some(glob_ids) if !glob_ids.is_empty() => return CrossLookup::Functions(glob_ids),
+        Some(_) => {}
     }
 
     let child = extend_module_path(module, name);
@@ -1418,7 +1474,7 @@ fn resolve_foreign_reexport(
     index: &ResolveIndex,
 ) -> CrossLookup {
     if hops > REEXPORT_HOP_LIMIT {
-        return CrossLookup::None;
+        return CrossLookup::HopLimit;
     }
     let segments: Vec<&str> = target.split("::").filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
@@ -1475,6 +1531,11 @@ fn resolve_foreign_reexport(
             }
             ResolveResult::Target(CallTarget::Conflict(c)) => {
                 CrossLookup::Functions(c.candidates)
+            }
+            ResolveResult::Target(CallTarget::Unresolved(u))
+                if is_hop_limit_reason(&u.reason) =>
+            {
+                CrossLookup::HopLimit
             }
             ResolveResult::Target(CallTarget::Unresolved(_)) => CrossLookup::None,
             ResolveResult::External | ResolveResult::Excluded(_) => CrossLookup::None,
@@ -1545,9 +1606,15 @@ fn resolve_foreign_reexport(
                     ResolveResult::Target(CallTarget::Conflict(c)) => {
                         CrossLookup::Functions(c.candidates)
                     }
+                    ResolveResult::Target(CallTarget::Unresolved(u))
+                        if is_hop_limit_reason(&u.reason) =>
+                    {
+                        CrossLookup::HopLimit
+                    }
                     _ => CrossLookup::None,
                 };
             }
+            CrossLookup::HopLimit => return CrossLookup::HopLimit,
             _ => return CrossLookup::None,
         }
     }
@@ -1570,17 +1637,22 @@ fn resolve_foreign_reexport(
 /// Same discipline as within-crate glob sets: only `pub` items (and `pub`
 /// re-exports) in the globbed module contribute. Distinct candidates from
 /// two globs are all returned — never a guessed winner.
+///
+/// Returns `None` when the re-export hop bound is exhausted so callers can
+/// surface a hop-limit `Unresolved` rather than a generic miss. `Some(vec)`
+/// is the candidate set (possibly empty).
 fn collect_foreign_glob_function_candidates(
     foreign: &PathCrateIndex,
     module: &str,
     name: &str,
     hops: usize,
     index: &ResolveIndex,
-) -> Vec<FunctionId> {
+) -> Option<Vec<FunctionId>> {
     if hops > REEXPORT_HOP_LIMIT {
-        return Vec::new();
+        return None;
     }
     let mut out = Vec::new();
+    let mut saw_hop_limit = false;
     let mut seen_glob_targets = HashSet::new();
     for glob in foreign.public_globs_in(module) {
         if !seen_glob_targets.insert(glob.target.clone()) {
@@ -1606,18 +1678,23 @@ fn collect_foreign_glob_function_candidates(
             if !(binding.is_reexport && matches!(binding.visibility, ItemVisibility::Public)) {
                 continue;
             }
-            if let CrossLookup::Functions(ids) =
-                resolve_foreign_reexport(target_crate, &binding.target, hops + 1, index)
-            {
-                for id in ids {
-                    if !out.contains(&id) {
-                        out.push(id);
+            match resolve_foreign_reexport(target_crate, &binding.target, hops + 1, index) {
+                CrossLookup::Functions(ids) => {
+                    for id in ids {
+                        if !out.contains(&id) {
+                            out.push(id);
+                        }
                     }
                 }
+                CrossLookup::HopLimit => saw_hop_limit = true,
+                _ => {}
             }
         }
     }
-    out
+    if out.is_empty() && saw_hop_limit {
+        return None;
+    }
+    Some(out)
 }
 
 /// Resolve a glob target path to `(crate_key, module_path)` for candidate collection.
@@ -1627,6 +1704,8 @@ fn resolve_foreign_glob_module(
     hops: usize,
     index: &ResolveIndex,
 ) -> Option<(String, String)> {
+    // Hop exhaustion is reported by the caller (`collect_foreign_glob_…`);
+    // this helper only navigates a single glob target path.
     if hops > REEXPORT_HOP_LIMIT {
         return None;
     }
@@ -1889,6 +1968,9 @@ fn classify_non_module_suffix(
                         ResolveResult::Excluded(ExclusionKind::VariantOrConstructor)
                     }
                     TargetResolve::Excluded(k) => ResolveResult::Excluded(k),
+                    TargetResolve::HopLimit => {
+                        ResolveResult::Target(hop_limit_unresolved(full_path))
+                    }
                     _ => ResolveResult::Target(unresolved(format!(
                         "no free function `{func_name}` in `{walk}`"
                     ))),
@@ -2041,7 +2123,7 @@ fn join_path_owned(parent: &str, parts: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::extract::{CallOwnerKind, Import, ItemVisibility, TypeDef, TypeKind};
-    use crate::map::FunctionId;
+    use horizon_map::FunctionId;
 
     fn fn_at(path: &str, line: u32) -> Function {
         Function {
@@ -2097,7 +2179,6 @@ mod tests {
             is_public: false,
             visibility: ItemVisibility::Private,
             module_path: module.into(),
-            scope_widened: false,
         }
     }
 
@@ -2109,7 +2190,6 @@ mod tests {
             is_public: true,
             visibility: ItemVisibility::Public,
             module_path: module.into(),
-            scope_widened: false,
         }
     }
 
@@ -2121,7 +2201,6 @@ mod tests {
             is_public: false,
             visibility: ItemVisibility::Private,
             module_path: module.into(),
-            scope_widened: false,
         }
     }
 
@@ -2408,6 +2487,32 @@ mod tests {
                 assert!(u.reason.contains("mystery"), "{}", u.reason);
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn within_crate_reexport_cycle_names_hop_limit() {
+        // a → b → a … must not hang, and must surface the bound in the reason.
+        let imports = vec![
+            reexport("crate", "crate::b", Some("a")),
+            reexport("crate", "crate::a", Some("b")),
+        ];
+        let index = index_with(vec![], HashSet::from(["crate".into()]), vec![], imports);
+        let r = resolve_call(&site("a", "crate"), &index).unwrap();
+        match r {
+            ResolveResult::Target(CallTarget::Unresolved(u)) => {
+                assert!(
+                    is_hop_limit_reason(&u.reason),
+                    "expected hop-limit reason, got {}",
+                    u.reason
+                );
+                assert!(
+                    u.reason.contains(&REEXPORT_HOP_LIMIT.to_string()),
+                    "{}",
+                    u.reason
+                );
+            }
+            other => panic!("expected hop-limit Unresolved, got {other:?}"),
         }
     }
 

@@ -9,7 +9,7 @@ use crate::extract::{
     FileFacts, Import, ItemVisibility, TypeDef, assign_function_ids, extract_facts,
     remap_pending_calls,
 };
-use crate::map::{Crate, Dependency, DependencyKind, Function, FunctionId};
+use horizon_map::{Crate, Dependency, DependencyKind, Function, FunctionId};
 use crate::modules::walk_modules;
 use crate::parse::parse_source;
 use crate::resolve::{PathCrateIndex, ResolveIndex};
@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Per-crate facts after extraction and FunctionId assignment, before resolve.
-pub(crate) struct ExtractedCrate {
+pub struct ExtractedCrate {
     pub krate: Crate,
     pub rustc_name: String,
     pub file_facts: Vec<(PathBuf, String, FileFacts)>,
@@ -31,7 +31,7 @@ pub(crate) struct ExtractedCrate {
 }
 
 /// Discover every crate under `repo_root` and extract facts for each.
-pub(crate) fn extract_repository(repo_root: &Path) -> Result<Vec<ExtractedCrate>> {
+pub fn extract_repository(repo_root: &Path) -> Result<Vec<ExtractedCrate>> {
     let discovered = discover::discover_crates(repo_root)?;
     let mut extracted = Vec::with_capacity(discovered.len());
     for krate in discovered {
@@ -40,7 +40,7 @@ pub(crate) fn extract_repository(repo_root: &Path) -> Result<Vec<ExtractedCrate>
     Ok(extracted)
 }
 
-pub(crate) fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
+pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
     let rustc_name = krate.rustc_name.clone();
     // FunctionIds use a compilation-unit key that may differ from the real
     // rustc name (binaries get `{name}[bin]` — see `Crate::function_id_prefix`).
@@ -113,7 +113,7 @@ pub(crate) fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
 }
 
 /// Build a [`ResolveIndex`] for `extracted[i]` with dependency-gated path crates.
-pub(crate) fn resolve_index_for(extracted: &[ExtractedCrate], i: usize) -> ResolveIndex {
+pub fn resolve_index_for(extracted: &[ExtractedCrate], i: usize) -> ResolveIndex {
     let all_crates = all_library_indexes(extracted);
     let path_crates = path_crates_for(&extracted[i].krate, extracted, &all_crates);
     let external_crates = external_crate_names(&extracted[i].krate);

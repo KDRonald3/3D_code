@@ -1,13 +1,13 @@
-//! Horizon — build a navigable function map of a Rust repository.
+//! Horizon engine — build a navigable function map of a Rust repository.
 //!
-//! Pipeline stages (each in its own module):
+//! Pipeline (each step in its own module; unnumbered so renames cannot drift):
 //!
-//! 1. [`discover`] — `cargo metadata` → crates, roots, dependencies
-//! 2. [`modules`] — `mod` walk → files in the crate and their module paths
-//! 3. [`parse`] — thin wrapper over `ra_ap_syntax`
-//! 4. [`extract`] — per-file facts (definitions, calls, imports, docs)
-//! 5. [`resolve`] — call site → [`map::CallTarget`] (resolved, conflict, or unresolved)
-//! 6. [`map`] / [`json`] — node types and JSON emission
+//! - [`discover`] — `cargo metadata` → crates, roots, dependencies
+//! - [`modules`] — `mod` walk → files in the crate and their module paths
+//! - [`parse`] — thin wrapper over `ra_ap_syntax`
+//! - [`extract`] — per-file facts (definitions, calls, imports, docs)
+//! - [`resolve`] — call site → [`horizon_map::CallTarget`] (resolved, conflict, or unresolved)
+//! - [`horizon_map`] — node types and JSON emission (separate crate)
 //!
 //! [`pipeline`] shares extract → resolve-index construction between
 //! [`build_function_map`] and the correctness harness so they cannot drift.
@@ -20,21 +20,18 @@
 //! only to `pub` items behind an all-`pub` module chain. Registry / git
 //! dependencies stay dropped.
 
-pub mod correctness;
 pub mod discover;
 pub mod extract;
-pub mod json;
-pub mod map;
 pub mod modules;
 pub mod parse;
-pub(crate) mod pipeline;
+pub mod pipeline;
 pub mod resolve;
 
-pub use json::{
+pub use horizon_map::{
     map_from_slice, map_to_string, write_map, write_map_compact, write_map_compact_to_file,
     write_map_to_file,
 };
-pub use map::{
+pub use horizon_map::{
     CallSite, CallTarget, Conflict, Crate, Dependency, DependencyKind, DocComment, DocCommentKind,
     File, Folder, Function, FunctionId, MapSummary, Repository, UnresolvedCall,
 };

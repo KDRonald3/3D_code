@@ -1,16 +1,23 @@
 //! Integration tests: Phase 4 multi-crate discovery and cross-crate resolve.
 
-use horizon::{CallTarget, File, Folder, build_function_map, map_to_string};
+use horizon_engine::{CallTarget, File, Folder, build_function_map, map_to_string};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-fn fixture(name: &str) -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
+}
+
+fn fixture(name: &str) -> PathBuf {
+    workspace_root().join("tests/fixtures")
         .join(name)
 }
 
-fn all_files(krate: &horizon::Crate) -> Vec<&File> {
+fn all_files(krate: &horizon_engine::Crate) -> Vec<&File> {
     let mut out = Vec::new();
     fn walk<'a>(files: &'a [File], folders: &'a [Folder], out: &mut Vec<&'a File>) {
         out.extend(files.iter());
@@ -22,7 +29,7 @@ fn all_files(krate: &horizon::Crate) -> Vec<&File> {
     out
 }
 
-fn find_crate<'a>(map: &'a horizon::Repository, name: &str) -> &'a horizon::Crate {
+fn find_crate<'a>(map: &'a horizon_engine::Repository, name: &str) -> &'a horizon_engine::Crate {
     map.crates
         .iter()
         .find(|c| c.name == name || c.rustc_name == name)
@@ -30,7 +37,7 @@ fn find_crate<'a>(map: &'a horizon::Repository, name: &str) -> &'a horizon::Crat
             map.crates.iter().map(|c| (&c.name, &c.rustc_name)).collect::<Vec<_>>()))
 }
 
-fn find_fn<'a>(files: &[&'a File], id: &str) -> &'a horizon::Function {
+fn find_fn<'a>(files: &[&'a File], id: &str) -> &'a horizon_engine::Function {
     for file in files {
         for func in &file.functions {
             if func.id.as_str() == id || func.id.as_str().ends_with(id) {
@@ -47,7 +54,7 @@ fn find_fn<'a>(files: &[&'a File], id: &str) -> &'a horizon::Function {
     );
 }
 
-fn count_sites(map: &horizon::Repository) -> (usize, usize, usize) {
+fn count_sites(map: &horizon_engine::Repository) -> (usize, usize, usize) {
     let mut resolved = 0usize;
     let mut conflict = 0usize;
     let mut unresolved = 0usize;

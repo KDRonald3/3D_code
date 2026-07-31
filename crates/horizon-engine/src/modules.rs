@@ -1,4 +1,4 @@
-//! Stage 3: walk the `mod` tree to find files that belong to a crate.
+//! Walk the `mod` tree to find files that belong to a crate.
 //!
 //! From each compilation root, follow `mod` declarations (honouring `#[path]`)
 //! to discover which files are in the crate and what their module paths are.
@@ -32,7 +32,7 @@ use crate::discover::normalize_path;
 use crate::extract::{
     ItemVisibility, is_item_macro_allowlisted, is_inside_macro_definition, macro_call_name,
 };
-use crate::map::{Crate, File};
+use horizon_map::{Crate, File};
 use crate::parse::parse_source;
 use anyhow::{Result, bail};
 use ra_ap_syntax::ast::{

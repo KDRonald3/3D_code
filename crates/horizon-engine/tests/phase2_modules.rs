@@ -1,13 +1,21 @@
 //! Integration tests: Phase 2 module walk and within-crate resolution.
 
-use horizon::{CallTarget, File, Folder, build_function_map, map_to_string};
+use horizon_engine::{CallTarget, File, Folder, build_function_map, map_to_string};
 use std::path::{Path, PathBuf};
 
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
 }
 
-fn all_files(krate: &horizon::Crate) -> Vec<&File> {
+fn fixture(name: &str) -> PathBuf {
+    workspace_root().join("tests/fixtures").join(name)
+}
+
+fn all_files(krate: &horizon_engine::Crate) -> Vec<&File> {
     let mut out = Vec::new();
     fn walk<'a>(files: &'a [File], folders: &'a [Folder], out: &mut Vec<&'a File>) {
         out.extend(files.iter());
@@ -19,7 +27,7 @@ fn all_files(krate: &horizon::Crate) -> Vec<&File> {
     out
 }
 
-fn find_fn<'a>(files: &[&'a File], id_suffix: &str) -> &'a horizon::Function {
+fn find_fn<'a>(files: &[&'a File], id_suffix: &str) -> &'a horizon_engine::Function {
     for file in files {
         for func in &file.functions {
             if func.id.as_str() == id_suffix || func.id.as_str().ends_with(id_suffix) {

@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use horizon::{
+use horizon_engine::{
     build_function_map, write_map, write_map_compact, write_map_compact_to_file, write_map_to_file,
     CallTarget, Crate, File, Folder, Repository,
 };

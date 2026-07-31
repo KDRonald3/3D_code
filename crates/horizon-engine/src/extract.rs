@@ -1,4 +1,4 @@
-//! Stage 5: extract per-file facts from a syntax tree.
+//! Extract per-file facts from a syntax tree.
 //!
 //! Free function definitions, local type definitions (struct / enum / trait /
 //! type alias), doc comments (`///` / `//!`), imports, and call sites —
@@ -28,12 +28,13 @@
 //!
 //! In Rust, a `use` inside a function body is scoped to that body. Extraction
 //! still attributes such imports to the enclosing **module**
-//! ([`Import::module_path`]) and sets [`Import::scope_widened`]. Resolution
-//! therefore treats them as module-wide. This is wider than rustc; the flag
-//! exists so the limitation is never silent. Module-level `use` (including
-//! inside inline `mod` blocks) is attributed to that module correctly.
+//! ([`Import::module_path`]). Resolution therefore treats them as module-wide.
+//! That widening is a documented limitation, not a separately tracked flag:
+//! narrowing body-scoped imports would change resolution outcomes and needs
+//! its own design pass. Module-level `use` (including inside inline `mod`
+//! blocks) is attributed to that module correctly.
 
-use crate::map::{DocComment, DocCommentKind, Function, FunctionId};
+use horizon_map::{DocComment, DocCommentKind, Function, FunctionId};
 use anyhow::Result;
 use ra_ap_syntax::ast::{
     self, AstNode, AstToken, HasName, HasVisibility, LiteralKind, PathSegmentKind, VisibilityKind,
@@ -125,10 +126,10 @@ pub struct Import {
     /// Full visibility of the `use` item (controls who can see a re-export).
     pub visibility: ItemVisibility,
     /// Module containing the `use` (inline `mod` segments included).
+    ///
+    /// Function-body `use` items are attributed here too (module-wide), which
+    /// is wider than rustc's real body scope — see the module docs.
     pub module_path: String,
-    /// True when the `use` was inside a function body but attributed to the
-    /// enclosing module — wider than Rust's real scope.
-    pub scope_widened: bool,
 }
 
 impl Import {
@@ -149,13 +150,13 @@ impl Import {
 pub enum CallOwnerKind {
     /// Inside a free function — attach to that function.
     Function,
-    /// Module-level (`const` / `static` init, …) — attach to the [`crate::map::File`].
+    /// Module-level (`const` / `static` init, …) — attach to the [`horizon_map::File`].
     File,
 }
 
 /// A call expression awaiting resolution (pre-map form).
 ///
-/// Distinct from [`crate::map::CallSite`], which is the post-resolution edge.
+/// Distinct from [`horizon_map::CallSite`], which is the post-resolution edge.
 #[derive(Debug, Clone)]
 pub struct PendingCall {
     /// Path text at the call site (e.g. `shapes::get`, `get`).
@@ -227,7 +228,7 @@ const MACRO_PROBE_CALLEE: &str = "__horizon_macro_probe";
 /// Extract definitions and call sites from `tree`.
 ///
 /// `crate_key` is the [`FunctionId`] prefix for this compilation unit (see
-/// [`crate::map::Crate::function_id_prefix`]). `file_module_path` is the file's
+/// [`horizon_map::Crate::function_id_prefix`]). `file_module_path` is the file's
 /// module path from the `mod` walk (`crate`, `crate::shapes`, …). `source` is
 /// the file text (for 1-based line mapping). `edition` is the crate edition
 /// string (used when re-parsing macro token trees).
@@ -838,7 +839,6 @@ fn extract_imports(root: &SyntaxNode, file_module_path: &str) -> Vec<Import> {
                 continue;
             };
             let module_path = call_module_path(use_item.syntax(), file_module_path);
-            let scope_widened = is_inside_function_body(use_item.syntax());
             let visibility = visibility_of(&use_item);
             let is_public = !matches!(visibility, ItemVisibility::Private);
             flatten_use_tree(
@@ -847,7 +847,6 @@ fn extract_imports(root: &SyntaxNode, file_module_path: &str) -> Vec<Import> {
                 &module_path,
                 &visibility,
                 is_public,
-                scope_widened,
                 &mut imports,
             );
             continue;
@@ -874,7 +873,6 @@ fn extract_imports(root: &SyntaxNode, file_module_path: &str) -> Vec<Import> {
             is_public,
             visibility,
             module_path,
-            scope_widened: false,
         });
     }
     imports
@@ -890,7 +888,6 @@ fn flatten_use_tree(
     module_path: &str,
     visibility: &ItemVisibility,
     is_public: bool,
-    scope_widened: bool,
     out: &mut Vec<Import>,
 ) {
     let mut path_segs = prefix.to_vec();
@@ -906,7 +903,6 @@ fn flatten_use_tree(
                 module_path,
                 visibility,
                 is_public,
-                scope_widened,
                 out,
             );
         }
@@ -922,7 +918,6 @@ fn flatten_use_tree(
             is_public,
             visibility: visibility.clone(),
             module_path: module_path.to_string(),
-            scope_widened,
         });
         return;
     }
@@ -957,7 +952,6 @@ fn flatten_use_tree(
         is_public,
         visibility: visibility.clone(),
         module_path: module_path.to_string(),
-        scope_widened,
     });
 }
 
@@ -1040,27 +1034,6 @@ fn visibility_of(node: &impl HasVisibility) -> ItemVisibility {
             }
         },
     }
-}
-
-/// True when `node` sits inside a `fn` body (not merely nested as an item in
-/// an inline module that happens to be under a function — we walk ancestors
-/// and treat any enclosing `FN` that is not itself skipped as widening).
-fn is_inside_function_body(node: &SyntaxNode) -> bool {
-    for ancestor in node.ancestors().skip(1) {
-        match ancestor.kind() {
-            SyntaxKind::FN => {
-                // A `use` that is a direct item of a module inside a function
-                // is still function-scoped in Rust if the module is inline
-                // inside the function… Actually inline mod inside fn is rare.
-                // Any Use whose ancestor is FN is body-or-item scoped to that
-                // fn. Mark widened.
-                return true;
-            }
-            SyntaxKind::SOURCE_FILE => return false,
-            _ => {}
-        }
-    }
-    false
 }
 
 fn is_inside_impl_or_trait(node: &SyntaxNode) -> bool {
@@ -1397,7 +1370,8 @@ pub use text::upper as shout_upper;
     }
 
     #[test]
-    fn function_body_use_is_marked_scope_widened() {
+    fn function_body_use_is_attributed_to_enclosing_module() {
+        // Known limitation: body-scoped `use` is recorded as module-wide.
         let source = r#"
 fn f() {
     use crate::helper;
@@ -1411,13 +1385,12 @@ fn f() {
             .iter()
             .find(|i| i.local_name() == Some("helper"))
             .expect("helper import");
-        assert!(imp.scope_widened);
         assert_eq!(imp.module_path, "crate");
     }
 
     #[test]
     fn extracts_doc_comments_with_pinned_whitespace() {
-        use crate::map::DocCommentKind;
+        use horizon_map::DocCommentKind;
 
         let source = r#"//! File-level module docs.
 //! Second inner line.

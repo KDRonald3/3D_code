@@ -1,16 +1,23 @@
 //! Integration tests: doc-comment extraction and lib+bin FunctionId keys.
 
-use horizon::{DocCommentKind, File, Folder, build_function_map, map_to_string};
+use horizon_engine::{DocCommentKind, File, Folder, build_function_map, map_to_string};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-fn fixture(name: &str) -> PathBuf {
+fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
+}
+
+fn fixture(name: &str) -> PathBuf {
+    workspace_root().join("tests/fixtures")
         .join(name)
 }
 
-fn all_files(krate: &horizon::Crate) -> Vec<&File> {
+fn all_files(krate: &horizon_engine::Crate) -> Vec<&File> {
     let mut out = Vec::new();
     fn walk<'a>(files: &'a [File], folders: &'a [Folder], out: &mut Vec<&'a File>) {
         out.extend(files.iter());

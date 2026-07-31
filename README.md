@@ -50,23 +50,27 @@ when the language itself refuses to pick a winner.
 
 ## Build and run
 
+This repo is a Cargo workspace. The installable CLI package is still named
+`horizon` (`crates/horizon`); analysis lives in `horizon-engine`, and the JSON
+contract in `horizon-map`.
+
 ```bash
-cargo build --bin horizon
+cargo build -p horizon
 ```
 
 ```bash
 # JSON map on stdout (pretty-printed)
-cargo run --bin horizon -- path/to/repo
+cargo run -p horizon -- path/to/repo
 
 # write to a file; brief summary still goes to stderr
-cargo run --bin horizon -- path/to/repo -o map.json
+cargo run -p horizon -- path/to/repo -o map.json
 
 # single-line JSON
-cargo run --bin horizon -- path/to/repo --compact
+cargo run -p horizon -- path/to/repo --compact
 ```
 
 ```rust
-use horizon::build_function_map;
+use horizon_engine::build_function_map;
 
 let map = build_function_map("path/to/repo")?;
 ```
@@ -123,7 +127,7 @@ Equal prominence: these are not “not yet” unless stated.
 | Modules assembled only inside `macro_rules!` **definition** bodies (e.g. serde `crate_root!()`) | Stay absent — expanding definition bodies is a different, riskier problem |
 | Examples, integration tests, benches, `build.rs` | Deliberately not discovered as map crates |
 | Consumer-side cross-crate glob imports (`use dep::*` in the *calling* crate) | Not expanded; use explicit paths / imports. (Foreign crates' own `pub use dep::*` facades *are* followed.) |
-| `use` inside a function body | Treated as module-wide (`scope_widened`), not body-scoped |
+| `use` inside a function body | Treated as module-wide, not body-scoped (documented limitation) |
 | Visibility filtering on direct within-crate edges | Deliberately **not** enforced (map what was written); globs and cross-crate edges **do** filter |
 | Visual frontend | Deferred; consume the JSON instead |
 | Live incremental updating / caching | Non-goal; each run is a single-shot batch rebuild |

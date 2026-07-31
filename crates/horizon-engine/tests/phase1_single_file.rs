@@ -1,10 +1,18 @@
 //! Integration test: Phase 1 walking skeleton against `phase1-single-file`.
 
-use horizon::{CallTarget, build_function_map, map_to_string};
+use horizon_engine::{CallTarget, build_function_map, map_to_string};
 use std::path::PathBuf;
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crate is nested under crates/<name>")
+        .to_path_buf()
+}
+
 fn fixture_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/phase1-single-file")
+    workspace_root().join("tests/fixtures/phase1-single-file")
 }
 
 #[test]

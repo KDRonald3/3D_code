@@ -4,13 +4,14 @@
 **Date:** 26 July 2026
 
 This document describes the JSON written by `horizon` (and by
-`horizon::write_map` / `horizon::map_to_string`). It is aimed at someone
-building a consumer who cannot read the Rust source. The visual frontend is
-deferred; this file is the contract it will be built against.
+`horizon_map::write_map` / `horizon_map::map_to_string`, also re-exported from
+`horizon_engine`). It is aimed at someone building a consumer who cannot read
+the Rust source. The visual frontend is deferred; this file is the contract it
+will be built against.
 
-The Rust types live in [`src/map.rs`](../src/map.rs). Serialization uses
-[`serde`](https://serde.rs/) with the attributes shown there. Unless noted,
-every field is always present.
+The Rust types live in [`crates/horizon-map/src/map.rs`](../crates/horizon-map/src/map.rs).
+Serialization uses [`serde`](https://serde.rs/) with the attributes shown
+there. Unless noted, every field is always present.
 
 Output is **pretty-printed** by default (indented, trailing newline). Pass
 `--compact` on the CLI for a single-line document. Field names and value shapes
@@ -322,7 +323,7 @@ candidates — never pick a winner.
 Generated with (from the Horizon repository root):
 
 ```powershell
-cargo run --quiet --bin horizon -- tests/fixtures/glob-ambiguity
+cargo run --quiet -p horizon -- tests/fixtures/glob-ambiguity
 ```
 
 Absolute paths below reflect the machine that produced this capture. Field
