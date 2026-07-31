@@ -3,90 +3,172 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Horizon Map Viewer</title>
+  <title>Horizon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/viewer.css" />
 </head>
 <body>
-  <header class="app-header">
-    <div class="brand">
-      <span class="brand-mark">Horizon</span>
-      <span class="brand-sub">Function Map</span>
-    </div>
-    <div class="header-actions">
-      <label class="file-picker" title="Load a Horizon JSON file">
-        <span>Open JSON…</span>
-        <input id="file-input" type="file" accept=".json,application/json" />
-      </label>
-    </div>
-  </header>
+  <div id="app" class="app" data-theme="light">
 
-  <section class="summary-bar" id="summary-bar" hidden>
-    <div class="repo-root" id="repo-root"></div>
-    <div class="stats" id="stats"></div>
-  </section>
+    <input id="json-input" type="file" accept=".json,application/json" class="sr-only" />
 
-  <section class="toolbar" id="toolbar" hidden>
-    <div class="view-switch" id="view-switch" role="tablist" aria-label="View">
-      <button type="button" class="view-btn active" data-view="tree" role="tab" aria-selected="true">Tree</button>
-      <button type="button" class="view-btn" data-view="diagnostics" role="tab" aria-selected="false">Diagnostics</button>
-    </div>
-
-    <div class="tree-controls" id="tree-controls">
-      <input
-        id="search"
-        type="search"
-        placeholder="Filter functions by name or id…"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <div class="quick-filters">
-        <label class="chip-toggle">
-          <input type="checkbox" id="filter-conflicts" />
-          <span>Has conflicts</span>
-        </label>
-        <label class="chip-toggle">
-          <input type="checkbox" id="filter-unresolved" />
-          <span>Has unresolved</span>
-        </label>
+    <header class="topbar">
+      <button type="button" id="toggle-left" class="icon-btn" title="Toggle layers panel" hidden>☰</button>
+      <div class="brand-row">
+        <div class="brand-mark">{}</div>
+        <span class="brand-name" id="project-name">Horizon</span>
+        <span class="brand-sep" id="brand-sep" hidden>/</span>
+        <span class="brand-sub" id="brand-sub" hidden>Codebase Map</span>
       </div>
-      <div class="match-count" id="match-count"></div>
-    </div>
-
-    <div class="diag-controls" id="diag-controls" hidden>
-      <div class="quick-filters">
-        <label class="chip-toggle">
-          <input type="radio" name="diag-layout" id="diag-layout-grouped" value="grouped" checked />
-          <span>Grouped by reason</span>
-        </label>
-        <label class="chip-toggle">
-          <input type="radio" name="diag-layout" id="diag-layout-file" value="file" />
-          <span>By file</span>
-        </label>
+      <div class="topbar-right">
+        <span class="frame-stats" id="frame-stats" hidden></span>
+        <button type="button" id="switch-project" class="text-btn" hidden>Switch project</button>
+        <button type="button" id="toggle-theme" class="icon-btn" title="Theme">☾</button>
+        <!-- SEAM: Inspector toggle — Slice 2 attaches the right panel here. -->
+        <button type="button" id="toggle-right" class="icon-btn" title="Toggle inspector panel" hidden>☰</button>
       </div>
-      <div class="quick-filters">
-        <label class="chip-toggle">
-          <input type="radio" name="diag-kind" id="diag-kind-all" value="all" checked />
-          <span>All</span>
-        </label>
-        <label class="chip-toggle">
-          <input type="radio" name="diag-kind" id="diag-kind-conflict" value="conflict" />
-          <span>Conflicts</span>
-        </label>
-        <label class="chip-toggle">
-          <input type="radio" name="diag-kind" id="diag-kind-unresolved" value="unresolved" />
-          <span>Unresolved</span>
-        </label>
+    </header>
+
+    <section id="import-screen" class="import-screen">
+      <h1 class="import-title">Open a codebase</h1>
+      <p class="import-sub">
+        Load a Horizon function-map <span class="mono">.json</span> file
+        (or start the server with <span class="mono">--map</span>).
+      </p>
+      <div class="import-actions">
+        <button type="button" class="import-card" disabled title="Not available — analysis is CLI-only in this rebuild">
+          <span class="import-icon">📁</span>
+          <span>
+            <span class="import-card-title">Open local folder</span>
+            <span class="import-card-sub">Unavailable here — run the Horizon CLI, then open the map JSON.</span>
+          </span>
+        </button>
+        <button type="button" class="import-card" disabled title="Not available">
+          <span class="import-icon">📄</span>
+          <span>
+            <span class="import-card-title">Open source file(s)</span>
+            <span class="import-card-sub">Unavailable — the map is produced by the analyzer, not this UI.</span>
+          </span>
+        </button>
+        <button type="button" id="open-json" class="import-card">
+          <span class="import-icon">🧾</span>
+          <span>
+            <span class="import-card-title">Open map JSON</span>
+            <span class="import-card-sub">Drop a Horizon Repository .json, or click to browse</span>
+          </span>
+        </button>
       </div>
-      <div class="match-count" id="diag-count"></div>
+      <div id="import-error" class="import-error" hidden>
+        <span class="import-error-icon">⚠</span>
+        <span id="import-error-text" class="mono"></span>
+        <button type="button" id="clear-error" class="ghost-btn">✕</button>
+      </div>
+    </section>
+
+    <div id="main-view" class="main-view" hidden>
+      <div class="workspace">
+
+        <aside id="left-aside" class="left-aside">
+          <div class="pages-block">
+            <div class="section-label">Pages</div>
+            <button type="button" class="page-btn active" data-page="map"><span class="page-ico">◇</span>Map</button>
+            <button type="button" class="page-btn" data-page="diff" disabled title="Stub — Diff not in Slice 1"><span class="page-ico">◈</span>Diff · PR #142</button>
+            <!-- SEAM: Functions page opens the bottom function DAG (later slice). -->
+            <button type="button" class="page-btn" data-page="fns" disabled title="Seam — bottom function DAG not in Slice 1"><span class="page-ico fn">ƒ</span>Functions<span class="page-trail">⊟</span></button>
+            <!-- SEAM: Data structures unavailable (methods/impl out of scope). -->
+            <button type="button" class="page-btn" data-page="ds" disabled title="Unavailable — types/impl out of map scope"><span class="page-ico ds">⬚</span>Data structures<span class="page-trail">⊟</span></button>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="layers-block">
+            <div class="section-label">Layers</div>
+            <div class="search-wrap">
+              <span class="search-ico">⌕</span>
+              <input id="layer-search" type="search" placeholder="Find a file…" autocomplete="off" spellcheck="false" />
+            </div>
+            <div id="layer-rows" class="layer-rows"></div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="filter-block">
+            <div class="section-label">Filter</div>
+            <div class="filter-chips" id="filter-chips">
+              <button type="button" class="filter-chip on" data-kind="entry"><span class="swatch entry"></span>Entry</button>
+              <button type="button" class="filter-chip on" data-kind="file"><span class="swatch file"></span>Files</button>
+              <button type="button" class="filter-chip on" data-kind="fn" disabled title="File cards only in Slice 1"><span class="swatch fn"></span>Fns</button>
+              <button type="button" class="filter-chip on" data-kind="struct" disabled title="Types out of map scope"><span class="swatch struct"></span>Types</button>
+            </div>
+          </div>
+        </aside>
+
+        <div id="left-rail" class="resize-rail left-rail" title="Resize layers"></div>
+
+        <div class="center-col">
+          <main id="canvas" class="canvas">
+            <div id="world" class="world">
+              <div id="arch-sticky" class="arch-sticky" hidden>
+                <div class="arch-label">Architecture · auto</div>
+                <p id="arch-text" class="arch-text"></p>
+              </div>
+
+              <svg id="edges-svg" class="edges-svg" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <marker id="cvar" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto">
+                    <path d="M0,0 L8,4 L0,8 z" class="marker-idle"></path>
+                  </marker>
+                  <marker id="cvarh" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+                    <path d="M0,0 L9,4.5 L0,9 z" class="marker-hot"></path>
+                  </marker>
+                </defs>
+                <g id="edge-paths"></g>
+              </svg>
+
+              <div id="cards" class="cards"></div>
+            </div>
+
+            <div id="canvas-empty" class="canvas-empty" hidden>
+              <p>This map has no files to place.</p>
+            </div>
+
+            <div class="zoom-hud">
+              <button type="button" id="zoom-out" title="Zoom out">−</button>
+              <button type="button" id="zoom-reset" title="Reset view">60%</button>
+              <button type="button" id="zoom-in" title="Zoom in">+</button>
+            </div>
+          </main>
+
+          <!--
+            SEAM: Bottom function DAG panel.
+            Later slice: dock (~248px) with Functions / Data-structures tabs,
+            per-file symbol graph from Function + Resolved call_sites, own pan/zoom.
+            Conflict/Unresolved sites need distinct chrome the old DAG never had.
+          -->
+        </div>
+
+        <div id="right-rail" class="resize-rail right-rail" hidden></div>
+
+        <!--
+          SEAM: Inspector panel (right aside, default 316px).
+          Later slice: identity → docs → Source (/api/source tokens) → references.
+          Selection precedence: selectedSym → file. Wire callers/callees from
+          inverted CallSite index; Conflict chips expand candidates.
+        -->
+        <aside id="right-aside" class="right-aside" hidden>
+          <div class="inspector-placeholder">
+            <div class="section-label">Inspector</div>
+            <p class="muted">Not in Slice 1 — selection is on the map and in Layers.</p>
+          </div>
+        </aside>
+      </div>
     </div>
-  </section>
+  </div>
 
-  <main id="main">
-    <p class="empty-state" id="empty-state">Loading map…</p>
-    <div id="tree" class="tree" hidden></div>
-    <div id="diagnostics" class="diagnostics" hidden></div>
-  </main>
-
+  <!-- Preserved diagnostics walk (unused in Slice 1; later Pages / Diagnostics). -->
+  <script src="/static/diagnostics.js"></script>
   <script src="/static/viewer.js"></script>
 </body>
 </html>

@@ -229,10 +229,20 @@ async fn api_rejects_non_local_host() {
 async fn serves_index_and_static_assets() {
     let router = app(AppState::new(None));
 
+    // Needles track the Desktop-style Slice 1 UI (spatial map), not the old
+    // nested-list viewer. diagnostics.js preserves the Phase F walk for a
+    // later slice.
     for (uri, needle) in [
-        ("/", "Horizon Map Viewer"),
-        ("/static/viewer.css", "--resolved: #5dce8a"),
+        ("/", "Codebase Map"),
+        ("/", "Open map JSON"),
+        ("/", "/static/diagnostics.js"),
+        ("/static/viewer.css", "--sel: #6366f1"),
+        ("/static/viewer.css", "radial-gradient"),
         ("/static/viewer.js", "loadMap"),
+        ("/static/viewer.js", "computeLayout"),
+        ("/static/viewer.js", "deriveEdges"),
+        ("/static/diagnostics.js", "collectDiagnostics"),
+        ("/static/diagnostics.js", "groupByReason"),
     ] {
         let response = router
             .clone()
