@@ -4,16 +4,20 @@
   // —— Constants (Desktop index.dc.html) ——
   const CARD_W = 150;
   const CARD_H = 84;
-  const GAP_X = 48;
-  const GAP_Y = 56;
-  const GROUP_GAP = 72;
-  const CRATE_GAP = 100;
+  const GAP_X = 40;
+  const GAP_Y = 40;
+  const CRATE_GAP = 72;
   const PAD = 80;
   const STICKY_RESERVE = 260; // leave room for arch sticky on the left of first row
-  const ZOOM_DEFAULT = 0.6;
+  const STICKY_W = 228;
+  const STICKY_H = 120;
   const ZOOM_STEP = 0.12;
-  const ZOOM_MIN = 0.45;
+  const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 1.5;
+  /** Cap auto-fit so tiny maps do not fill the viewport absurdly. */
+  const ZOOM_FIT_MAX = 1.0;
+  const FIT_MARGIN = 56;
+  const TARGET_ASPECT = 16 / 9;
   const DRAG_MOVE = 5;
   const LEFT_DEFAULT = 236;
   const LEFT_MIN = 180;
@@ -72,7 +76,7 @@
   let selectedId = null;
   /** @type {string|null} */
   let hoverId = null;
-  let zoom = ZOOM_DEFAULT;
+  let zoom = 1;
   let panX = 0;
   let panY = 0;
   let leftOpen = true;
@@ -173,6 +177,12 @@
       : `${crate.rustc_name || crate.name}[bin]`;
   }
 
+  /** Display label: package name, with `[bin]` for binary targets (FunctionId convention). */
+  function crateLabelOf(crate) {
+    const name = String(crate.name || crate.rustc_name || "");
+    return crate.is_library ? name : `${name}[bin]`;
+  }
+
   /**
    * Flatten Repository → FileNode[] and build FunctionId → file-id index.
    */
@@ -193,7 +203,7 @@
 
     for (const crate of crates) {
       const ck = crateKeyOf(crate);
-      const crateName = String(crate.name || ck);
+      const crateName = crateLabelOf(crate);
 
       const visitFile = (file, folderKey, folderLabel) => {
         const path = String(file.path || "");
@@ -295,21 +305,26 @@
    * =============================
    *
    * The Repository JSON carries no x/y. We place one card per File so that
-   * (a) files in the same crate sit in a contiguous block, (b) files that
-   * share a folder sit near each other, and (c) the same map always yields
-   * the same positions (no RNG, no force-directed iteration).
+   * (a) files in the same crate sit in a contiguous cluster, (b) files that
+   * share a folder sit adjacent within that cluster, and (c) the same map
+   * always yields the same positions (no RNG, no force-directed iteration).
    *
    * Algorithm:
    * 1. Crates are already sorted by name / lib-before-bin (see flattenMap).
    * 2. Within each crate, collect ordered "groups": crate-root files, then
    *    each folder in path order. Files inside a group are path-sorted.
-   * 3. Place groups left-to-right. Inside a group, lay files in a vertical
-   *    column (CARD_W×CARD_H, GAP_Y). First crate's first group starts after
-   *    STICKY_RESERVE so the architecture note does not cover cards.
-   * 4. Stack crates vertically with CRATE_GAP.
+   *    Flatten groups in that order so folder mates stay consecutive.
+   * 3. Pack each crate's files into a grid with cols = max(1, round(√n)) so
+   *    the cluster is roughly square. Place row-major (left→right, top→down).
+   * 4. Pack crate clusters on a meta-grid whose column count is
+   *    max(1, round(√(nCrates × 16/9))), so crates flow across and down toward
+   *    a landscape composition. First meta-row leaves STICKY_RESERVE on the
+   *    left for the architecture note. Uneven cluster sizes mean meta-rows
+   *    are height-aligned to the tallest cluster in the row.
    *
-   * Limits: does not minimise edge crossings; wide crates grow horizontally;
-   * deep folder trees become many columns. Fine for audit overview, not a
+   * Limits: does not minimise edge crossings; a single huge crate still
+   * dominates its meta-cell; folder adjacency is linear along the row-major
+   * stream, not a nested sub-grid per folder. Fine for audit overview, not a
    * research graph layout. Manual card drag updates nodePos overlays only.
    */
   function computeLayout(nodes) {
@@ -338,29 +353,59 @@
       g.push(n);
     }
 
+    /** @type {{ files: FileNode[], cols: number, w: number, h: number }[]} */
+    const clusters = [];
+    for (const block of crateBlocks.values()) {
+      /** @type {FileNode[]} */
+      const files = [];
+      for (const group of block.groups.values()) {
+        for (const n of group) files.push(n);
+      }
+      const n = files.length;
+      const cols = Math.max(1, Math.round(Math.sqrt(n)));
+      const rows = Math.max(1, Math.ceil(n / cols));
+      const w = cols * CARD_W + (cols - 1) * GAP_X;
+      const h = rows * CARD_H + (rows - 1) * GAP_Y;
+      clusters.push({ files, cols, w, h });
+    }
+
+    const crateCols = Math.max(
+      1,
+      Math.round(Math.sqrt(clusters.length * TARGET_ASPECT))
+    );
+    /** @type {{ files: FileNode[], cols: number, w: number, h: number }[][]} */
+    const metaRows = [];
+    for (let i = 0; i < clusters.length; i++) {
+      const r = Math.floor(i / crateCols);
+      if (!metaRows[r]) metaRows[r] = [];
+      metaRows[r].push(clusters[i]);
+    }
+
     let cursorY = PAD;
     let maxX = 0;
     let maxY = 0;
-    let crateIndex = 0;
 
-    for (const block of crateBlocks.values()) {
-      let cursorX = PAD + (crateIndex === 0 ? STICKY_RESERVE : 0);
-      let rowBottom = cursorY;
+    for (let ri = 0; ri < metaRows.length; ri++) {
+      const row = metaRows[ri];
+      let cursorX = PAD + (ri === 0 ? STICKY_RESERVE : 0);
+      let rowH = 0;
 
-      for (const group of block.groups.values()) {
-        let gy = cursorY;
-        for (const n of group) {
-          pos.set(n.id, { x: cursorX, y: gy });
-          maxX = Math.max(maxX, cursorX + CARD_W);
-          maxY = Math.max(maxY, gy + CARD_H);
-          gy += CARD_H + GAP_Y;
+      for (const cluster of row) {
+        const cols = cluster.cols;
+        for (let i = 0; i < cluster.files.length; i++) {
+          const col = i % cols;
+          const rowIdx = Math.floor(i / cols);
+          const x = cursorX + col * (CARD_W + GAP_X);
+          const y = cursorY + rowIdx * (CARD_H + GAP_Y);
+          pos.set(cluster.files[i].id, { x, y });
+          maxX = Math.max(maxX, x + CARD_W);
+          maxY = Math.max(maxY, y + CARD_H);
         }
-        rowBottom = Math.max(rowBottom, gy - GAP_Y);
-        cursorX += CARD_W + GROUP_GAP;
+        cursorX += cluster.w + CRATE_GAP;
+        rowH = Math.max(rowH, cluster.h);
       }
 
-      cursorY = rowBottom + CRATE_GAP;
-      crateIndex += 1;
+      cursorY += rowH + CRATE_GAP;
     }
 
     worldW = Math.max(1360, maxX + PAD);
@@ -372,6 +417,53 @@
     const ov = nodePos.get(id);
     if (ov) return ov;
     return layout.get(id) || { x: 0, y: 0 };
+  }
+
+  /** Axis-aligned bounds of laid-out cards (+ architecture sticky when shown). */
+  function contentBounds() {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let any = false;
+    for (const n of fileNodes) {
+      const p = cardPosition(n.id);
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + CARD_W);
+      maxY = Math.max(maxY, p.y + CARD_H);
+      any = true;
+    }
+    if (!any) {
+      return { minX: 0, minY: 0, maxX: worldW, maxY: worldH };
+    }
+    if (!els.archSticky.hidden) {
+      minX = Math.min(minX, 22);
+      minY = Math.min(minY, 14);
+      maxX = Math.max(maxX, 22 + STICKY_W);
+      maxY = Math.max(maxY, 14 + STICKY_H);
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
+  /**
+   * Choose zoom + pan so every card (and sticky) fits in the canvas with margin.
+   * Clamped to [ZOOM_MIN, ZOOM_FIT_MAX]. Used on load and as "reset view".
+   */
+  function fitView() {
+    const rect = els.canvas.getBoundingClientRect();
+    const b = contentBounds();
+    const contentW = Math.max(1, b.maxX - b.minX);
+    const contentH = Math.max(1, b.maxY - b.minY);
+    const availW = Math.max(1, rect.width - FIT_MARGIN * 2);
+    const availH = Math.max(1, rect.height - FIT_MARGIN * 2);
+    const next = Math.min(availW / contentW, availH / contentH);
+    zoom = Math.min(ZOOM_FIT_MAX, Math.max(ZOOM_MIN, +next.toFixed(3)));
+    const cx = (b.minX + b.maxX) / 2;
+    const cy = (b.minY + b.maxY) / 2;
+    panX = rect.width / 2 - cx * zoom;
+    panY = rect.height / 2 - cy * zoom;
+    updateWorldTransform();
   }
 
   // —— Rendering ——
@@ -468,15 +560,17 @@
       const p = cardPosition(node.id);
       const visible = cardVisible(node);
       const isSel = selectedId === node.id;
-      const dim =
-        !visible ||
-        (!!focus && node.id !== focus && !conn.has(node.id) && !isSel);
+      // Dim only for filter/search mismatches. Selection is indigo chrome —
+      // never wash out the rest of the map (scanning means reading unselected cards).
+      const dim = !visible;
+      const linked = !!focus && !isSel && conn.has(node.id);
 
       const wrap = document.createElement("div");
       wrap.className =
         "file-card" +
         (isSel ? " selected" : "") +
-        (dim ? " dim" : "");
+        (dim ? " dim" : "") +
+        (linked ? " linked" : "");
       wrap.dataset.id = node.id;
       wrap.style.left = `${p.x}px`;
       wrap.style.top = `${p.y}px`;
@@ -492,9 +586,9 @@
         );
 
       wrap.innerHTML =
+        `<div class="card-frame">` +
         `<div class="card-name" title="${escapeHtml(node.path)}">${escapeHtml(node.name)}</div>` +
         `<div class="card-module" title="${escapeHtml(node.modulePath)}">${escapeHtml(node.modulePath)}</div>` +
-        `<div class="card-frame">` +
         `<div class="card-head">` +
         `<span class="kind-chip"><span class="kind-dot ${node.kind}"></span>${node.kind}</span>` +
         (badges.length
@@ -503,7 +597,6 @@
         `</div>` +
         `<div class="card-skel w78"></div>` +
         `<div class="card-skel w58"></div>` +
-        `<div class="card-skel w68"></div>` +
         `<span class="card-fn-count">${node.fnCount} fn</span>` +
         `<div class="sel-handles">` +
         `<span class="sel-handle tl"></span>` +
@@ -545,11 +638,11 @@
       if (!el) continue;
       const visible = cardVisible(node);
       const isSel = selectedId === node.id;
-      const dim =
-        !visible ||
-        (!!focus && node.id !== focus && !conn.has(node.id) && !isSel);
+      const dim = !visible;
+      const linked = !!focus && !isSel && conn.has(node.id);
       el.classList.toggle("selected", isSel);
       el.classList.toggle("dim", dim);
+      el.classList.toggle("linked", linked);
       const pill = el.querySelector(".sel-pill");
       if (isSel && !pill) {
         const handles = el.querySelector(".sel-handles");
@@ -802,18 +895,12 @@
     const entry = nodes.find((n) => n.kind === "entry");
     selectedId = entry ? entry.id : nodes[0]?.id || null;
 
-    zoom = ZOOM_DEFAULT;
-    panX = 40;
-    panY = 40;
-
     showLoaded();
     updateChrome();
-    updateWorldTransform();
     renderCards();
     renderEdges();
     renderLayers();
-
-    if (selectedId) revealCard(selectedId);
+    fitView();
 
     // Keep diagnostics module warm / assert it loads (Slice later will render).
     if (window.HorizonDiagnostics && map) {
@@ -916,10 +1003,7 @@
     updateWorldTransform();
   });
   els.zoomReset.addEventListener("click", () => {
-    zoom = ZOOM_DEFAULT;
-    panX = 40;
-    panY = 40;
-    updateWorldTransform();
+    fitView();
   });
 
   els.toggleTheme.addEventListener("click", () => {

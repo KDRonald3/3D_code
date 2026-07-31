@@ -240,6 +240,8 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.css", "radial-gradient"),
         ("/static/viewer.js", "loadMap"),
         ("/static/viewer.js", "computeLayout"),
+        ("/static/viewer.js", "fitView"),
+        ("/static/viewer.js", "crateLabelOf"),
         ("/static/viewer.js", "deriveEdges"),
         ("/static/diagnostics.js", "collectDiagnostics"),
         ("/static/diagnostics.js", "groupByReason"),
