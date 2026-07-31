@@ -1,0 +1,17 @@
+[package]
+name = "horizon-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Type definitions and inherent-method analysis, separate from the free-function map."
+
+[dependencies]
+anyhow = { workspace = true }
+horizon-engine = { workspace = true }
+horizon-map = { workspace = true }
+ra_ap_syntax = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
