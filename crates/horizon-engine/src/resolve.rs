@@ -97,13 +97,8 @@
 //! enclosing module and therefore treated as module-wide, even though rustc
 //! scopes them to the body. See `extract` module docs.
 
-use crate::extract::{
-    Import, ItemVisibility, MethodReceiverHint, PendingCall, TypeDef, TypeKind,
-};
-use horizon_map::{
-    CallTarget, Conflict, Function, FunctionId, TypeConflict, TypeId, TypeTarget, UnresolvedCall,
-    UnresolvedType,
-};
+use crate::extract::{Import, ItemVisibility, PendingCall, TypeDef, TypeKind};
+use horizon_map::{CallTarget, Conflict, Function, FunctionId, UnresolvedCall};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -131,8 +126,7 @@ fn is_hop_limit_reason(reason: &str) -> bool {
 pub enum ExclusionKind {
     /// Enum variant or tuple-struct constructor — constructs a value, not a call.
     VariantOrConstructor,
-    /// Associated function on a type (`Type::name`) — `impl` item, out of scope,
-    /// or an untyped method call with no conflicting inherent candidates.
+    /// Associated function on a type (`Type::name`) — `impl` item, out of scope.
     AssociatedFunction,
     /// Call through a local binding (closure / `let` / parameter), not a free function.
     LocalBinding,
@@ -644,207 +638,8 @@ fn normalize_bare_import_path(
     local_full
 }
 
-/// Resolve a type-path mention (field type, alias RHS) against `index`.
-///
-/// Returns `None` when the path names an external / language crate — those
-/// mentions are omitted from the map (same honesty rule as dropped external
-/// calls). Indexed types become [`TypeTarget`]; unknown local-looking names
-/// stay [`TypeTarget::Unresolved`] with a reason.
-pub fn resolve_type_mention(
-    type_path: &str,
-    from_module: &str,
-    index: &ResolveIndex,
-    id_by_full_path: &HashMap<String, TypeId>,
-) -> Option<TypeTarget> {
-    let segments: Vec<&str> = type_path
-        .split("::")
-        .map(strip_segment_generics)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if segments.is_empty() {
-        return Some(TypeTarget::Unresolved(UnresolvedType {
-            reason: format!("malformed type path `{type_path}`"),
-        }));
-    }
-
-    if index.path_crates.contains_key(segments[0]) {
-        // Type defs in path deps are indexed under the dependency's own map
-        // nodes; cross-crate type edges are out of scope for this pass.
-        return None;
-    }
-    if is_external_root(segments[0], index) {
-        return None;
-    }
-
-    let mut full_paths = collect_type_full_paths(type_path, &segments, from_module, index);
-    full_paths.sort();
-    full_paths.dedup();
-
-    match full_paths.as_slice() {
-        [] => Some(TypeTarget::Unresolved(UnresolvedType {
-            reason: format!(
-                "no indexed type `{type_path}` visible from module `{from_module}`"
-            ),
-        })),
-        [only] => match id_by_full_path.get(only) {
-            Some(id) => Some(TypeTarget::Resolved(id.clone())),
-            None => Some(TypeTarget::Unresolved(UnresolvedType {
-                reason: format!("indexed type `{only}` has no TypeId"),
-            })),
-        },
-        many => {
-            let mut candidates = Vec::new();
-            for p in many {
-                if let Some(id) = id_by_full_path.get(p) {
-                    candidates.push(id.clone());
-                }
-            }
-            if candidates.is_empty() {
-                return Some(TypeTarget::Unresolved(UnresolvedType {
-                    reason: format!(
-                        "no indexed type `{type_path}` visible from module `{from_module}`"
-                    ),
-                }));
-            }
-            if candidates.len() == 1 {
-                return Some(TypeTarget::Resolved(candidates.remove(0)));
-            }
-            Some(TypeTarget::Conflict(TypeConflict {
-                candidates,
-                reason: format!(
-                    "type path `{type_path}` is ambiguous from module `{from_module}`"
-                ),
-            }))
-        }
-    }
-}
-
-fn collect_type_full_paths(
-    type_path: &str,
-    segments: &[&str],
-    from_module: &str,
-    index: &ResolveIndex,
-) -> Vec<String> {
-    let mut out = Vec::new();
-
-    // Absolute / already-rooted paths.
-    if matches!(segments[0], "crate" | "self" | "super") {
-        let abs = crate::extract::absolutize_type_path(segments, from_module);
-        if index.find_type_at_path(&abs).is_some() {
-            out.push(abs);
-        }
-        return out;
-    }
-
-    if segments.len() == 1 {
-        let name = segments[0];
-        if let Some(ty) = index.find_type(from_module, name) {
-            out.push(ty.full_path());
-        }
-        // Explicit imports of this name that bind a type.
-        let site = PendingCall {
-            call_path: name.to_string(),
-            line: 1,
-            byte_start: 0,
-            byte_end: 0,
-            enclosing_function: None,
-            module_path: from_module.to_string(),
-            owner: crate::extract::CallOwnerKind::File,
-            from_macro: false,
-            method_receiver: None,
-        };
-        for binding in index.explicits_in(from_module, name) {
-            match resolve_target_path(&binding.target, &site, index, 0) {
-                TargetResolve::Type(p) => {
-                    if !out.contains(&p) {
-                        out.push(p);
-                    }
-                }
-                _ => {}
-            }
-        }
-        // Glob-imported types (same ambiguity rule as calls — list every hit).
-        for globbed in index.globs_in(from_module) {
-            if let Some(ty) = index.find_type(globbed, name) {
-                let p = ty.full_path();
-                if !out.contains(&p) {
-                    out.push(p);
-                }
-            }
-        }
-        return out;
-    }
-
-    // Qualified: prefer crate-local under the importing module, then absolute
-    // under `crate::`, then import of the leading segment as a module/type.
-    let local = if from_module == "crate" {
-        format!("crate::{}", segments.join("::"))
-    } else {
-        format!("{from_module}::{}", segments.join("::"))
-    };
-    if index.find_type_at_path(&local).is_some() {
-        out.push(local);
-        return out;
-    }
-    let under_crate = format!("crate::{}", segments.join("::"));
-    if under_crate != type_path && index.find_type_at_path(&under_crate).is_some() {
-        out.push(under_crate);
-        return out;
-    }
-    if index.find_type_at_path(type_path).is_some() {
-        out.push(type_path.to_string());
-        return out;
-    }
-
-    // Leading segment may be an imported module: `map::Shape`.
-    let site = PendingCall {
-        call_path: type_path.to_string(),
-        line: 1,
-        byte_start: 0,
-        byte_end: 0,
-        enclosing_function: None,
-        module_path: from_module.to_string(),
-        owner: crate::extract::CallOwnerKind::File,
-        from_macro: false,
-            method_receiver: None,
-    };
-    for binding in index.explicits_in(from_module, segments[0]) {
-        match resolve_target_path(&binding.target, &site, index, 0) {
-            TargetResolve::Module(module) => {
-                let rest = segments[1..].join("::");
-                let full = extend_module_path(&module, &rest);
-                // rest may be `Foo` or `inner::Foo`
-                if index.find_type_at_path(&full).is_some() {
-                    if !out.contains(&full) {
-                        out.push(full);
-                    }
-                } else if segments.len() == 2 {
-                    if let Some(ty) = index.find_type(&module, segments[1]) {
-                        let p = ty.full_path();
-                        if !out.contains(&p) {
-                            out.push(p);
-                        }
-                    }
-                }
-            }
-            TargetResolve::Type(p) if segments.len() == 1 => {
-                if !out.contains(&p) {
-                    out.push(p);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    out
-}
-
 /// Resolve a single pending call against `index`.
 pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveResult> {
-    if let Some(hint) = site.method_receiver.as_ref() {
-        return Ok(resolve_method_call(site, hint, index));
-    }
-
     let path = site.call_path.as_str();
     let segments: Vec<&str> = path
         .split("::")
@@ -878,74 +673,6 @@ pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveR
     }
 
     Ok(resolve_qualified(&segments, site, index))
-}
-
-/// Resolve `receiver.method(...)` with at most one-hop receiver typing.
-fn resolve_method_call(
-    site: &PendingCall,
-    hint: &MethodReceiverHint,
-    index: &ResolveIndex,
-) -> ResolveResult {
-    let method = site
-        .call_path
-        .strip_prefix('.')
-        .unwrap_or(site.call_path.as_str());
-    if method.is_empty() {
-        return ResolveResult::Target(unresolved(format!(
-            "malformed method call `{}`",
-            site.call_path
-        )));
-    }
-
-    let ty_path = match hint {
-        MethodReceiverHint::TypePath(ty_path) => Some(ty_path.clone()),
-        MethodReceiverHint::SelfField(field) => self_field_type(site, field, index),
-        MethodReceiverHint::Unknown => None,
-    };
-
-    if let Some(ty_path) = ty_path {
-        let full = if ty_path == "crate" {
-            format!("crate::{method}")
-        } else {
-            format!("{ty_path}::{method}")
-        };
-        let ids = index.lookup_full(&full);
-        if !ids.is_empty() {
-            return match unique_or_conflict(
-                ids,
-                format!("multiple inherent methods `{full}`"),
-            ) {
-                Ok(r) => r,
-                Err(r) => r,
-            };
-        }
-        // Known receiver type but no inherent method — trait methods
-        // (`.clone`, `.into_response`, …), prelude/external fields (`.as_str`
-        // on `String`), and missing names share this drop.
-        return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
-    }
-
-    // No certain receiver type. Do **not** Conflict on same-named inherent
-    // methods elsewhere in the repo — that manufactures false problems for
-    // common std names (`.as_str`, `.len`, `.clone`, …) whose real callee is
-    // external. Without positive evidence the receiver is one of those types,
-    // drop as associated. (Flooding Unresolved was tried and rejected.)
-    ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
-}
-
-/// Declared type of `self.field` on the inherent type enclosing `site`.
-fn self_field_type(site: &PendingCall, field: &str, index: &ResolveIndex) -> Option<String> {
-    let enc = site.enclosing_function.as_ref()?;
-    let func = index.get(enc)?;
-    let (parent, name) = split_parent_name(&func.module_path)?;
-    if name != func.name {
-        return None;
-    }
-    let ty = index.find_type_at_path(&parent)?;
-    ty.fields
-        .iter()
-        .find(|(n, _)| n == field)
-        .map(|(_, path)| path.clone())
 }
 
 fn is_external_root(first: &str, index: &ResolveIndex) -> bool {
@@ -1068,10 +795,6 @@ fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> 
     }
 
     // No free function — classify constructors / prelude variants.
-    // `Self(...)` in an inherent method is a constructor of the impl type.
-    if name == "Self" {
-        return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
-    }
     if is_prelude_variant(name) {
         return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
     }
@@ -1373,31 +1096,11 @@ fn classify_from_type_path(
             if index.enum_has_variant(ty, member) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
             }
-            // Inherent associated function / method: `Type::name(...)`.
-            let method_path = if ty_path == "crate" {
-                format!("crate::{member}")
-            } else {
-                format!("{ty_path}::{member}")
-            };
-            let ids = index.lookup_full(&method_path);
-            if !ids.is_empty() {
-                return match unique_or_conflict(
-                    ids,
-                    format!("multiple inherent items `{method_path}`"),
-                ) {
-                    Ok(r) => r,
-                    Err(r) => r,
-                };
-            }
-            // Indexed type but no inherent item — typically a trait / derive
-            // method (`Cli::parse`, `Type::default`). Same deliberate drop as
-            // other out-of-scope assoc forms, not a missing free function.
             return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
         }
         if is_prelude_variant(member) {
             return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
         }
-        // Type not indexed (external / prelude) — still a deliberate drop.
         return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
     }
     ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
@@ -2250,7 +1953,6 @@ fn collect_glob_function_candidates(
                 module_path: from_module.into(),
                 owner: crate::extract::CallOwnerKind::File,
                 from_macro: false,
-                method_receiver: None,
             };
             if let TargetResolve::Functions(ids) = resolve_target_path(&target, &site, index, 0) {
                 for id in ids {
@@ -2472,7 +2174,7 @@ fn classify_non_module_suffix(
             if index.enum_has_variant(ty, member) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
             }
-            return classify_from_type_path(&ty.full_path(), after_type, full_path, index);
+            return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
         }
         if looks_like_type_name(type_name) {
             if is_prelude_variant(member) {
@@ -2597,7 +2299,6 @@ mod tests {
             id: FunctionId::from_parts("demo", path, None),
             name: path.rsplit("::").next().unwrap().to_string(),
             module_path: path.to_string(),
-            receiver_type: None,
             line,
             byte_start: 0,
             byte_end: 0,
@@ -2616,7 +2317,6 @@ mod tests {
             module_path: module.into(),
             owner: CallOwnerKind::File,
             from_macro: false,
-                method_receiver: None,
         }
     }
 
@@ -2967,12 +2667,6 @@ mod tests {
             kind: TypeKind::Enum,
             variants: vec!["Resolved".into(), "Conflict".into()],
             visibility: ItemVisibility::Public,
-            line: 1,
-            byte_start: 0,
-            byte_end: 1,
-            doc_comments: vec![],
-            pending_refs: vec![],
-            fields: vec![],
         }];
         let modules = HashSet::from(["crate".into(), "crate::map".into(), "crate::resolve".into()]);
         let imports = vec![explicit(
@@ -2999,19 +2693,13 @@ mod tests {
     }
 
     #[test]
-    fn indexed_type_missing_assoc_is_dropped_not_unresolved() {
+    fn excludes_local_associated_function() {
         let types = vec![TypeDef {
             name: "FunctionId".into(),
             module_path: "crate::map".into(),
             kind: TypeKind::Struct,
             variants: vec![],
             visibility: ItemVisibility::Public,
-            line: 1,
-            byte_start: 0,
-            byte_end: 1,
-            doc_comments: vec![],
-            pending_refs: vec![],
-            fields: vec![],
         }];
         let index = index_with(
             vec![],
@@ -3096,7 +2784,6 @@ mod tests {
             id: FunctionId::from_parts("text_engine", "crate::format::upper", None),
             name: "upper".into(),
             module_path: "crate::format::upper".into(),
-            receiver_type: None,
             line: 1,
             byte_start: 0,
             byte_end: 0,
@@ -3107,7 +2794,6 @@ mod tests {
             id: FunctionId::from_parts("text_engine", "crate::version", None),
             name: "version".into(),
             module_path: "crate::version".into(),
-            receiver_type: None,
             line: 2,
             byte_start: 0,
             byte_end: 0,

@@ -1,9 +1,8 @@
 //! Specimen for deliberate exclusions vs genuine unresolved free-function calls.
 //!
-//! Exercises: prelude variant `Ok`, qualified local enum variant, inherent
-//! associated function on a local type (resolved), associated function on an
-//! external type (`Vec`, still dropped), and a bare name that remains
-//! `Unresolved`.
+//! Exercises: prelude variant `Ok`, qualified local enum variant, associated
+//! function on a local type, associated function on an external type (`Vec`),
+//! and a bare name that remains `Unresolved` (Phase 3 / unknown).
 
 pub enum Target {
     Ready(u32),
@@ -27,7 +26,7 @@ pub fn run() -> Result<u32, ()> {
     let _ = Ok(1u32);
     let _ = Target::Ready(2);
 
-    // Group 2 — inherent assoc on a local type resolves; external stays dropped.
+    // Group 2 — associated functions (must be absent from the map).
     let _ = LocalId::make(3);
     let _v: Vec<u32> = Vec::new();
 

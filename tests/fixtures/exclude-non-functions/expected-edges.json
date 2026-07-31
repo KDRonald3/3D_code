@@ -14,7 +14,7 @@
     {
       "caller": "exclude_non_functions::run",
       "call_path": "LocalId::make",
-      "expect": { "kind": "resolved", "id": "exclude_non_functions::LocalId::make" }
+      "expect": { "kind": "absent" }
     },
     {
       "caller": "exclude_non_functions::run",

@@ -7,7 +7,7 @@
 use crate::discover::{self, rustc_crate_name};
 use crate::extract::{
     FileFacts, Import, ItemVisibility, TypeDef, assign_function_ids, extract_facts,
-    remap_local_bindings, remap_method_receivers, remap_pending_calls,
+    remap_local_bindings, remap_pending_calls,
 };
 use horizon_map::{Crate, Dependency, DependencyKind, Function, FunctionId};
 use crate::modules::walk_modules;
@@ -107,7 +107,6 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
         func_offset += n;
         remap_pending_calls(&mut facts.call_sites, &remap);
         remap_local_bindings(&mut facts.local_bindings, &remap);
-        remap_method_receivers(&mut facts.method_receivers, &remap);
         for (id, names) in &facts.local_bindings {
             local_bindings
                 .entry(id.clone())
