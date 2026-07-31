@@ -212,8 +212,13 @@ Diagnostics worklist honest.
 | Self-map | **0 unresolved · 6 conflicts**; 84 types, 63 methods; associated_dropped 2484 |
 | 6 conflicts | untyped `.explicits_in` / `.find_type` / `.lookup_in_module` / `.as_str` name clashes — true positives |
 
+**Browser (W8b).** smokeCheck ok; 63 methods / 84 types on self-map; Fns filter
+dims 6; I11 (Inspector opens on resolve.rs select); I9 dock zoom 0.75 preserved
+across tab switch; Diagnostics lists 6 conflict entries matching summary.
+Screenshot: `w8b-self-map-diag.png`. Favicon 404 ignored.
+
 **Not done.** Trait impl methods; multi-hop / inference beyond one hop; type
-DAG in the dock; `Self` path forms beyond constructor drop.
+DAG in the dock.
 
 ---
 
