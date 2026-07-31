@@ -288,12 +288,21 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.js", "getFnsPaneMetrics"),
         ("/static/viewer.js", "zoomFnsAt"),
         ("/static/viewer.js", "zoomMapAt"),
-        // Functions dock: node press selects; pan only from empty background.
+        // Functions dock: click selects; drag rearranges; pan from background only.
         ("/static/viewer.js", "resolveFnsPointerGesture"),
         ("/static/viewer.js", "closest(\".fns-node\")"),
         ("/static/viewer.js", "fnsPanFromBackgroundOnly"),
         ("/static/viewer.js", "getLastFnsNodeActivation"),
+        ("/static/viewer.js", "getLastFnsNodeGesture"),
+        ("/static/viewer.js", "suppressFnsNodeClick"),
+        ("/static/viewer.js", "onFnsNodePointerDown"),
+        ("/static/viewer.js", "fnsNodePos"),
+        ("/static/viewer.js", "getFnsNodePosition"),
+        ("/static/viewer.js", "setFnsNodePosition"),
+        ("/static/viewer.js", "fnsNodeDragThresholdPx"),
+        ("/static/viewer.js", "action: \"drag\""),
         ("/static/viewer.js", "surfacedReason"),
+        ("/static/viewer.css", ".fns-node.dragging"),
         // Dock shares left-occupied pan compensation with the map canvas.
         ("/static/viewer.js", "fnsPanX -= delta"),
         ("/static/viewer.css", "top: auto; /* release vertical-rail"),
