@@ -174,6 +174,27 @@ fn path_dependency_discovers_both_crates_and_cross_crate_edge() {
         }
     }
 
+    // Qualified calls through an imported path-dep module (plain, renamed
+    // submodule, renamed crate root) — the W11 shape.
+    let via = find_fn(&free_files, "freecrate::uses_engine::via_imported_module");
+    for (path, expect) in [
+        ("format::upper", "text_engine::format::upper"),
+        ("nested::buried", "text_engine::format::deep::buried"),
+        ("eng::version", "text_engine::version"),
+    ] {
+        let site = via
+            .call_sites
+            .iter()
+            .find(|c| c.call_path == path)
+            .unwrap_or_else(|| panic!("missing call {path}"));
+        match &site.target {
+            CallTarget::Resolved(id) => assert_eq!(id.as_str(), expect, "{path}"),
+            other => panic!(
+                "imported path-dep module prefix `{path}` should resolve to {expect}, got {other:?}"
+            ),
+        }
+    }
+
     // Private module: pub fn hidden must NOT be reachable — no resolved edge
     // to text_engine::secret::hidden anywhere in freecrate.
     for file in &free_files {

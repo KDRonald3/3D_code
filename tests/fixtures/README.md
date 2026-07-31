@@ -540,6 +540,9 @@ The failing `E0659` case is **not** here — use [`glob-ambiguity/`](glob-ambigu
 **Map expectation (Phase 4):** discover both `freecrate` and `text-engine`;
 resolve only the reachable free functions across the path edge
 (`uses_engine::demo` → `text_engine::format::upper`, re-exports, `version`);
+also resolve qualified calls through an *imported module* binding
+(`use text_engine::format;` then `format::upper`, renamed `nested::buried`,
+renamed crate-root `eng::version` in `via_imported_module`);
 never draw edges into private / `pub(crate)` items of another crate (including
 `secret::hidden`); never treat folder names or dashed package names as Rust
 paths.

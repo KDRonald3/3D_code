@@ -50,6 +50,13 @@
 //! declared dependency B, B's own `pub use C::…` may be followed when B
 //! declares C.
 //!
+//! An import that binds a **module** from a path dependency
+//! (`use dep::mod;` / `use dep::mod as alias;`) is followed when that binding
+//! appears as a qualified-call prefix (`mod::fn()` / `alias::fn()`). The
+//! import target is recognised as a foreign module (not forced through the
+//! "final segment is a function" path), and the remaining segments continue
+//! inside the dependency under the same visibility rules.
+//!
 //! That is deliberately stricter than within-crate **direct** edges, which
 //! still do not filter visibility (Phase 2): a call the author wrote is worth
 //! mapping even if rustc would reject it. Cross-crate, visibility determines
@@ -729,7 +736,9 @@ fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> 
                     }
                 }
                 TargetResolve::External => {}
-                TargetResolve::Type(_) | TargetResolve::Module(_) => {}
+                TargetResolve::Type(_)
+                | TargetResolve::Module(_)
+                | TargetResolve::ForeignModule { .. } => {}
                 TargetResolve::Unresolved | TargetResolve::HopLimit => {}
                 TargetResolve::Excluded(kind) => {
                     return ResolveResult::Excluded(kind);
@@ -826,7 +835,7 @@ fn resolve_explicit_bindings(
             TargetResolve::Type(_) => {
                 exclusion = Some(ExclusionKind::VariantOrConstructor);
             }
-            TargetResolve::Module(_) => {
+            TargetResolve::Module(_) | TargetResolve::ForeignModule { .. } => {
                 // Calling a module name is nonsense — unresolved.
             }
             TargetResolve::Excluded(kind) => exclusion = Some(kind),
@@ -914,6 +923,19 @@ fn resolve_qualified(segments: &[&str], site: &PendingCall, index: &ResolveIndex
                     module = m;
                     continue;
                 }
+                SegmentBind::ForeignModule { crate_key, module: foreign_mod } => {
+                    // `use dep::mod;` / `use dep::mod as a;` then `mod::fn()` /
+                    // `a::fn()` — continue inside the path dependency.
+                    let after = &remaining[offset + 1..];
+                    return resolve_from_foreign_module(
+                        &crate_key,
+                        &foreign_mod,
+                        after,
+                        &path,
+                        0,
+                        index,
+                    );
+                }
                 SegmentBind::External => return ResolveResult::External,
                 SegmentBind::Type(ty_path) => {
                     let suffix = &remaining[offset..];
@@ -959,9 +981,11 @@ fn resolve_qualified(segments: &[&str], site: &PendingCall, index: &ResolveIndex
         },
         TargetResolve::External => ResolveResult::External,
         TargetResolve::Type(_) => ResolveResult::Excluded(ExclusionKind::VariantOrConstructor),
-        TargetResolve::Module(_) => ResolveResult::Target(unresolved(format!(
-            "call path `{path}` names a module, not a function"
-        ))),
+        TargetResolve::Module(_) | TargetResolve::ForeignModule { .. } => {
+            ResolveResult::Target(unresolved(format!(
+                "call path `{path}` names a module, not a function"
+            )))
+        }
         TargetResolve::Excluded(kind) => ResolveResult::Excluded(kind),
         TargetResolve::HopLimit => {
             ResolveResult::Target(hop_limit_unresolved(&path))
@@ -983,6 +1007,8 @@ fn resolve_qualified(segments: &[&str], site: &PendingCall, index: &ResolveIndex
 
 enum SegmentBind {
     Module(String),
+    /// Module in a path-dependency crate (`use dep::mod` / `use dep::mod as a`).
+    ForeignModule { crate_key: String, module: String },
     External,
     Type(String),
     /// Import binds a function used as a path prefix (not a free-fn call).
@@ -999,6 +1025,7 @@ fn resolve_segment_binding(
     index: &ResolveIndex,
 ) -> SegmentBind {
     let mut module: Option<String> = None;
+    let mut foreign: Option<(String, String)> = None;
     let mut ty: Option<String> = None;
     let mut fns = Vec::new();
     let mut external = false;
@@ -1006,10 +1033,20 @@ fn resolve_segment_binding(
     for binding in bindings {
         match resolve_target_path(&binding.target, site, index, 0) {
             TargetResolve::Module(m) => {
-                if module.as_ref().is_some_and(|x| x != &m) {
+                if module.as_ref().is_some_and(|x| x != &m) || foreign.is_some() {
                     return SegmentBind::Ambiguous;
                 }
                 module = Some(m);
+            }
+            TargetResolve::ForeignModule { crate_key, module: m } => {
+                if foreign
+                    .as_ref()
+                    .is_some_and(|(k, mod_path)| k != &crate_key || mod_path != &m)
+                    || module.is_some()
+                {
+                    return SegmentBind::Ambiguous;
+                }
+                foreign = Some((crate_key, m));
             }
             TargetResolve::External => external = true,
             TargetResolve::Type(t) => {
@@ -1027,6 +1064,9 @@ fn resolve_segment_binding(
 
     if let Some(m) = module {
         return SegmentBind::Module(m);
+    }
+    if let Some((crate_key, module)) = foreign {
+        return SegmentBind::ForeignModule { crate_key, module };
     }
     if external {
         return SegmentBind::External;
@@ -1143,7 +1183,11 @@ fn lookup_item_in_module(
 
 enum TargetResolve {
     Functions(Vec<FunctionId>),
+    /// Within-crate module path (`crate::format`).
     Module(String),
+    /// Module in a path-dependency crate, reached via an import binding
+    /// (`use text_engine::format` → foreign module `crate::format`).
+    ForeignModule { crate_key: String, module: String },
     Type(String),
     External,
     /// Import target classified as a non-function form.
@@ -1168,9 +1212,19 @@ fn resolve_target_path(
         return TargetResolve::Unresolved;
     }
 
-    // Cross-crate import target (`text_engine::format::upper`).
-    // Initial entry still requires a declared dependency of the *current* crate.
+    // Cross-crate import target (`text_engine::format::upper`, or a module
+    // binding `text_engine::format` / bare `text_engine`). Initial entry still
+    // requires a declared dependency of the *current* crate.
     if index.path_crates.contains_key(segments[0]) {
+        // Prefer a module interpretation when every segment (including the
+        // last) is a public module chain — otherwise `use dep::mod` collapses
+        // to "names a module, not a function" and qualified calls through the
+        // binding (`mod::fn()`) never leave the consumer crate.
+        if let Some((crate_key, module)) =
+            try_resolve_cross_crate_module(&segments[1..], segments[0], hops, index)
+        {
+            return TargetResolve::ForeignModule { crate_key, module };
+        }
         return match resolve_cross_crate_path(&segments[1..], segments[0], target, hops, index)
         {
             ResolveResult::Target(CallTarget::Resolved(id)) => {
@@ -1247,6 +1301,78 @@ fn resolve_target_path(
     }
 
     TargetResolve::Unresolved
+}
+
+/// If `segments` (relative to `crate_key`'s root) name a public module chain
+/// — including the empty path for the crate root itself — return
+/// `(crate_key, module_path)`. Used so import bindings like
+/// `use text_engine::format` / `use text_engine as eng` resolve to a foreign
+/// module rather than "names a module, not a function".
+fn try_resolve_cross_crate_module(
+    segments: &[&str],
+    crate_key: &str,
+    hops: usize,
+    index: &ResolveIndex,
+) -> Option<(String, String)> {
+    if hops > REEXPORT_HOP_LIMIT {
+        return None;
+    }
+    // Confirm the crate is reachable before treating the empty path as its root.
+    let _ = foreign_index(index, crate_key)?;
+    if segments.is_empty() {
+        return Some((crate_key.to_string(), "crate".to_string()));
+    }
+
+    let mut current_key = crate_key.to_string();
+    let mut module = "crate".to_string();
+    for seg in segments {
+        let foreign = foreign_index(index, &current_key)?;
+        match lookup_cross_crate_name(foreign, &module, seg, hops, index) {
+            CrossLookup::Module(m) => module = m,
+            CrossLookup::ForeignModule {
+                crate_key: next_key,
+                module: m,
+            } => {
+                current_key = next_key;
+                module = m;
+            }
+            CrossLookup::Functions(_)
+            | CrossLookup::Type
+            | CrossLookup::None
+            | CrossLookup::HopLimit => return None,
+        }
+    }
+    Some((current_key, module))
+}
+
+/// Continue a qualified call inside a foreign module reached via an import
+/// binding. `after` is the path suffix following the binding segment
+/// (including the final function name).
+fn resolve_from_foreign_module(
+    crate_key: &str,
+    module: &str,
+    after: &[&str],
+    full_path: &str,
+    hops: usize,
+    index: &ResolveIndex,
+) -> ResolveResult {
+    let mut combined: Vec<&str> = if module == "crate" {
+        Vec::new()
+    } else {
+        module
+            .strip_prefix("crate::")
+            .unwrap_or(module)
+            .split("::")
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    combined.extend(after.iter().copied());
+    if combined.is_empty() {
+        return ResolveResult::Target(unresolved(format!(
+            "call path `{full_path}` names a module, not a function"
+        )));
+    }
+    resolve_cross_crate_path(&combined, crate_key, full_path, hops, index)
 }
 
 /// Resolve `segments` inside a foreign path-dependency crate.
@@ -1959,6 +2085,16 @@ fn classify_non_module_suffix(
             SegmentBind::Type(ty_path) => {
                 return classify_from_type_path(&ty_path, &suffix[1..], full_path, index);
             }
+            SegmentBind::ForeignModule { crate_key, module: foreign_mod } => {
+                return resolve_from_foreign_module(
+                    &crate_key,
+                    &foreign_mod,
+                    &suffix[1..],
+                    full_path,
+                    0,
+                    index,
+                );
+            }
             SegmentBind::Module(m) => {
                 // Should have been handled by the navigation loop; treat remainder.
                 if suffix.len() == 1 {
@@ -2638,6 +2774,102 @@ mod tests {
                 panic!("must not silently drop a non-UpperCamelCase segment")
             }
             other => panic!("expected Unresolved, got {other:?}"),
+        }
+    }
+
+    /// Foreign path-dep index with a public `format` module and `upper` fn —
+    /// the shape of `use horizon_engine::discover; discover::normalize_path`.
+    fn path_dep_index() -> ResolveIndex {
+        let upper = Function {
+            id: FunctionId::from_parts("text_engine", "crate::format::upper", None),
+            name: "upper".into(),
+            module_path: "crate::format::upper".into(),
+            line: 1,
+            byte_start: 0,
+            byte_end: 0,
+            call_sites: Vec::new(),
+            doc_comments: Vec::new(),
+        };
+        let version = Function {
+            id: FunctionId::from_parts("text_engine", "crate::version", None),
+            name: "version".into(),
+            module_path: "crate::version".into(),
+            line: 2,
+            byte_start: 0,
+            byte_end: 0,
+            call_sites: Vec::new(),
+            doc_comments: Vec::new(),
+        };
+        let mut fn_vis = HashMap::new();
+        fn_vis.insert(upper.id.clone(), ItemVisibility::Public);
+        fn_vis.insert(version.id.clone(), ItemVisibility::Public);
+        let mut mod_vis = HashMap::new();
+        mod_vis.insert("crate".into(), ItemVisibility::Public);
+        mod_vis.insert("crate::format".into(), ItemVisibility::Public);
+        let foreign = PathCrateIndex::build(
+            "text_engine",
+            &[upper, version],
+            HashSet::from(["crate".into(), "crate::format".into()]),
+            mod_vis,
+            fn_vis,
+            &[],
+            vec![],
+            HashMap::new(),
+        );
+        let mut path_crates = HashMap::new();
+        path_crates.insert("text_engine".into(), foreign.clone());
+        let mut all_crates = HashMap::new();
+        all_crates.insert("text_engine".into(), foreign);
+        ResolveIndex::build(
+            vec![],
+            HashSet::from(["crate".into()]),
+            HashSet::new(),
+            vec![],
+            vec![
+                explicit("crate", "text_engine::format", None),
+                explicit("crate", "text_engine::format", Some("fmt")),
+                explicit("crate", "text_engine", Some("eng")),
+            ],
+            HashMap::new(),
+            HashMap::new(),
+            path_crates,
+            all_crates,
+        )
+    }
+
+    #[test]
+    fn imported_path_dep_module_resolves_qualified_call() {
+        let index = path_dep_index();
+        let r = resolve_call(&site("format::upper", "crate"), &index).unwrap();
+        match r {
+            ResolveResult::Target(CallTarget::Resolved(id)) => {
+                assert_eq!(id.as_str(), "text_engine::format::upper");
+            }
+            other => panic!("imported module prefix must resolve: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renamed_imported_path_dep_module_resolves() {
+        let index = path_dep_index();
+        let r = resolve_call(&site("fmt::upper", "crate"), &index).unwrap();
+        match r {
+            ResolveResult::Target(CallTarget::Resolved(id)) => {
+                assert_eq!(id.as_str(), "text_engine::format::upper");
+            }
+            other => panic!("renamed module import must resolve: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renamed_path_dep_crate_root_as_module_prefix() {
+        let index = path_dep_index();
+        let r = resolve_call(&site("eng::version", "crate"), &index).unwrap();
+        match r {
+            ResolveResult::Target(CallTarget::Resolved(id)) => {
+                assert_eq!(id.as_str(), "text_engine::version");
+            }
+            other => panic!("renamed crate-root import must resolve: {other:?}"),
         }
     }
 }

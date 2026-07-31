@@ -181,15 +181,20 @@ private imports. Sibling globs still exclude private names. Fixtures:
 
 ### W5 — Every remaining unresolved site is accounted for — DONE
 
-**Outcome.** The self-map went from **35 unresolved to 3**: 26 closure and
-local-binding false positives dropped, 6 `is_item_macro_allowlisted` sites now
-resolved. Counts after: *24 files across 8 crates · 0 conflicts · 3 unresolved;
-dropped 145 external, 226 constructor, 201 associated, 26 local.*
+**Outcome (pre-W11).** The self-map went from **35 unresolved to 3**: 26 closure
+and local-binding false positives dropped, 6 `is_item_macro_allowlisted` sites
+now resolved. Counts after: *24 files across 8 crates · 0 conflicts ·
+3 unresolved; dropped 145 external, 226 constructor, 201 associated, 26 local.*
 
-All three survivors are the same bug, now tracked as **W11** — none is a true
-positive, so the map currently reports no genuinely missing function. Re-run
-this accounting after W11 and after any resolver change; the goal is not zero
-unresolved but that every remaining one is **honest**.
+All three survivors were the same bug, tracked as **W11** — none was a true
+positive.
+
+**Outcome (post-W11).** Those three sites now resolve into `horizon_engine`.
+Self-map regenerate: *0 conflicts · 0 unresolved; dropped 143 external,
+232 constructor, 219 associated, 26 local.* Every previously unresolved site on
+this repository is either dropped (local binding) or resolved. Re-run this
+accounting after any further resolver change; the goal is not zero unresolved
+but that every remaining one is **honest**.
 
 ### W6 — The DAG is unreadable for busy files
 
@@ -237,7 +242,7 @@ JavaScript twin in `viewer.js`. Two implementations of one rule will drift.
 **Done when.** One is the single source of truth, or they are provably
 equivalent by a shared fixture table exercised from both sides.
 
-### W11 — Qualified calls through an imported path-dependency module
+### W11 — Qualified calls through an imported path-dependency module — DONE
 
 **Problem.** The only 3 unresolved sites left on the self-map, all the same
 cause.
@@ -254,6 +259,12 @@ declared path dependency resolves into that crate, honouring the existing
 dependency gate and cross-crate visibility rules (`pub` plus an unbroken module
 chain). Renamed imports (`use x::y as z;`) must work too. Add a fixture pairing
 two path-dependency crates, and re-run the W5 accounting afterwards.
+
+**Resolved as:** cross-crate import targets that are an all-`pub` module chain
+(or the bare crate root) become `ForeignModule`; qualified calls through that
+binding continue inside the dependency. Fixture coverage in
+`path-dependency` (`via_imported_module`: plain `format::upper`, renamed
+`nested::buried`, renamed crate-root `eng::version`). Self-map: **0 unresolved**.
 
 ---
 
