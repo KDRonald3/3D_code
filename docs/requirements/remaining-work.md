@@ -224,7 +224,7 @@ bind and Host guard. Long analyses must not appear as a hung page.
 and elapsed-time overlay on the import screen. Host guard still rejects
 non-loopback. Fixture `phase1-single-file` analysed end-to-end in the browser.
 
-### W8 — Extend the analyser to structs and impls
+### W8 — Extend the analyser to structs and impls — IN PROGRESS
 
 **Problem.** The Fns and Types filter chips are permanently disabled because the
 contract carries only free functions. Methods and impls were deliberately
@@ -236,6 +236,14 @@ owner's original interest alongside functions, so treat it as a first-class
 extension of the contract rather than a UI afterthought. Method receiver typing
 is the hard part: one-hop inference at most, and anything less than certain must
 be `Conflict` or `Unresolved` — never a guess.
+
+**Progress (W8a).** `File.types` emits `TypeItem` nodes (struct / enum / trait /
+type alias) with `TypeId`, byte ranges, docs, enum variants, and `type_refs` for
+field / alias paths (external and prelude paths omitted). Fixture
+`type-definitions`. Fns / Types filter chips are enabled: they dim file cards by
+content (`fnCount` / `typeCount`). **Not yet:** inherent methods, associated
+functions, or method-call receiver typing — those remain dropped /
+`associated_dropped` as before.
 
 ### W9 — Slice 5: remaining shell chrome — DONE
 

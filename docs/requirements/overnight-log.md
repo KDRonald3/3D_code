@@ -154,12 +154,36 @@ proven equivalent rather than rewritten mid-flight (avoids I1–I5 risk).
 
 ---
 
-## W8 — Structs and impls — STOPPED CLEANLY
+## W8 — Structs and impls — IN PROGRESS (W8a landed)
 
-Not started. Remaining overnight capacity is better spent on the landed items
-than a half-finished contract extension. Method receiver typing needs a
-deliberate design pass (one-hop inference; uncertain → Conflict/Unresolved).
-Types/Fns filter chips stay disabled. No analyser guesswork introduced.
+Earlier overnight pass stopped before W8. A continuation session took the first
+coherent slice.
+
+### W8a — Type definitions in the map + filter chips — DONE
+
+**Why.** The Types / Fns chips were permanently disabled because the emitted
+contract had no type nodes — only an internal extract index used to drop
+constructors.
+
+**Change.** `File.types: TypeItem[]` with `TypeId`, kind, variants, docs, byte
+range, and `type_refs` (field types / alias RHS) resolved to
+`TypeTarget::{Resolved,Conflict,Unresolved}`. External and prelude paths are
+omitted from `type_refs`. Fns / Types chips dim file cards by `fnCount` /
+`typeCount`. Hooks: `getFilters` / `setFilter`. Fixture `type-definitions`.
+
+**Measured.**
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | pass (incl. `type_definitions`) |
+| Fixture: Named → Label, Point | Resolved type_refs |
+| Fixture: Alias → Named | Resolved |
+| Old maps without `types` | still load (`#[serde(default)]`, I12 style) |
+| Browser (filters / self-map) | pending rebuild + drive after commit |
+
+**Not yet (W8b+).** Inherent `impl` methods, `Type::assoc` resolution (still
+`associated_dropped`), method-call receiver typing. Types/Fns chips do real
+work on file cards; there is no type DAG in the dock yet.
 
 ---
 
@@ -172,4 +196,4 @@ Types/Fns filter chips stay disabled. No analyser guesswork introduced.
 | W7 | done |
 | W9 | done |
 | W10 | done |
-| W8 | stopped cleanly — not started |
+| W8 | in progress — W8a done; methods not started |

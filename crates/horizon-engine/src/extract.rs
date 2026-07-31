@@ -67,12 +67,35 @@ pub struct FileFacts {
 }
 
 /// Kind of type-level item collected during extraction.
+///
+/// Mirrors [`horizon_map::TypeKind`] so the resolve index and the emitted map
+/// share vocabulary; kept local so extract stays independent of map serde.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeKind {
     Struct,
     Enum,
     Trait,
     TypeAlias,
+}
+
+impl TypeKind {
+    pub fn to_map(self) -> horizon_map::TypeKind {
+        match self {
+            TypeKind::Struct => horizon_map::TypeKind::Struct,
+            TypeKind::Enum => horizon_map::TypeKind::Enum,
+            TypeKind::Trait => horizon_map::TypeKind::Trait,
+            TypeKind::TypeAlias => horizon_map::TypeKind::TypeAlias,
+        }
+    }
+}
+
+/// A type-path mention extracted from a type definition, before resolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTypeRef {
+    pub type_path: String,
+    pub line: u32,
+    pub byte_start: u32,
+    pub byte_end: u32,
 }
 
 /// Visibility of an item, as written (`pub`, `pub(crate)`, …).
@@ -96,7 +119,8 @@ pub enum ItemVisibility {
     Private,
 }
 
-/// A type definition visible to the resolver for classifying non-function calls.
+/// A type definition visible to the resolver for classifying non-function calls,
+/// and the source facts needed to emit a [`horizon_map::TypeItem`].
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub name: String,
@@ -106,6 +130,24 @@ pub struct TypeDef {
     /// Variant names when [`TypeKind::Enum`]; empty otherwise.
     pub variants: Vec<String>,
     pub visibility: ItemVisibility,
+    /// 1-based line of the item keyword.
+    pub line: u32,
+    pub byte_start: u32,
+    pub byte_end: u32,
+    pub doc_comments: Vec<DocComment>,
+    /// Field / alias type paths named by this definition (unresolved).
+    pub pending_refs: Vec<PendingTypeRef>,
+}
+
+impl TypeDef {
+    /// Full path including the type name (`crate::map::Shape`).
+    pub fn full_path(&self) -> String {
+        if self.module_path == "crate" {
+            format!("crate::{}", self.name)
+        } else {
+            format!("{}::{}", self.module_path, self.name)
+        }
+    }
 }
 
 /// A single binding produced by expanding a `use` / `pub use` tree.
@@ -313,7 +355,7 @@ pub fn extract_facts(
         .map(|(raw, func)| (raw.syntax.clone(), func.id.clone()))
         .collect();
 
-    let types = extract_types(root, file_module_path);
+    let types = extract_types(root, file_module_path, &lines);
     let imports = extract_imports(root, file_module_path);
 
     let mut local_bindings: HashMap<FunctionId, HashSet<String>> = HashMap::new();
@@ -806,11 +848,11 @@ fn normalize_doc_text(raw: &str) -> String {
         .join("\n")
 }
 
-/// Collect struct / enum / trait / type-alias names (and enum variants).
+/// Collect struct / enum / trait / type-alias definitions (and enum variants).
 ///
 /// Items inside `impl` / `trait` bodies are skipped — associated types are not
 /// free type definitions for our purposes.
-fn extract_types(root: &SyntaxNode, file_module_path: &str) -> Vec<TypeDef> {
+fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -> Vec<TypeDef> {
     let mut types = Vec::new();
     for node in root.descendants() {
         if is_inside_impl_or_trait(&node) {
@@ -828,12 +870,25 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str) -> Vec<TypeDef> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let module_path = item_module_path(en.syntax(), file_module_path);
+            let range = en.syntax().text_range();
+            let mut pending_refs = Vec::new();
+            if let Some(list) = en.variant_list() {
+                for variant in list.variants() {
+                    collect_field_type_refs(variant.field_list(), lines, &mut pending_refs);
+                }
+            }
             types.push(TypeDef {
                 name: name.text().to_string(),
-                module_path: item_module_path(en.syntax(), file_module_path),
+                module_path,
                 kind: TypeKind::Enum,
                 variants,
                 visibility: visibility_of(&en),
+                line: lines.line_of(u32::from(range.start())),
+                byte_start: u32::from(range.start()),
+                byte_end: u32::from(range.end()),
+                doc_comments: extract_outer_docs(en.syntax()),
+                pending_refs,
             });
             continue;
         }
@@ -841,12 +896,21 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str) -> Vec<TypeDef> {
             let Some(name) = st.name() else {
                 continue;
             };
+            let module_path = item_module_path(st.syntax(), file_module_path);
+            let range = st.syntax().text_range();
+            let mut pending_refs = Vec::new();
+            collect_field_type_refs(st.field_list(), lines, &mut pending_refs);
             types.push(TypeDef {
                 name: name.text().to_string(),
-                module_path: item_module_path(st.syntax(), file_module_path),
+                module_path,
                 kind: TypeKind::Struct,
                 variants: Vec::new(),
                 visibility: visibility_of(&st),
+                line: lines.line_of(u32::from(range.start())),
+                byte_start: u32::from(range.start()),
+                byte_end: u32::from(range.end()),
+                doc_comments: extract_outer_docs(st.syntax()),
+                pending_refs,
             });
             continue;
         }
@@ -854,12 +918,19 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str) -> Vec<TypeDef> {
             let Some(name) = tr.name() else {
                 continue;
             };
+            let module_path = item_module_path(tr.syntax(), file_module_path);
+            let range = tr.syntax().text_range();
             types.push(TypeDef {
                 name: name.text().to_string(),
-                module_path: item_module_path(tr.syntax(), file_module_path),
+                module_path,
                 kind: TypeKind::Trait,
                 variants: Vec::new(),
                 visibility: visibility_of(&tr),
+                line: lines.line_of(u32::from(range.start())),
+                byte_start: u32::from(range.start()),
+                byte_end: u32::from(range.end()),
+                doc_comments: extract_outer_docs(tr.syntax()),
+                pending_refs: Vec::new(),
             });
             continue;
         }
@@ -867,16 +938,146 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str) -> Vec<TypeDef> {
             let Some(name) = ta.name() else {
                 continue;
             };
+            let module_path = item_module_path(ta.syntax(), file_module_path);
+            let range = ta.syntax().text_range();
+            let mut pending_refs = Vec::new();
+            if let Some(ty) = ta.ty() {
+                collect_type_path_refs(&ty, lines, &mut pending_refs);
+            }
             types.push(TypeDef {
                 name: name.text().to_string(),
-                module_path: item_module_path(ta.syntax(), file_module_path),
+                module_path,
                 kind: TypeKind::TypeAlias,
                 variants: Vec::new(),
                 visibility: visibility_of(&ta),
+                line: lines.line_of(u32::from(range.start())),
+                byte_start: u32::from(range.start()),
+                byte_end: u32::from(range.end()),
+                doc_comments: extract_outer_docs(ta.syntax()),
+                pending_refs,
             });
         }
     }
     types
+}
+
+fn collect_field_type_refs(
+    fields: Option<ast::FieldList>,
+    lines: &LineIndex,
+    out: &mut Vec<PendingTypeRef>,
+) {
+    let Some(fields) = fields else {
+        return;
+    };
+    match fields {
+        ast::FieldList::RecordFieldList(list) => {
+            for field in list.fields() {
+                if let Some(ty) = field.ty() {
+                    collect_type_path_refs(&ty, lines, out);
+                }
+            }
+        }
+        ast::FieldList::TupleFieldList(list) => {
+            for field in list.fields() {
+                if let Some(ty) = field.ty() {
+                    collect_type_path_refs(&ty, lines, out);
+                }
+            }
+        }
+    }
+}
+
+/// Collect path-form type mentions under `ty` (skipping primitives / `Self`).
+fn collect_type_path_refs(ty: &ast::Type, lines: &LineIndex, out: &mut Vec<PendingTypeRef>) {
+    for node in ty.syntax().descendants() {
+        let Some(path_ty) = ast::PathType::cast(node) else {
+            continue;
+        };
+        let Some(path) = path_ty.path() else {
+            continue;
+        };
+        let segs = path_segments(&path);
+        if segs.is_empty() {
+            continue;
+        }
+        // Drop language / prelude / placeholder forms — not indexed map types.
+        if segs.len() == 1 {
+            let s = segs[0].as_str();
+            if is_primitive_type_name(s) || is_prelude_type_name(s) || s == "Self" || s == "_" {
+                continue;
+            }
+        }
+        let type_path = segs.join("::");
+        if !is_path_like_callee(&type_path) {
+            continue;
+        }
+        let range = path_ty.syntax().text_range();
+        out.push(PendingTypeRef {
+            type_path,
+            line: lines.line_of(u32::from(range.start())),
+            byte_start: u32::from(range.start()),
+            byte_end: u32::from(range.end()),
+        });
+    }
+}
+
+fn is_primitive_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "char"
+            | "str"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+    )
+}
+
+fn is_prelude_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Option"
+            | "Result"
+            | "Vec"
+            | "String"
+            | "Box"
+            | "Rc"
+            | "Arc"
+            | "Cell"
+            | "RefCell"
+            | "Pin"
+            | "Path"
+            | "PathBuf"
+            | "OsStr"
+            | "OsString"
+            | "CString"
+            | "CStr"
+            | "Cow"
+            | "HashMap"
+            | "HashSet"
+            | "BTreeMap"
+            | "BTreeSet"
+            | "VecDeque"
+            | "LinkedList"
+            | "BinaryHeap"
+            | "Duration"
+            | "Instant"
+            | "Ok"
+            | "Err"
+            | "Some"
+            | "None"
+    )
 }
 
 /// Expand every `use` / `pub use` tree and `extern crate` item into
@@ -1032,6 +1233,12 @@ fn module_path_segments(module_path: &str) -> Vec<String> {
 ///
 /// Paths that start with any other segment (e.g. `std`, `serde`) are kept as
 /// written — they name an external crate or an as-yet-unresolved root.
+/// Absolutize `crate` / `self` / `super` path segments relative to `from_module`.
+pub fn absolutize_type_path(segments: &[&str], from_module: &str) -> String {
+    let owned: Vec<String> = segments.iter().map(|s| (*s).to_string()).collect();
+    absolutize_path_segments(&owned, from_module)
+}
+
 fn absolutize_path_segments(segments: &[String], from_module: &str) -> String {
     if segments.is_empty() {
         return from_module.to_string();
@@ -1105,6 +1312,41 @@ fn is_inside_impl_or_trait(node: &SyntaxNode) -> bool {
 /// Module path of a type / item (inline `mod` segments, no item-name segment).
 fn item_module_path(node: &SyntaxNode, file_module_path: &str) -> String {
     call_module_path(node, file_module_path)
+}
+
+/// Assign [`horizon_map::TypeId`]s after all type definitions in a crate are known.
+///
+/// Returns `(items, provisional_full_path → TypeId)` so type refs can be
+/// resolved against the same ids the map emits.
+pub fn assign_type_ids(crate_key: &str, types: &[TypeDef]) -> Vec<horizon_map::TypeItem> {
+    let mut path_counts: HashMap<String, usize> = HashMap::new();
+    for ty in types {
+        *path_counts.entry(ty.full_path()).or_default() += 1;
+    }
+
+    types
+        .iter()
+        .map(|ty| {
+            let full = ty.full_path();
+            let line = if path_counts.get(&full).copied().unwrap_or(0) > 1 {
+                Some(ty.line)
+            } else {
+                None
+            };
+            horizon_map::TypeItem {
+                id: horizon_map::TypeId::from_parts(crate_key, &full, line),
+                name: ty.name.clone(),
+                kind: ty.kind.to_map(),
+                module_path: full,
+                line: ty.line,
+                byte_start: ty.byte_start,
+                byte_end: ty.byte_end,
+                variants: ty.variants.clone(),
+                type_refs: Vec::new(),
+                doc_comments: ty.doc_comments.clone(),
+            }
+        })
+        .collect()
 }
 
 /// Assign [`FunctionId`]s after all definitions in a crate are known.

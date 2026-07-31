@@ -98,7 +98,10 @@
 //! scopes them to the body. See `extract` module docs.
 
 use crate::extract::{Import, ItemVisibility, PendingCall, TypeDef, TypeKind};
-use horizon_map::{CallTarget, Conflict, Function, FunctionId, UnresolvedCall};
+use horizon_map::{
+    CallTarget, Conflict, Function, FunctionId, TypeConflict, TypeId, TypeTarget, UnresolvedCall,
+    UnresolvedType,
+};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -636,6 +639,199 @@ fn normalize_bare_import_path(
     // Unknown bare path: prefer crate-local (the fixtures' `pub use numbers::mean`
     // shape). External-only names are already caught above when declared.
     local_full
+}
+
+/// Resolve a type-path mention (field type, alias RHS) against `index`.
+///
+/// Returns `None` when the path names an external / language crate — those
+/// mentions are omitted from the map (same honesty rule as dropped external
+/// calls). Indexed types become [`TypeTarget`]; unknown local-looking names
+/// stay [`TypeTarget::Unresolved`] with a reason.
+pub fn resolve_type_mention(
+    type_path: &str,
+    from_module: &str,
+    index: &ResolveIndex,
+    id_by_full_path: &HashMap<String, TypeId>,
+) -> Option<TypeTarget> {
+    let segments: Vec<&str> = type_path
+        .split("::")
+        .map(strip_segment_generics)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Some(TypeTarget::Unresolved(UnresolvedType {
+            reason: format!("malformed type path `{type_path}`"),
+        }));
+    }
+
+    if index.path_crates.contains_key(segments[0]) {
+        // Type defs in path deps are indexed under the dependency's own map
+        // nodes; cross-crate type edges are out of scope for this pass.
+        return None;
+    }
+    if is_external_root(segments[0], index) {
+        return None;
+    }
+
+    let mut full_paths = collect_type_full_paths(type_path, &segments, from_module, index);
+    full_paths.sort();
+    full_paths.dedup();
+
+    match full_paths.as_slice() {
+        [] => Some(TypeTarget::Unresolved(UnresolvedType {
+            reason: format!(
+                "no indexed type `{type_path}` visible from module `{from_module}`"
+            ),
+        })),
+        [only] => match id_by_full_path.get(only) {
+            Some(id) => Some(TypeTarget::Resolved(id.clone())),
+            None => Some(TypeTarget::Unresolved(UnresolvedType {
+                reason: format!("indexed type `{only}` has no TypeId"),
+            })),
+        },
+        many => {
+            let mut candidates = Vec::new();
+            for p in many {
+                if let Some(id) = id_by_full_path.get(p) {
+                    candidates.push(id.clone());
+                }
+            }
+            if candidates.is_empty() {
+                return Some(TypeTarget::Unresolved(UnresolvedType {
+                    reason: format!(
+                        "no indexed type `{type_path}` visible from module `{from_module}`"
+                    ),
+                }));
+            }
+            if candidates.len() == 1 {
+                return Some(TypeTarget::Resolved(candidates.remove(0)));
+            }
+            Some(TypeTarget::Conflict(TypeConflict {
+                candidates,
+                reason: format!(
+                    "type path `{type_path}` is ambiguous from module `{from_module}`"
+                ),
+            }))
+        }
+    }
+}
+
+fn collect_type_full_paths(
+    type_path: &str,
+    segments: &[&str],
+    from_module: &str,
+    index: &ResolveIndex,
+) -> Vec<String> {
+    let mut out = Vec::new();
+
+    // Absolute / already-rooted paths.
+    if matches!(segments[0], "crate" | "self" | "super") {
+        let abs = crate::extract::absolutize_type_path(segments, from_module);
+        if index.find_type_at_path(&abs).is_some() {
+            out.push(abs);
+        }
+        return out;
+    }
+
+    if segments.len() == 1 {
+        let name = segments[0];
+        if let Some(ty) = index.find_type(from_module, name) {
+            out.push(ty.full_path());
+        }
+        // Explicit imports of this name that bind a type.
+        let site = PendingCall {
+            call_path: name.to_string(),
+            line: 1,
+            byte_start: 0,
+            byte_end: 0,
+            enclosing_function: None,
+            module_path: from_module.to_string(),
+            owner: crate::extract::CallOwnerKind::File,
+            from_macro: false,
+        };
+        for binding in index.explicits_in(from_module, name) {
+            match resolve_target_path(&binding.target, &site, index, 0) {
+                TargetResolve::Type(p) => {
+                    if !out.contains(&p) {
+                        out.push(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Glob-imported types (same ambiguity rule as calls — list every hit).
+        for globbed in index.globs_in(from_module) {
+            if let Some(ty) = index.find_type(globbed, name) {
+                let p = ty.full_path();
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        return out;
+    }
+
+    // Qualified: prefer crate-local under the importing module, then absolute
+    // under `crate::`, then import of the leading segment as a module/type.
+    let local = if from_module == "crate" {
+        format!("crate::{}", segments.join("::"))
+    } else {
+        format!("{from_module}::{}", segments.join("::"))
+    };
+    if index.find_type_at_path(&local).is_some() {
+        out.push(local);
+        return out;
+    }
+    let under_crate = format!("crate::{}", segments.join("::"));
+    if under_crate != type_path && index.find_type_at_path(&under_crate).is_some() {
+        out.push(under_crate);
+        return out;
+    }
+    if index.find_type_at_path(type_path).is_some() {
+        out.push(type_path.to_string());
+        return out;
+    }
+
+    // Leading segment may be an imported module: `map::Shape`.
+    let site = PendingCall {
+        call_path: type_path.to_string(),
+        line: 1,
+        byte_start: 0,
+        byte_end: 0,
+        enclosing_function: None,
+        module_path: from_module.to_string(),
+        owner: crate::extract::CallOwnerKind::File,
+        from_macro: false,
+    };
+    for binding in index.explicits_in(from_module, segments[0]) {
+        match resolve_target_path(&binding.target, &site, index, 0) {
+            TargetResolve::Module(module) => {
+                let rest = segments[1..].join("::");
+                let full = extend_module_path(&module, &rest);
+                // rest may be `Foo` or `inner::Foo`
+                if index.find_type_at_path(&full).is_some() {
+                    if !out.contains(&full) {
+                        out.push(full);
+                    }
+                } else if segments.len() == 2 {
+                    if let Some(ty) = index.find_type(&module, segments[1]) {
+                        let p = ty.full_path();
+                        if !out.contains(&p) {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+            TargetResolve::Type(p) if segments.len() == 1 => {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    out
 }
 
 /// Resolve a single pending call against `index`.
@@ -2667,6 +2863,11 @@ mod tests {
             kind: TypeKind::Enum,
             variants: vec!["Resolved".into(), "Conflict".into()],
             visibility: ItemVisibility::Public,
+            line: 1,
+            byte_start: 0,
+            byte_end: 1,
+            doc_comments: vec![],
+            pending_refs: vec![],
         }];
         let modules = HashSet::from(["crate".into(), "crate::map".into(), "crate::resolve".into()]);
         let imports = vec![explicit(
@@ -2700,6 +2901,11 @@ mod tests {
             kind: TypeKind::Struct,
             variants: vec![],
             visibility: ItemVisibility::Public,
+            line: 1,
+            byte_start: 0,
+            byte_end: 1,
+            doc_comments: vec![],
+            pending_refs: vec![],
         }];
         let index = index_with(
             vec![],

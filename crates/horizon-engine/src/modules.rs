@@ -127,6 +127,7 @@ impl Walker {
                 module_path,
                 content_hash: String::new(),
                 functions: Vec::new(),
+                types: Vec::new(),
                 call_sites: Vec::new(),
                 doc_comments: Vec::new(),
             },

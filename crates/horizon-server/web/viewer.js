@@ -208,7 +208,7 @@
   let bootStatus = null;
   let dark = false;
   let userSetTheme = false;
-  let filters = { entry: true, file: true };
+  let filters = { entry: true, file: true, fn: true, struct: true };
   let query = "";
   let worldW = 1360;
   let worldH = 600;
@@ -239,6 +239,7 @@
    *   folderLabel: string,
    *   kind: "entry"|"file",
    *   fnCount: number,
+   *   typeCount: number,
    *   conflicts: number,
    *   unresolved: number,
    *   file: object,
@@ -913,6 +914,7 @@
           folderLabel,
           kind,
           fnCount: (file.functions || []).length,
+          typeCount: (file.types || []).length,
           conflicts: flags.conflicts,
           unresolved: flags.unresolved,
           file,
@@ -1194,6 +1196,17 @@
   function cardVisible(node) {
     if (node.kind === "entry" && !filters.entry) return false;
     if (node.kind === "file" && !filters.file) return false;
+    // Content chips: a file with functions matches Fns; a file with types
+    // matches Types. Empty files (neither) stay visible so the map never
+    // hides a card solely for lacking both. Turning a chip off dims files
+    // whose only matching content is that kind.
+    const hasFn = (node.fnCount || 0) > 0;
+    const hasType = (node.typeCount || 0) > 0;
+    if (hasFn || hasType) {
+      const matchFn = hasFn && filters.fn;
+      const matchType = hasType && filters.struct;
+      if (!matchFn && !matchType) return false;
+    }
     if (!query) return true;
     const q = query.toLowerCase();
     return (
@@ -1300,14 +1313,20 @@
         `</div>` +
         `<div class="card-skel w78"></div>` +
         `<div class="card-skel w58"></div>` +
-        `<span class="card-fn-count">${node.fnCount} fn</span>` +
+        `<span class="card-fn-count">${node.fnCount} fn` +
+        (node.typeCount
+          ? ` · ${node.typeCount} type${node.typeCount === 1 ? "" : "s"}`
+          : "") +
+        `</span>` +
         `<div class="sel-handles">` +
         `<span class="sel-handle tl"></span>` +
         `<span class="sel-handle tr"></span>` +
         `<span class="sel-handle bl"></span>` +
         `<span class="sel-handle br"></span>` +
         (isSel
-          ? `<span class="sel-pill">${node.fnCount} fn</span>`
+          ? `<span class="sel-pill">${node.fnCount} fn` +
+            (node.typeCount ? ` · ${node.typeCount} ty` : "") +
+            `</span>`
           : "") +
         `</div>` +
         `</div>`;
@@ -1372,7 +1391,9 @@
         if (handles) {
           const span = document.createElement("span");
           span.className = "sel-pill";
-          span.textContent = `${node.fnCount} fn`;
+          span.textContent =
+            `${node.fnCount} fn` +
+            (node.typeCount ? ` · ${node.typeCount} ty` : "");
           handles.appendChild(span);
         }
       } else if (!isSel && pill) {
@@ -2788,6 +2809,12 @@
         `<span class="insp-pill">${escapeHtml(node.modulePath || "—")}</span>`,
         `<span class="insp-pill">${node.fnCount} function${node.fnCount === 1 ? "" : "s"}</span>`,
       ];
+      if (node.typeCount)
+        pills.push(
+          `<span class="insp-pill">${node.typeCount} type${
+            node.typeCount === 1 ? "" : "s"
+          }</span>`
+        );
       if (node.conflicts)
         pills.push(
           `<span class="insp-pill conflict">${node.conflicts} conflict${
@@ -3450,7 +3477,9 @@
     const btn = ev.target.closest(".filter-chip");
     if (!btn || btn.disabled) return;
     const kind = btn.dataset.kind;
-    if (kind !== "entry" && kind !== "file") return;
+    if (kind !== "entry" && kind !== "file" && kind !== "fn" && kind !== "struct") {
+      return;
+    }
     filters[kind] = !filters[kind];
     btn.classList.toggle("on", filters[kind]);
     renderLayers();
@@ -3778,7 +3807,18 @@
         emptyHidden: !!els.canvasEmpty?.hidden,
         leftOccupied: leftOccupiedPx(),
         rightOccupied: rightOccupiedPx(),
+        filters: { ...filters },
       }),
+      getFilters: () => ({ ...filters }),
+      setFilter: (kind, on) => {
+        if (!(kind in filters)) return false;
+        filters[kind] = !!on;
+        const btn = els.filterChips?.querySelector(`[data-kind="${kind}"]`);
+        if (btn && !btn.disabled) btn.classList.toggle("on", filters[kind]);
+        renderLayers();
+        refreshFocus();
+        return true;
+      },
       getRailWidths: () => ({
         // Stored panel widths (authoritative when open; retained while collapsed).
         leftWidth: leftW,
@@ -3970,6 +4010,8 @@
           "getTheme",
           "setTheme",
           "getRecent",
+          "getFilters",
+          "setFilter",
           "getSelection",
           "getUiState",
           "inspectorOpenPolicy",
@@ -4153,6 +4195,8 @@
               // Side-effecting network call — probe presence only.
             } else if (name === "setFnsDepth") {
               // Would re-render the DAG; presence is enough here.
+            } else if (name === "setFilter") {
+              // Would re-dim cards; presence is enough here.
             } else if (name === "setTheme") {
               // Persist + swap tokens — presence is enough; boot already applied.
             } else {

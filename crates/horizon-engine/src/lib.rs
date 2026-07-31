@@ -33,15 +33,16 @@ pub use horizon_map::{
 };
 pub use horizon_map::{
     CallSite, CallTarget, Conflict, Crate, Dependency, DependencyKind, DocComment, DocCommentKind,
-    File, Folder, Function, FunctionId, MapSummary, Repository, UnresolvedCall,
+    File, Folder, Function, FunctionId, MapSummary, Repository, TypeConflict, TypeId, TypeItem,
+    TypeKind, TypeRef, TypeTarget, UnresolvedCall, UnresolvedType,
 };
 
 use anyhow::Result;
-use extract::{CallOwnerKind, FileFacts, PendingCall};
+use extract::{CallOwnerKind, FileFacts, PendingCall, assign_type_ids};
 use pipeline::{extract_repository, resolve_index_for};
-use resolve::{ExclusionKind, ResolveResult, resolve_call};
+use resolve::{ExclusionKind, ResolveResult, resolve_call, resolve_type_mention};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Analyse `repo_root` and return its function map.
 ///
@@ -56,16 +57,19 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
 
     for i in 0..extracted.len() {
         let index = resolve_index_for(&extracted, i);
+        let types_for_path = build_types_for_crate(&extracted[i], &index);
 
         let mut built_files = Vec::new();
         for (path, module_path, facts) in &extracted[i].file_facts {
             let (functions, file_calls) =
                 attach_resolved_calls(facts.clone(), &index, &mut summary)?;
+            let types = types_for_path.get(path).cloned().unwrap_or_default();
             built_files.push(File {
                 path: path.clone(),
                 module_path: module_path.clone(),
                 content_hash: facts.content_hash.clone(),
                 functions,
+                types,
                 call_sites: file_calls,
                 doc_comments: facts.doc_comments.clone(),
             });
@@ -91,6 +95,61 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
         crates,
         summary,
     })
+}
+
+/// Emit [`TypeItem`]s for one crate, grouped by source file path, with
+/// type-path mentions resolved against the crate's [`ResolveIndex`].
+fn build_types_for_crate(
+    extracted: &pipeline::ExtractedCrate,
+    index: &resolve::ResolveIndex,
+) -> HashMap<PathBuf, Vec<TypeItem>> {
+    let id_prefix = extracted.krate.function_id_prefix();
+    let mut type_items = assign_type_ids(&id_prefix, &extracted.types);
+    let id_by_full_path: HashMap<String, TypeId> = type_items
+        .iter()
+        .map(|t| (t.module_path.clone(), t.id.clone()))
+        .collect();
+
+    for (item, src) in type_items.iter_mut().zip(extracted.types.iter()) {
+        let mut refs = Vec::new();
+        for pending in &src.pending_refs {
+            let Some(target) = resolve_type_mention(
+                &pending.type_path,
+                &src.module_path,
+                index,
+                &id_by_full_path,
+            ) else {
+                continue;
+            };
+            refs.push(TypeRef {
+                type_path: pending.type_path.clone(),
+                line: pending.line,
+                byte_start: pending.byte_start,
+                byte_end: pending.byte_end,
+                target,
+            });
+        }
+        item.type_refs = refs;
+    }
+
+    let mut by_key: HashMap<String, Vec<TypeItem>> = HashMap::new();
+    for (item, src) in type_items.into_iter().zip(extracted.types.iter()) {
+        let key = format!("{}@@{}@@{}", src.module_path, src.name, src.line);
+        by_key.entry(key).or_default().push(item);
+    }
+
+    let mut types_for_path: HashMap<PathBuf, Vec<TypeItem>> = HashMap::new();
+    for (path, _module_path, facts) in &extracted.file_facts {
+        let mut file_types = Vec::new();
+        for ty in &facts.types {
+            let key = format!("{}@@{}@@{}", ty.module_path, ty.name, ty.line);
+            if let Some(mut items) = by_key.remove(&key) {
+                file_types.append(&mut items);
+            }
+        }
+        types_for_path.insert(path.clone(), file_types);
+    }
+    types_for_path
 }
 
 fn attach_resolved_calls(

@@ -15,5 +15,6 @@ pub use json::{
 };
 pub use map::{
     CallSite, CallTarget, Conflict, Crate, Dependency, DependencyKind, DocComment, DocCommentKind,
-    File, Folder, Function, FunctionId, MapSummary, Repository, UnresolvedCall,
+    File, Folder, Function, FunctionId, MapSummary, Repository, TypeConflict, TypeId, TypeItem,
+    TypeKind, TypeRef, TypeTarget, UnresolvedCall, UnresolvedType,
 };
