@@ -10,6 +10,7 @@ pub const INDEX_HTML: &str = include_str!("../web/index.html");
 pub const VIEWER_CSS: &str = include_str!("../web/viewer.css");
 pub const VIEWER_JS: &str = include_str!("../web/viewer.js");
 pub const DIAGNOSTICS_JS: &str = include_str!("../web/diagnostics.js");
+pub const FUNCTION_DAG_JS: &str = include_str!("../web/function_dag.js");
 
 pub async fn index() -> Response {
     html(INDEX_HTML)
@@ -25,6 +26,10 @@ pub async fn viewer_js() -> Response {
 
 pub async fn diagnostics_js() -> Response {
     js(DIAGNOSTICS_JS)
+}
+
+pub async fn function_dag_js() -> Response {
+    js(FUNCTION_DAG_JS)
 }
 
 fn html(body: &'static str) -> Response {

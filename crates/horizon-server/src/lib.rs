@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod host_guard;
+pub mod rail_layout;
 pub mod routes;
 pub mod source;
 pub mod state;

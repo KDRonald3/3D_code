@@ -387,16 +387,27 @@ select {
   flex: 1;
   min-height: 0;
   position: relative;
+  /* Sidebars are edge-pinned; centre is the only in-flow flex child. */
+  overflow: hidden;
 }
 
+/*
+ * Sidebars are position:absolute against the workspace edges so their width
+ * truly follows --left-w / --right-w. The old in-flow flex layout was the
+ * growth stopper: once left+right exceeded the workspace, the right panel
+ * overflowed off the right while the rail kept using `right: var(--right-w)`,
+ * so the divider walked away from the panel edge.
+ */
 .left-aside {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: var(--left-w, 236px);
-  flex: none;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-right: 1px solid var(--border);
-  min-width: 0;
   overflow: hidden;
   z-index: 20;
 }
@@ -404,22 +415,26 @@ select {
 .left-aside.collapsed {
   width: 0 !important;
   border-right: none;
+  pointer-events: none;
 }
 
 .right-aside {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
   width: var(--right-w, 316px);
-  flex: none;
   background: var(--panel);
   border-left: 1px solid var(--border);
   overflow: auto;
   z-index: 20;
-  min-width: 0;
 }
 
 .right-aside.collapsed {
   width: 0 !important;
   border-left: none;
   overflow: hidden;
+  pointer-events: none;
 }
 
 .resize-rail {
@@ -429,14 +444,21 @@ select {
   width: 11px;
   z-index: 35;
   cursor: ew-resize;
+  touch-action: none;
 }
 
+/*
+ * Divider = same authoritative var as the panel (11px hit).
+ * Inset fully inside each panel (not centred on the edge) so when the canvas
+ * width is zero the two hit strips are adjacent but never overlap — both stay
+ * separately grabbable.
+ */
 .left-rail {
-  left: calc(var(--left-w, 236px) - 5px);
+  left: calc(var(--left-w, 236px) - 11px);
 }
 
 .right-rail {
-  right: calc(var(--right-w, 316px) - 5px);
+  right: calc(var(--right-w, 316px) - 11px);
 }
 
 .left-aside.collapsed + .left-rail {
@@ -450,6 +472,21 @@ select {
 
 .resize-rail:hover {
   background: rgba(13, 153, 255, 0.28);
+}
+
+/* Suppress text selection while a rail drag is live (pointer may sweep the page). */
+.app.resizing-rail,
+.app.resizing-rail * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: ew-resize !important;
+}
+
+.app.resizing-rail-ns,
+.app.resizing-rail-ns * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: ns-resize !important;
 }
 
 .pages-block,
@@ -532,6 +569,22 @@ select {
 
 .page-ico.ds {
   color: #9747ff;
+}
+
+.page-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--warnbg, #3a2a1a);
+  color: var(--warn, #d97706);
+  line-height: 1.4;
+}
+
+.page-badge.conflict {
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--sel, #6366f1);
 }
 
 .page-trail {
@@ -725,11 +778,16 @@ select {
 /* —— Canvas —— */
 
 .center-col {
-  flex: 1;
+  flex: 1 1 0;
+  /* Allow the map column to shrink to zero when rails meet — no min-width:auto. */
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
+  /* Match the edge-pinned sidebars so cards are never drawn underneath them. */
+  margin-left: var(--left-occupied, var(--left-w, 236px));
+  margin-right: var(--right-occupied, var(--right-w, 316px));
 }
 
 .canvas {
@@ -1049,6 +1107,12 @@ select {
   z-index: 8;
 }
 
+/* Dock Functions canvas — same HUD chrome, slightly tighter inset. */
+.fns-viewport > .zoom-hud {
+  bottom: 10px;
+  right: 10px;
+}
+
 .zoom-hud button {
   width: 26px;
   height: 26px;
@@ -1062,7 +1126,8 @@ select {
   padding: 0;
 }
 
-.zoom-hud #zoom-reset {
+.zoom-hud #zoom-reset,
+.zoom-hud #fns-zoom-reset {
   width: auto;
   min-width: 46px;
   font-family: "JetBrains Mono", monospace;
@@ -1551,6 +1616,556 @@ select {
 
 .call-target .candidates li {
   margin: 2px 0;
+}
+
+.call-site.diag-focus {
+  outline: 1px solid var(--sel);
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 4px;
+}
+
+/* —— Bottom dock (Diagnostics / later Functions DAG) —— */
+
+.bottom-panel {
+  flex: 0 0 auto;
+  height: var(--bottom-h, 248px);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+  z-index: 22;
+}
+
+.bottom-panel[hidden] {
+  display: none !important;
+}
+
+/*
+ * Horizontal grab strip inset inside the top of the bottom panel (same idea as
+ * side rails inset inside their panels) so it stays hittable when the canvas
+ * height is driven to zero.
+ *
+ * Must override the vertical `.resize-rail` base (`top:0; bottom:0; width:11px`)
+ * or the hit target collapses to an 11×11 square at the top-left of .center-col.
+ * Left/right rails live on .workspace outside this column — no shared strip,
+ * so this rail cannot collide with them the way the two vertical rails did.
+ */
+/* Dual class beats `.resize-rail` alone so vertical defaults cannot stick. */
+.resize-rail.bottom-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: auto; /* release vertical-rail top:0 */
+  bottom: calc(var(--bottom-h, 248px) - 11px);
+  width: auto; /* release vertical-rail width:11px so left/right stretch */
+  height: 11px;
+  z-index: 36;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.resize-rail.bottom-rail[hidden] {
+  display: none !important;
+}
+
+.resize-rail.bottom-rail:hover {
+  background: rgba(13, 153, 255, 0.28);
+}
+
+.bottom-chrome {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.bottom-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.bottom-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text3);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.bottom-tab.active {
+  color: var(--text);
+  background: var(--panel2);
+  border-color: var(--border);
+}
+
+.bottom-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bottom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fns-controls[hidden],
+.diag-group-mode[hidden] {
+  display: none !important;
+}
+
+.diag-pane,
+.fns-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.diag-pane[hidden],
+.fns-pane[hidden] {
+  display: none !important;
+}
+
+/*
+ * Banner must not wrap — wrapping steals #fns-viewport height and drifts the DAG
+ * vertically when the dock narrows (left/right rail resize). Full text is on title.
+ */
+.fns-banner {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text3);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fns-banner strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.fns-viewport {
+  flex: 1 1 auto;
+  /* Never collapse to 0 when the dock is open (banner / chrome steal). */
+  min-height: 48px;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+  background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+  background-size: 18px 18px;
+  cursor: grab;
+}
+
+.fns-viewport.panning {
+  cursor: grabbing;
+}
+
+.fns-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.fns-edges-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.fns-edge-paths {
+  pointer-events: stroke;
+}
+
+.fns-edge {
+  fill: none;
+  stroke-width: 1.6;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.fns-edge.resolved {
+  stroke: var(--kind-fn);
+  marker-end: url(#fns-arrow-resolved);
+}
+
+.fns-edge.conflict {
+  stroke: var(--sel);
+  stroke-dasharray: 5 3;
+  marker-end: url(#fns-arrow-conflict);
+}
+
+.fns-edge.unresolved {
+  stroke: var(--warn);
+  stroke-dasharray: 2 3;
+  marker-end: url(#fns-arrow-unresolved);
+}
+
+.fns-edge:hover,
+.fns-edge.active {
+  stroke-width: 2.4;
+}
+
+.fns-marker.resolved {
+  fill: var(--kind-fn);
+}
+
+.fns-marker.conflict {
+  fill: var(--sel);
+}
+
+.fns-marker.unresolved {
+  fill: var(--warn);
+}
+
+.fns-nodes {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.fns-node {
+  position: absolute;
+  box-sizing: border-box;
+  width: 148px;
+  min-height: 48px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+.fns-node:hover {
+  border-color: var(--sel);
+}
+
+.fns-node.selected {
+  border-color: var(--sel);
+  box-shadow: 0 0 0 2px var(--selbg);
+}
+
+.fns-node.function {
+  border-left: 3px solid var(--kind-fn);
+}
+
+.fns-node.function.external {
+  opacity: 0.92;
+  background: var(--panel2);
+}
+
+.fns-node.conflict {
+  border-left: 3px solid var(--sel);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.fns-node.unresolved {
+  border-left: 3px solid var(--warn);
+  background: var(--warnbg);
+}
+
+.fns-node-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fns-node-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--text3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fns-node-kind {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.fns-node.conflict .fns-node-kind {
+  color: var(--sel);
+}
+
+.fns-node.unresolved .fns-node-kind {
+  color: var(--warn);
+}
+
+.fns-cand {
+  display: block;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sel);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fns-cand:hover {
+  text-decoration: underline;
+}
+
+.fns-empty {
+  padding: 24px 16px;
+  color: var(--text3);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.diag-group-mode {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.diag-group-mode button {
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.diag-group-mode button.on {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+/*
+ * Fixed two-line chrome — each line ellipsizes so rail squeeze cannot grow the
+ * banner and steal .diag-body height (same class of bug as .fns-banner wrap).
+ */
+.diag-banner {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text3);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+  overflow: hidden;
+}
+
+.diag-banner.warn {
+  color: var(--warn);
+  background: var(--warnbg);
+}
+
+.diag-banner > div {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diag-banner .diag-dropped {
+  margin-top: 3px;
+  opacity: 0.9;
+}
+
+.diag-body {
+  flex: 1 1 auto;
+  min-height: 48px;
+  overflow: auto;
+  padding: 8px 10px 14px;
+}
+
+.diag-group {
+  margin-bottom: 10px;
+}
+
+.diag-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 2px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+.diag-group-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-group-count {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 8px;
+  background: var(--panel2);
+  color: var(--text3);
+}
+
+.diag-group-count.conflict {
+  color: var(--sel);
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.diag-group-count.unresolved {
+  color: var(--warn);
+  background: var(--warnbg);
+}
+
+.diag-group-count.mixed {
+  color: var(--text);
+}
+
+.diag-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  border-radius: 7px;
+  padding: 8px 10px;
+  margin-bottom: 5px;
+  cursor: pointer;
+}
+
+.diag-entry:hover {
+  border-color: var(--sel);
+}
+
+.diag-entry.active {
+  border-color: var(--sel);
+  box-shadow: inset 0 0 0 1px var(--sel);
+}
+
+.diag-entry-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  margin-bottom: 3px;
+}
+
+.diag-entry .diag-kind {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+
+.diag-entry .diag-kind.conflict {
+  color: var(--sel);
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.diag-entry .diag-kind.unresolved {
+  color: var(--warn);
+  background: var(--warnbg);
+}
+
+.diag-entry .diag-call {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.diag-entry .diag-loc {
+  font-size: 11px;
+  color: var(--text3);
+  margin-left: auto;
+}
+
+.diag-entry .diag-reason {
+  font-size: 11.5px;
+  color: var(--text3);
+  line-height: 1.4;
+  margin: 2px 0 0;
+}
+
+.diag-entry .diag-cands {
+  margin: 5px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text2, var(--text));
+}
+
+.diag-entry .diag-cands li {
+  margin: 2px 0;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.diag-cand-jump {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--sel);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.diag-entry .diag-macro {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.diag-empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text3);
+  font-size: 12.5px;
 }
 
 [hidden] {

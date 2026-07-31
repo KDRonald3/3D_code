@@ -1,5 +1,8 @@
 /target
 
+# Scratch target dir used when a background agent builds in parallel
+/target-agent
+
 # LaTeX build artifacts
 *.aux
 *.log

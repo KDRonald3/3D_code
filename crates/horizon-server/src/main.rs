@@ -1,7 +1,7 @@
 //! Horizon web UI server — serves the adapted function-map viewer.
 //!
 //! Binds to an ephemeral loopback port, optionally loads a saved map from
-//! `--map`, prints the URL, and opens the default browser.
+//! `--map`, prints the URL, and opens the default browser unless `--no-open`.
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -18,13 +18,21 @@ use tokio::net::TcpListener;
     long_about = "Start a local web UI that loads a Horizon Repository JSON and \
 lets you audit call sites, conflicts, unresolved edges, and drop counters.\n\n\
 Binds 127.0.0.1 on an OS-assigned ephemeral port, prints the URL, and opens \
-the default browser. Pass --map to preload a saved map JSON so the page shows \
-it immediately; otherwise use Open JSON… in the browser."
+the default browser unless --no-open is given. Pass --map to preload a saved \
+map JSON so the page shows it immediately; otherwise use Open JSON… in the \
+browser."
 )]
 struct Cli {
     /// Path to a saved Horizon map JSON to load at startup.
     #[arg(short, long, value_name = "FILE")]
     map: Option<PathBuf>,
+
+    /// Print the URL but do not open a browser.
+    ///
+    /// Useful when driving the UI from an already-open browser or from
+    /// automation, where an extra tab per run is a nuisance.
+    #[arg(long)]
+    no_open: bool,
 }
 
 #[tokio::main]
@@ -57,7 +65,9 @@ async fn main() -> Result<()> {
 
     let url = format!("http://{addr}/");
     println!("{url}");
-    open_browser(&url);
+    if !cli.no_open {
+        open_browser(&url);
+    }
 
     axum::serve(listener, router)
         .await

@@ -19,10 +19,18 @@
   const FIT_MARGIN = 56;
   const TARGET_ASPECT = 16 / 9;
   const DRAG_MOVE = 5;
+  // Sidebar sizes — Desktop defaults/mins (index.dc.html). No artificial max:
+  // panels grow with the pointer up to the opposite panel / window edge.
+  // Canvas may shrink to zero; that is intentional.
   const LEFT_DEFAULT = 236;
   const LEFT_MIN = 180;
   const RIGHT_DEFAULT = 316;
   const RIGHT_MIN = 240;
+  /** Bottom dock — Desktop default ~248px; grab-friendly minimum. */
+  const BOTTOM_DEFAULT = 248;
+  const BOTTOM_MIN = 120;
+  /** Floor for #fns-viewport / .diag-body so rail squeeze cannot collapse them. */
+  const FNS_VIEWPORT_MIN = 48;
 
   const els = {
     app: document.getElementById("app"),
@@ -60,6 +68,31 @@
     zoomOut: document.getElementById("zoom-out"),
     zoomIn: document.getElementById("zoom-in"),
     zoomReset: document.getElementById("zoom-reset"),
+    centerCol: document.querySelector(".center-col"),
+    bottomPanel: document.getElementById("bottom-panel"),
+    bottomRail: document.getElementById("bottom-rail"),
+    bottomClose: document.getElementById("bottom-close"),
+    diagPane: document.getElementById("diag-pane"),
+    diagBody: document.getElementById("diag-body"),
+    diagBanner: document.getElementById("diag-banner"),
+    diagGroupMode: document.getElementById("diag-group-mode"),
+    fnsPane: document.getElementById("fns-pane"),
+    fnsBanner: document.getElementById("fns-banner"),
+    fnsViewport: document.getElementById("fns-viewport"),
+    fnsWorld: document.getElementById("fns-world"),
+    fnsEdgesSvg: document.getElementById("fns-edges-svg"),
+    fnsEdgePaths: document.getElementById("fns-edge-paths"),
+    fnsNodes: document.getElementById("fns-nodes"),
+    fnsControls: document.getElementById("fns-controls"),
+    fnsFit: document.getElementById("fns-fit"),
+    fnsZoomHud: document.getElementById("fns-zoom-hud"),
+    fnsZoomOut: document.getElementById("fns-zoom-out"),
+    fnsZoomIn: document.getElementById("fns-zoom-in"),
+    fnsZoomReset: document.getElementById("fns-zoom-reset"),
+    tabFunctions: document.getElementById("tab-functions"),
+    pageDock: document.getElementById("page-dock"),
+    pageDockBadge: document.getElementById("page-dock-badge"),
+    tabDiagnostics: document.getElementById("tab-diagnostics"),
   };
 
   /** @type {object|null} */
@@ -94,6 +127,57 @@
   let leftW = LEFT_DEFAULT;
   let rightOpen = true;
   let rightW = RIGHT_DEFAULT;
+  /**
+   * Home widths — the size each rail returns to after the opposite's conquest.
+   * Updated only when that rail is manually dragged (or set via API as manual).
+   * Passive squeeze/restore by the aggressor never writes these.
+   */
+  let leftHomeW = LEFT_DEFAULT;
+  let rightHomeW = RIGHT_DEFAULT;
+  /** Prior `--left-occupied` for pan compensation; null until first publish. */
+  let lastLeftOccupied = null;
+  /**
+   * Prior `--bottom-occupied` while the dock is open; null until first publish.
+   * Used so growing/shrinking the dock (viewport top moves) does not jump the
+   * Functions DAG — same idea as left-occupied → panX for the map.
+   */
+  let lastBottomOccupied = null;
+  let bottomOpen = false;
+  let bottomH = BOTTOM_DEFAULT;
+  let bottomHomeH = BOTTOM_DEFAULT;
+  /**
+   * Bottom dock sits *below* the canvas, so growing it shortens the viewport
+   * from the bottom — canvas top (origin Y) does not move. Unlike left-occupied
+   * → panX, bottom-occupied needs no panY compensation (same as right rail).
+   */
+  let diagGroupMode = "reason"; // "reason" | "file"
+  /** @type {"diag"|"fns"} */
+  let bottomTab = "diag";
+  /** @type {object[]} */
+  let diagEntries = [];
+  let diagReconcile = null;
+  /** @type {object|null} */
+  let diagFocus = null;
+  /** @type {Set<string>} */
+  let diagCollapsed = new Set();
+  /** @type {object|null} last built function DAG (for verification). */
+  let fnsGraph = null;
+  /** Dock Functions canvas transform — fully independent of map zoom/pan. */
+  let fnsZoom = 1;
+  let fnsPanX = 0;
+  let fnsPanY = 0;
+  let fnsWorldW = 320;
+  let fnsWorldH = 160;
+  let fnsPanDrag = null;
+  /**
+   * Set when a dock pan gesture exceeded DRAG_MOVE. Consumed by fns-node /
+   * fns-edge click handlers so a pan starting on a node does not select it.
+   */
+  let suppressFnsClick = false;
+  /** @type {string|null} */
+  let fnsActiveEdgeId = null;
+  /** Last boot outcome for diagnostics (null while in flight). */
+  let bootStatus = null;
   let dark = false;
   let userSetTheme = false;
   let filters = { entry: true, file: true };
@@ -106,6 +190,14 @@
   // Pan / drag state
   let panDrag = null;
   let cardDrag = null;
+  /**
+   * Set on card pointerup when the gesture exceeded DRAG_MOVE. Consumed by the
+   * subsequent click so a rearrange does not count as a selection (and therefore
+   * does not open the Inspector). Cleared on the next click handler run.
+   */
+  let suppressCardClick = false;
+  /** Last card pointer gesture — for hand-drag verification in the browser. */
+  let lastCardGesture = null;
 
   /**
    * @typedef {{
@@ -148,16 +240,179 @@
     els.toggleTheme.textContent = dark ? "☀" : "☾";
   }
 
-  function setLeftWidth(w) {
-    leftW = w;
-    els.app.style.setProperty("--left-w", `${leftW}px`);
-    els.leftRail.style.left = `${leftW - 5}px`;
+  function workspaceWidth() {
+    const ws = els.leftAside?.parentElement;
+    if (!ws) return window.innerWidth || 1200;
+    return ws.getBoundingClientRect().width || window.innerWidth || 1200;
   }
 
-  function setRightWidth(w) {
-    rightW = w;
+  function canvasWidth() {
+    const W = workspaceWidth();
+    const L = leftOpen ? leftW : 0;
+    const R = rightOpen ? rightW : 0;
+    return Math.max(0, W - L - R);
+  }
+
+  /** Hard max for a rail: workspace minus the opposite rail's minimum. */
+  function maxLeftWidth() {
+    const otherMin = rightOpen ? RIGHT_MIN : 0;
+    return Math.max(LEFT_MIN, workspaceWidth() - otherMin);
+  }
+
+  function maxRightWidth() {
+    const otherMin = leftOpen ? LEFT_MIN : 0;
+    return Math.max(RIGHT_MIN, workspaceWidth() - otherMin);
+  }
+
+  /** Occupied left inset — what actually shifts the canvas origin. */
+  function leftOccupiedPx() {
+    return leftOpen ? leftW : 0;
+  }
+
+  function rightOccupiedPx() {
+    return rightOpen ? rightW : 0;
+  }
+
+  /**
+   * Screen X of a world point on the main map canvas.
+   *
+   * Transform is `translate(panXpx, panYpx) scale(zoom)`. CSS applies the
+   * list right-to-left to points, so screenX = canvasLeft + panX + worldX*zoom.
+   * Thus panX is already in screen pixels — compensation is panX -= Δ with
+   * no zoom factor. Mirrored in `rail_layout::screen_x`.
+   */
+  function screenXOfWorld(canvasLeft, worldX) {
+    return canvasLeft + panX + worldX * zoom;
+  }
+
+  /**
+   * Screen X of a Functions-DAG world point inside the dock viewport.
+   * Same transform convention as the map — pan is in screen pixels.
+   */
+  function screenXOfFnsWorld(viewportLeft, worldX) {
+    return viewportLeft + fnsPanX + worldX * fnsZoom;
+  }
+
+  /**
+   * Screen Y of a Functions-DAG world point inside the dock viewport.
+   */
+  function screenYOfFnsWorld(viewportTop, worldY) {
+    return viewportTop + fnsPanY + worldY * fnsZoom;
+  }
+
+  /**
+   * Publish the single authoritative width. Panel size, rail position, and
+   * centre margins all read these CSS variables — nothing else tracks width.
+   *
+   * Every change to left-occupied (direct left drag, passive squeeze/restore
+   * by the right aggressor, left toggle collapse/expand) funnels through here.
+   * When left-occupied changes by Δ, panX -= Δ so map content stays put on
+   * screen (cards may clip under the panel — intentional). The dock Functions
+   * canvas shares the same centre-col left edge, so fnsPanX gets the same Δ
+   * compensation — otherwise the DAG would slide when Layers is resized.
+   * Right-occupied changes do not move the canvas/dock origin (they shrink
+   * from the right); when the right aggressor squeezes left, that left Δ is
+   * still handled here.
+   */
+  function publishRailVars() {
+    const leftOcc = leftOccupiedPx();
+    const rightOcc = rightOccupiedPx();
+    if (lastLeftOccupied != null && leftOcc !== lastLeftOccupied) {
+      // Screen-pixel compensation — do not divide/multiply by zoom.
+      const delta = leftOcc - lastLeftOccupied;
+      panX -= delta;
+      if (!Number.isFinite(panX)) panX = 0;
+      if (els.world) updateWorldTransform();
+      // Dock shares centre-col's left margin — same Δ, independent transform.
+      fnsPanX -= delta;
+      if (!Number.isFinite(fnsPanX)) fnsPanX = 0;
+      if (els.fnsWorld) updateFnsWorldTransform();
+    }
+    lastLeftOccupied = leftOcc;
+    els.app.style.setProperty("--left-w", `${leftW}px`);
     els.app.style.setProperty("--right-w", `${rightW}px`);
-    els.rightRail.style.right = `${rightW - 5}px`;
+    els.app.style.setProperty("--left-occupied", `${leftOcc}px`);
+    els.app.style.setProperty("--right-occupied", `${rightOcc}px`);
+    // Clear any stale inline overrides — position comes from CSS + vars only.
+    els.leftRail.style.left = "";
+    els.rightRail.style.right = "";
+  }
+
+  /**
+   * Pure right-aggressor layout. Keep in lockstep with
+   * `horizon_server::rail_layout::compute_right_aggressor` (unit-tested).
+   * Consumes canvas first; past canvas-zero squeezes left toward LEFT_MIN.
+   * Shrinking restores left to leftHome before canvas gains pixels.
+   * Does not modify homes.
+   * @returns {{ left: number, right: number }}
+   */
+  function computeRightAggressorLayout(W, desiredRight, leftIsOpen, leftHome) {
+    const Lmin = leftIsOpen ? LEFT_MIN : 0;
+    const desired = Number(desiredRight);
+    const R = Math.max(
+      RIGHT_MIN,
+      Math.min(W - Lmin, Number.isFinite(desired) ? desired : RIGHT_MIN)
+    );
+    if (!leftIsOpen) return { left: 0, right: R };
+    const Lhome = Math.max(LEFT_MIN, leftHome);
+    if (Lhome + R <= W) return { left: Lhome, right: R };
+    return { left: Math.max(Lmin, W - R), right: R };
+  }
+
+  /**
+   * Pure left-aggressor layout. Keep in lockstep with
+   * `horizon_server::rail_layout::compute_left_aggressor`.
+   * @returns {{ left: number, right: number }}
+   */
+  function computeLeftAggressorLayout(W, desiredLeft, rightIsOpen, rightHome) {
+    const Rmin = rightIsOpen ? RIGHT_MIN : 0;
+    const desired = Number(desiredLeft);
+    const L = Math.max(
+      LEFT_MIN,
+      Math.min(W - Rmin, Number.isFinite(desired) ? desired : LEFT_MIN)
+    );
+    if (!rightIsOpen) return { left: L, right: 0 };
+    const Rhome = Math.max(RIGHT_MIN, rightHome);
+    if (L + Rhome <= W) return { left: L, right: Rhome };
+    return { left: L, right: Math.max(Rmin, W - L) };
+  }
+
+  /** Apply pure right-aggressor result; does not modify homes. */
+  function layoutRightAggressor(desiredRight) {
+    const next = computeRightAggressorLayout(
+      workspaceWidth(),
+      desiredRight,
+      leftOpen,
+      leftHomeW
+    );
+    if (leftOpen) leftW = next.left;
+    rightW = next.right;
+    publishRailVars();
+  }
+
+  /** Apply pure left-aggressor result; does not modify homes. */
+  function layoutLeftAggressor(desiredLeft) {
+    const next = computeLeftAggressorLayout(
+      workspaceWidth(),
+      desiredLeft,
+      rightOpen,
+      rightHomeW
+    );
+    leftW = next.left;
+    if (rightOpen) rightW = next.right;
+    publishRailVars();
+  }
+
+  /** Manual left resize — updates leftHomeW (invalidates prior squeeze memory). */
+  function setLeftWidth(w) {
+    layoutLeftAggressor(w);
+    leftHomeW = leftW;
+  }
+
+  /** Manual right resize — updates rightHomeW. */
+  function setRightWidth(w) {
+    layoutRightAggressor(w);
+    rightHomeW = rightW;
   }
 
   function setRightOpen(open) {
@@ -165,6 +420,156 @@
     els.rightAside.hidden = false;
     els.rightAside.classList.toggle("collapsed", !rightOpen);
     els.rightRail.hidden = !rightOpen;
+    // Re-apply aggressor layout from current homes so occupied space is honest.
+    if (rightOpen) layoutRightAggressor(rightHomeW);
+    else if (leftOpen) layoutLeftAggressor(leftHomeW);
+    else publishRailVars();
+  }
+
+  function setLeftOpen(open) {
+    leftOpen = open;
+    els.leftAside.classList.toggle("collapsed", !leftOpen);
+    els.leftRail.hidden = !leftOpen;
+    if (leftOpen) layoutLeftAggressor(leftHomeW);
+    else if (rightOpen) layoutRightAggressor(rightHomeW);
+    else publishRailVars();
+  }
+
+  /** Window chrome changed size — fit rails into the new workspace, no map refit. */
+  function enforceWorkspaceFit() {
+    const W = workspaceWidth();
+    const Lmin = leftOpen ? LEFT_MIN : 0;
+    const Rmin = rightOpen ? RIGHT_MIN : 0;
+    const Lh = leftOpen ? Math.max(LEFT_MIN, leftHomeW) : 0;
+    const Rh = rightOpen ? Math.max(RIGHT_MIN, rightHomeW) : 0;
+    if (Lh + Rh <= W) {
+      if (leftOpen) leftW = Lh;
+      if (rightOpen) rightW = Rh;
+      publishRailVars();
+    } else if (leftOpen && rightOpen) {
+      rightW = Math.max(Rmin, Math.min(Rh, W - Lmin));
+      leftW = Math.max(Lmin, W - rightW);
+      publishRailVars();
+    } else if (leftOpen) {
+      leftW = Math.min(Math.max(LEFT_MIN, leftW), W);
+      publishRailVars();
+    } else if (rightOpen) {
+      rightW = Math.min(Math.max(RIGHT_MIN, rightW), W);
+      publishRailVars();
+    }
+    if (bottomOpen) layoutBottomHeight(bottomH);
+  }
+
+  function centerColHeight() {
+    const col = els.centerCol;
+    if (!col) return window.innerHeight || 800;
+    return col.getBoundingClientRect().height || window.innerHeight || 800;
+  }
+
+  function publishBottomVars() {
+    const occ = bottomOpen ? bottomH : 0;
+    // Map canvas top does not move when the dock grows — no map panY change.
+    // The dock viewport top *does* move (panel grows upward). Compensate so
+    // the Functions DAG stays under the same screen pixels. Skip open/close
+    // transitions (0 ↔ N) — those are show/hide, not a continuous resize.
+    if (
+      lastBottomOccupied != null &&
+      lastBottomOccupied > 0 &&
+      occ > 0 &&
+      occ !== lastBottomOccupied
+    ) {
+      fnsPanY += occ - lastBottomOccupied;
+      if (!Number.isFinite(fnsPanY)) fnsPanY = 0;
+      if (els.fnsWorld) updateFnsWorldTransform();
+    }
+    lastBottomOccupied = occ;
+    els.app.style.setProperty("--bottom-h", `${bottomH}px`);
+    els.app.style.setProperty("--bottom-occupied", `${occ}px`);
+    if (els.bottomRail) els.bottomRail.style.bottom = "";
+  }
+
+  /**
+   * Set bottom dock height. Canvas may shrink to zero; hard stop is the
+   * center-column height. Map panY unchanged (canvas top fixed). Dock fnsPanY
+   * is compensated inside publishBottomVars when height changes while open.
+   */
+  function layoutBottomHeight(desired) {
+    const colH = Math.max(0, centerColHeight());
+    // Canvas may shrink to zero; hard max is the full center column.
+    const maxH = Math.max(BOTTOM_MIN, colH);
+    const raw = Number(desired);
+    const want = Number.isFinite(raw) ? raw : BOTTOM_DEFAULT;
+    bottomH = Math.max(BOTTOM_MIN, Math.min(maxH, want));
+    publishBottomVars();
+  }
+
+  function setBottomHeight(h) {
+    layoutBottomHeight(h);
+    bottomHomeH = bottomH;
+  }
+
+  function setBottomOpen(open) {
+    bottomOpen = !!open;
+    if (els.bottomPanel) {
+      els.bottomPanel.hidden = !bottomOpen;
+      els.bottomPanel.setAttribute("aria-hidden", bottomOpen ? "false" : "true");
+    }
+    if (els.bottomRail) els.bottomRail.hidden = !bottomOpen;
+    if (els.pageDock) els.pageDock.classList.toggle("active", bottomOpen);
+    if (bottomOpen) {
+      layoutBottomHeight(bottomHomeH);
+      applyBottomTab();
+    } else {
+      publishBottomVars();
+    }
+  }
+
+  function setBottomTab(tab) {
+    bottomTab = tab === "fns" ? "fns" : "diag";
+    applyBottomTab();
+  }
+
+  function applyBottomTab() {
+    const fns = bottomTab === "fns";
+    if (els.fnsPane) els.fnsPane.hidden = !fns;
+    if (els.diagPane) els.diagPane.hidden = fns;
+    if (els.diagGroupMode) els.diagGroupMode.hidden = fns;
+    if (els.fnsControls) els.fnsControls.hidden = !fns;
+    if (els.tabFunctions) {
+      els.tabFunctions.classList.toggle("active", fns);
+      els.tabFunctions.setAttribute("aria-selected", fns ? "true" : "false");
+    }
+    if (els.tabDiagnostics) {
+      els.tabDiagnostics.classList.toggle("active", !fns);
+      els.tabDiagnostics.setAttribute("aria-selected", !fns ? "true" : "false");
+    }
+    if (!bottomOpen) return;
+    if (fns) renderFunctionDag({ fit: !fnsGraph });
+    else renderDiagnostics();
+  }
+
+  function beginRailDrag(railEl, ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    try {
+      railEl.setPointerCapture(ev.pointerId);
+    } catch (_) {
+      /* capture unsupported — window listeners still work */
+    }
+    els.app.classList.add("resizing-rail");
+  }
+
+  function endRailDrag(railEl, ev) {
+    els.app.classList.remove("resizing-rail");
+    if (ev && railEl && ev.pointerId != null) {
+      try {
+        if (railEl.hasPointerCapture?.(ev.pointerId)) {
+          railEl.releasePointerCapture(ev.pointerId);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    }
   }
 
   function relativePath(absPath) {
@@ -507,21 +912,28 @@
 
   /**
    * Choose zoom + pan so every card (and sticky) fits in the canvas with margin.
-   * Clamped to [ZOOM_MIN, ZOOM_FIT_MAX]. Used on load and as "reset view".
+   * Clamped to [ZOOM_MIN, ZOOM_FIT_MAX]. Survives a near-zero canvas (rails
+   * dragged until they meet): never divides by zero or yields NaN.
    */
   function fitView() {
     const rect = els.canvas.getBoundingClientRect();
     const b = contentBounds();
     const contentW = Math.max(1, b.maxX - b.minX);
     const contentH = Math.max(1, b.maxY - b.minY);
-    const availW = Math.max(1, rect.width - FIT_MARGIN * 2);
-    const availH = Math.max(1, rect.height - FIT_MARGIN * 2);
-    const next = Math.min(availW / contentW, availH / contentH);
+    // When the canvas is narrower than the margin budget, still use ≥1px.
+    const availW = Math.max(1, rect.width - Math.min(FIT_MARGIN * 2, rect.width * 0.5));
+    const availH = Math.max(1, rect.height - Math.min(FIT_MARGIN * 2, rect.height * 0.5));
+    let next = Math.min(availW / contentW, availH / contentH);
+    if (!Number.isFinite(next) || next <= 0) next = ZOOM_MIN;
     zoom = Math.min(ZOOM_FIT_MAX, Math.max(ZOOM_MIN, +next.toFixed(3)));
     const cx = (b.minX + b.maxX) / 2;
     const cy = (b.minY + b.maxY) / 2;
-    panX = rect.width / 2 - cx * zoom;
-    panY = rect.height / 2 - cy * zoom;
+    const vw = Math.max(0, rect.width);
+    const vh = Math.max(0, rect.height);
+    panX = vw / 2 - cx * zoom;
+    panY = vh / 2 - cy * zoom;
+    if (!Number.isFinite(panX)) panX = 0;
+    if (!Number.isFinite(panY)) panY = 0;
     updateWorldTransform();
   }
 
@@ -672,8 +1084,28 @@
       frame.addEventListener("pointerdown", (ev) => onCardPointerDown(ev, node.id));
       frame.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        if (cardDrag && cardDrag.moved) return;
+        // cardDrag is already cleared on pointerup — use suppressCardClick,
+        // which remembers that this gesture was a rearrange, not a selection.
+        if (suppressCardClick) {
+          suppressCardClick = false;
+          lastCardGesture = {
+            ...(lastCardGesture || {}),
+            id: node.id,
+            clickSuppressed: true,
+            selected: false,
+            rightOpenAfter: rightOpen,
+          };
+          return;
+        }
         selectFile(node.id, { reveal: false });
+        lastCardGesture = {
+          id: node.id,
+          moved: false,
+          clickSuppressed: false,
+          selected: true,
+          selectedId,
+          rightOpenAfter: rightOpen,
+        };
       });
       wrap.addEventListener("mouseenter", () => {
         hoverId = node.id;
@@ -908,17 +1340,27 @@
   }
 
   /**
+   * Single policy: may this intent open a collapsed Inspector?
+   * Selection (file / function / diagnostics / history) → yes.
+   * View manipulation (pan / card-drag / rail-resize / zoom) → never call this.
+   */
+  function openInspectorForSelection() {
+    if (!rightOpen) setRightOpen(true);
+  }
+
+  /**
    * Select a file card. Clears function selection unless keepFn and the fn
-   * still belongs to this file.
+   * still belongs to this file. Opens the Inspector (selection intent).
    */
   function selectFile(id, { reveal = false, push = false, keepFn = false } = {}) {
     if (push) pushHistory();
     selectedId = id;
     if (!keepFn) selectedFnId = null;
     if (reveal && id) revealCard(id);
-    setRightOpen(true);
+    openInspectorForSelection();
     refreshFocus();
     renderInspector();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
   }
 
   /**
@@ -932,9 +1374,10 @@
     selectedId = entry.fileId;
     selectedFnId = String(fnId);
     if (reveal) revealCard(entry.fileId);
-    setRightOpen(true);
+    openInspectorForSelection();
     refreshFocus();
     renderInspector();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
     return true;
   }
 
@@ -944,9 +1387,10 @@
     selectedId = prev.fileId;
     selectedFnId = prev.fnId;
     if (selectedId) revealCard(selectedId);
-    setRightOpen(true);
+    openInspectorForSelection();
     refreshFocus();
     renderInspector();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
   }
 
   // —— Inspector ——
@@ -1132,13 +1576,24 @@
     return wrap;
   }
 
+  function siteMatchesDiagFocus(site) {
+    if (!diagFocus) return false;
+    if (diagFocus.byteStart && site.byte_start === diagFocus.byteStart) return true;
+    return (
+      site.line === diagFocus.line &&
+      String(site.call_path || "") === String(diagFocus.callPath || "")
+    );
+  }
+
   function renderCallSites(sites) {
     const list = document.createElement("ul");
     list.className = "call-list";
     for (const site of sites || []) {
       const kind = site.target?.kind || "unknown";
       const li = document.createElement("li");
-      li.className = `call-site ${kind}`;
+      const focus = siteMatchesDiagFocus(site);
+      li.className = `call-site ${kind}` + (focus ? " diag-focus" : "");
+      if (focus) li.dataset.diagFocus = "1";
 
       const line = document.createElement("span");
       line.className = "call-line";
@@ -1169,6 +1624,666 @@
       list.appendChild(li);
     }
     return list;
+  }
+
+  function scrollDiagFocusIntoInspector() {
+    const el = els.inspector?.querySelector(".call-site.diag-focus");
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+
+  // —— Diagnostics worklist (bottom dock) ——
+
+  function rebuildDiagnostics() {
+    const HD = window.HorizonDiagnostics;
+    if (!HD || !currentMap) {
+      diagEntries = [];
+      diagReconcile = null;
+      return;
+    }
+    const result = HD.collectDiagnostics(currentMap);
+    diagEntries = result.entries || [];
+    diagReconcile = result.reconcile || null;
+    updateDockBadge();
+  }
+
+  function updateDockBadge() {
+    const badge = els.pageDockBadge;
+    if (!badge) return;
+    const n = diagEntries.length;
+    if (!n) {
+      badge.hidden = true;
+      badge.textContent = "";
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = String(n);
+    const hasConflict = diagEntries.some((e) => e.kind === "conflict");
+    badge.classList.toggle("conflict", hasConflict);
+  }
+
+  function openDiagnosticEntry(entry) {
+    if (!entry) return;
+    diagFocus = entry;
+    // A diagnostics row is a selection — openInspectorForSelection runs via
+    // selectFile / selectFunction. Do not force the bottom dock open.
+    const fnId = entry.enclosing?.functionId;
+    if (fnId && fnIndex.has(String(fnId))) {
+      selectFunction(fnId, { reveal: true, push: true });
+    } else {
+      const node = fileNodes.find((n) => n.path === entry.filePath);
+      if (node) selectFile(node.id, { reveal: true, push: true });
+      else {
+        openInspectorForSelection();
+        renderInspector();
+      }
+    }
+    requestAnimationFrame(() => scrollDiagFocusIntoInspector());
+    if (bottomTab === "diag") renderDiagnostics();
+  }
+
+  function focusDagCallSite(edgeOrStub) {
+    if (!edgeOrStub) return;
+    const callerId = edgeOrStub.callerFnId;
+    diagFocus = {
+      kind: edgeOrStub.kind,
+      callPath: edgeOrStub.callPath || edgeOrStub.name || "",
+      line: edgeOrStub.line ?? 0,
+      byteStart: edgeOrStub.byteStart ?? 0,
+      byteEnd: edgeOrStub.byteEnd ?? 0,
+      reason: edgeOrStub.reason || "",
+      candidates: edgeOrStub.candidates || [],
+      enclosing: callerId
+        ? { type: "function", functionId: callerId }
+        : null,
+    };
+    fnsActiveEdgeId = edgeOrStub.id || null;
+    if (callerId && fnIndex.has(String(callerId))) {
+      selectFunction(callerId, { reveal: true, push: true });
+    } else {
+      openInspectorForSelection();
+      renderInspector();
+      if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
+    }
+    requestAnimationFrame(() => scrollDiagFocusIntoInspector());
+  }
+
+  function updateFnsWorldTransform() {
+    if (!els.fnsWorld) return;
+    if (!Number.isFinite(fnsPanX)) fnsPanX = 0;
+    if (!Number.isFinite(fnsPanY)) fnsPanY = 0;
+    if (!Number.isFinite(fnsZoom) || fnsZoom <= 0) fnsZoom = ZOOM_MIN;
+    els.fnsWorld.style.transform = `translate(${fnsPanX}px, ${fnsPanY}px) scale(${fnsZoom})`;
+    if (els.fnsZoomReset) {
+      els.fnsZoomReset.textContent = `${Math.round(fnsZoom * 100)}%`;
+    }
+  }
+
+  /**
+   * Cursor-anchored zoom for the dock viewport (same factor/clamps as the map).
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {number} deltaY
+   */
+  function zoomFnsAt(clientX, clientY, deltaY) {
+    const vp = els.fnsViewport;
+    if (!vp) return;
+    const rect = vp.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    const before = fnsZoom > 0 && Number.isFinite(fnsZoom) ? fnsZoom : ZOOM_MIN;
+    const factor = deltaY < 0 ? 1.08 : 1 / 1.08;
+    fnsZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, +(before * factor).toFixed(3)));
+    fnsPanX = mx - (mx - fnsPanX) * (fnsZoom / before);
+    fnsPanY = my - (my - fnsPanY) * (fnsZoom / before);
+    updateFnsWorldTransform();
+  }
+
+  /**
+   * Cursor-anchored zoom for the main map canvas.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {number} deltaY
+   */
+  function zoomMapAt(clientX, clientY, deltaY) {
+    const rect = els.canvas.getBoundingClientRect();
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    const before = zoom > 0 && Number.isFinite(zoom) ? zoom : ZOOM_MIN;
+    const factor = deltaY < 0 ? 1.08 : 1 / 1.08;
+    zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, +(before * factor).toFixed(3)));
+    panX = mx - (mx - panX) * (zoom / before);
+    panY = my - (my - panY) * (zoom / before);
+    if (!Number.isFinite(panX)) panX = 0;
+    if (!Number.isFinite(panY)) panY = 0;
+    updateWorldTransform();
+  }
+
+  function fitFunctionDag() {
+    const vp = els.fnsViewport;
+    if (!vp) return;
+    const rect = vp.getBoundingClientRect();
+    const pad = 24;
+    const zw = Math.max(1, fnsWorldW);
+    const zh = Math.max(1, fnsWorldH);
+    const availW = Math.max(1, rect.width - Math.min(pad * 2, rect.width * 0.5));
+    const availH = Math.max(1, rect.height - Math.min(pad * 2, rect.height * 0.5));
+    let next = Math.min(availW / zw, availH / zh);
+    if (!Number.isFinite(next) || next <= 0) next = ZOOM_MIN;
+    // Same fit clamp as the map — dense DAGs stay readable via manual zoom-out.
+    fnsZoom = Math.min(ZOOM_FIT_MAX, Math.max(ZOOM_MIN, +next.toFixed(3)));
+    fnsPanX = (rect.width - zw * fnsZoom) / 2;
+    fnsPanY = (rect.height - zh * fnsZoom) / 2;
+    if (!Number.isFinite(fnsPanX)) fnsPanX = 0;
+    if (!Number.isFinite(fnsPanY)) fnsPanY = 0;
+    updateFnsWorldTransform();
+  }
+
+  function getBottomTransform() {
+    return {
+      zoom: fnsZoom,
+      panX: fnsPanX,
+      panY: fnsPanY,
+      world: els.fnsWorld?.style?.transform || "",
+    };
+  }
+
+  /**
+   * Screen rect of a Functions-DAG node (for rail-drift verification).
+   * Uses the same pan+scale math as screenXOfFnsWorld — not getBoundingClientRect
+   * alone — so a wrong transform is caught even if the DOM moved with the panel.
+   * @param {string} nodeId
+   */
+  function getFnsNodeScreenRect(nodeId) {
+    if (!nodeId || !fnsGraph || !els.fnsViewport) return null;
+    const pos = fnsGraph.positions && fnsGraph.positions[nodeId];
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return null;
+    const vp = els.fnsViewport.getBoundingClientRect();
+    const nw = fnsGraph.layout?.nodeW || 0;
+    const nh = fnsGraph.layout?.nodeH || 0;
+    const left = screenXOfFnsWorld(vp.left, pos.x);
+    const top = screenYOfFnsWorld(vp.top, pos.y);
+    const width = nw * fnsZoom;
+    const height = nh * fnsZoom;
+    return {
+      nodeId: String(nodeId),
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      zoom: fnsZoom,
+      viewportLeft: vp.left,
+      viewportTop: vp.top,
+    };
+  }
+
+  /**
+   * Banner / viewport geometry for the Functions dock pane.
+   * Invariant while dock is open on the Functions tab: banner height stays
+   * constant across dock widths (no wrap), and viewport height stays > 0.
+   */
+  function getFnsPaneMetrics() {
+    const banner = els.fnsBanner;
+    const vp = els.fnsViewport;
+    const pane = els.fnsPane;
+    if (!banner || !vp) return null;
+    const br = banner.getBoundingClientRect();
+    const vr = vp.getBoundingClientRect();
+    const pr = pane ? pane.getBoundingClientRect() : null;
+    const fnsVisible = bottomOpen && bottomTab === "fns" && pane && !pane.hidden;
+    return {
+      bannerHeight: br.height,
+      viewportHeight: vr.height,
+      viewportTop: vr.top,
+      viewportWidth: vr.width,
+      paneHeight: pr ? pr.height : 0,
+      paneWidth: pr ? pr.width : 0,
+      bottomOpen,
+      tab: bottomTab,
+      fnsVisible,
+      viewportMinPx: FNS_VIEWPORT_MIN,
+      // Honest while Functions pane is showing; closed/other-tab may be 0.
+      viewportAlive: !fnsVisible || vr.height > 0,
+    };
+  }
+
+  /** Set Functions banner HTML and a plain-text title (full string for tooltip). */
+  function setFnsBanner(html) {
+    const banner = els.fnsBanner;
+    if (!banner) return;
+    banner.innerHTML = html;
+    banner.title = (banner.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  /**
+   * Set dock zoom, keeping the viewport centre anchored (test / HUD helper).
+   * @param {number} scale
+   */
+  function setBottomZoom(scale) {
+    const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number(scale)));
+    if (!Number.isFinite(next) || next <= 0) return getBottomTransform();
+    const vp = els.fnsViewport;
+    const before = fnsZoom > 0 && Number.isFinite(fnsZoom) ? fnsZoom : ZOOM_MIN;
+    fnsZoom = +next.toFixed(3);
+    if (vp && before > 0) {
+      const rect = vp.getBoundingClientRect();
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      fnsPanX = cx - (cx - fnsPanX) * (fnsZoom / before);
+      fnsPanY = cy - (cy - fnsPanY) * (fnsZoom / before);
+    }
+    updateFnsWorldTransform();
+    return getBottomTransform();
+  }
+
+  /**
+   * Build + paint the Functions DAG for the selected file.
+   * @param {{fit?: boolean}} opts
+   */
+  function renderFunctionDag(opts = {}) {
+    const fit = !!opts.fit;
+    const nodesEl = els.fnsNodes;
+    const pathsEl = els.fnsEdgePaths;
+    const svg = els.fnsEdgesSvg;
+    if (!nodesEl || !pathsEl) return;
+
+    const HD = window.HorizonFunctionDag;
+    if (!HD) {
+      nodesEl.innerHTML =
+        `<div class="fns-empty">Function DAG module failed to load.</div>`;
+      fnsGraph = null;
+      return;
+    }
+
+    const fileNode = selectedId
+      ? fileNodes.find((n) => n.id === selectedId)
+      : null;
+    if (!fileNode) {
+      fnsGraph = null;
+      setFnsBanner(
+        `Select a file on the map or in Layers to see its function call DAG.`
+      );
+      nodesEl.replaceChildren();
+      pathsEl.replaceChildren();
+      return;
+    }
+
+    let graph;
+    let laid;
+    try {
+      graph = HD.build(fileNode.file, fileNode.id, fnIndex);
+      laid = HD.layout(graph);
+    } catch (err) {
+      console.error("[HorizonViewer.renderFunctionDag]", err);
+      fnsGraph = null;
+      setFnsBanner(`Function DAG failed to layout this file.`);
+      nodesEl.innerHTML =
+        `<div class="fns-empty">Could not build the call DAG for this file. See console for details.</div>`;
+      pathsEl.replaceChildren();
+      return;
+    }
+    fnsGraph = {
+      ...graph,
+      layout: {
+        worldW: laid.worldW,
+        worldH: laid.worldH,
+        nodeW: laid.nodeW,
+        nodeH: laid.nodeH,
+      },
+      positions: Object.fromEntries(laid.pos),
+    };
+    fnsWorldW = laid.worldW;
+    fnsWorldH = laid.worldH;
+
+    const sc = graph.scope;
+    setFnsBanner(
+      `<strong>${escapeHtml(sc.fileName || "file")}</strong>` +
+        ` · ${sc.seedCount} function${sc.seedCount === 1 ? "" : "s"}` +
+        ` · ${sc.resolvedEdges} resolved` +
+        ` · ${sc.conflictEdges} conflict` +
+        ` · ${sc.unresolvedEdges} unresolved` +
+        ` <span title="Unresolved stubs mean the analyser could not resolve the call — not that a callee is missing from the repo.">(stubs are analyser outcomes)</span>`
+    );
+
+    if (svg) {
+      svg.setAttribute("width", String(laid.worldW));
+      svg.setAttribute("height", String(laid.worldH));
+      svg.style.width = `${laid.worldW}px`;
+      svg.style.height = `${laid.worldH}px`;
+    }
+    if (els.fnsWorld) {
+      els.fnsWorld.style.width = `${laid.worldW}px`;
+      els.fnsWorld.style.height = `${laid.worldH}px`;
+    }
+
+    pathsEl.replaceChildren();
+    const nw = laid.nodeW;
+    const nh = laid.nodeH;
+    for (const edge of graph.edges) {
+      const a = laid.pos.get(edge.from);
+      const b = laid.pos.get(edge.to);
+      if (!a || !b) continue;
+      const x1 = a.x + nw;
+      const y1 = a.y + nh / 2;
+      const x2 = b.x;
+      const y2 = b.y + nh / 2;
+      const mx = (x1 + x2) / 2;
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute(
+        "d",
+        `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`
+      );
+      path.setAttribute(
+        "class",
+        `fns-edge ${edge.kind}` +
+          (fnsActiveEdgeId === edge.id ? " active" : "")
+      );
+      path.dataset.edgeId = edge.id;
+      path.style.pointerEvents = "stroke";
+      path.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (suppressFnsClick) {
+          suppressFnsClick = false;
+          return;
+        }
+        focusDagCallSite(edge);
+      });
+      pathsEl.appendChild(path);
+    }
+
+    nodesEl.replaceChildren();
+    for (const node of graph.nodes) {
+      const p = laid.pos.get(node.id);
+      if (!p) continue;
+      // div (not button) so conflict candidate chips can be nested buttons.
+      const el = document.createElement("div");
+      el.className =
+        `fns-node ${node.kind}` +
+        (node.external ? " external" : "") +
+        (node.kind === "function" && node.fnId === selectedFnId
+          ? " selected"
+          : "");
+      el.style.left = `${p.x}px`;
+      el.style.top = `${p.y}px`;
+      el.setAttribute("role", "button");
+      el.tabIndex = 0;
+      el.title =
+        node.kind === "function"
+          ? node.modulePath || node.fnId
+          : node.reason || node.kind;
+
+      const name = document.createElement("span");
+      name.className = "fns-node-name";
+      name.textContent = node.name;
+      el.appendChild(name);
+
+      const meta = document.createElement("span");
+      meta.className = "fns-node-meta";
+      if (node.kind === "function") {
+        meta.textContent = node.external
+          ? `${basename(node.filePath) || "other file"} · L${node.line}`
+          : `L${node.line}`;
+      } else if (node.kind === "conflict") {
+        meta.textContent = `${node.candidates?.length || 0} candidates · L${node.line}`;
+      } else {
+        meta.textContent = node.reason || "analyser could not resolve";
+      }
+      el.appendChild(meta);
+
+      if (node.kind !== "function") {
+        const kind = document.createElement("span");
+        kind.className = "fns-node-kind";
+        kind.textContent =
+          node.kind === "conflict"
+            ? "conflict"
+            : "unresolved — not a missing fn";
+        el.appendChild(kind);
+      }
+
+      const activateNode = () => {
+        if (node.kind === "function" && node.fnId) {
+          selectFunction(node.fnId, { reveal: true, push: true });
+          return;
+        }
+        // Stub: open the call site (honest analyser outcome), not a fake callee.
+        const edge = (fnsGraph?.edges || []).find((e) => e.to === node.id);
+        if (edge) focusDagCallSite(edge);
+        else {
+          focusDagCallSite({
+            kind: node.kind,
+            callerFnId: node.callerFnId,
+            callPath: node.name,
+            line: node.line,
+            reason: node.reason,
+            candidates: node.candidates,
+          });
+        }
+      };
+      el.addEventListener("click", (ev) => {
+        if (ev.target.closest("button")) return;
+        ev.stopPropagation();
+        if (suppressFnsClick) {
+          suppressFnsClick = false;
+          return;
+        }
+        activateNode();
+      });
+      el.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          activateNode();
+        }
+      });
+
+      if (node.kind === "conflict" && (node.candidates || []).length) {
+        for (const cid of node.candidates) {
+          if (!fnIndex.has(String(cid))) continue;
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "fns-cand";
+          chip.textContent = `→ ${String(cid).split("::").pop()}`;
+          chip.title = String(cid);
+          chip.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            selectFunction(cid, { reveal: true, push: true });
+          });
+          el.appendChild(chip);
+        }
+      }
+
+      nodesEl.appendChild(el);
+    }
+
+    if (!graph.nodes.length) {
+      nodesEl.innerHTML =
+        `<div class="fns-empty">No free functions in this file.</div>`;
+    }
+
+    updateFnsWorldTransform();
+    if (fit) fitFunctionDag();
+  }
+
+  function renderDiagnostics() {
+    const body = els.diagBody;
+    const banner = els.diagBanner;
+    if (!body) return;
+    body.replaceChildren();
+    const HD = window.HorizonDiagnostics;
+    if (!HD) {
+      body.innerHTML =
+        `<div class="diag-empty">Diagnostics module failed to load.</div>`;
+      return;
+    }
+    if (!currentMap) {
+      body.innerHTML = `<div class="diag-empty">No map loaded.</div>`;
+      if (banner) banner.hidden = true;
+      return;
+    }
+
+    const summary = currentMap.summary || {};
+    const droppedExt = summary.external_dropped ?? 0;
+    const droppedCtor = summary.constructor_dropped ?? 0;
+    const droppedAssoc = summary.associated_dropped ?? 0;
+    const droppedTotal = droppedExt + droppedCtor + droppedAssoc;
+
+    if (banner) {
+      banner.hidden = false;
+      banner.className = "diag-banner";
+      const rec = diagReconcile;
+      let head = `${diagEntries.length} audit site${
+        diagEntries.length === 1 ? "" : "s"
+      }`;
+      if (rec) {
+        head += ` · walked ${rec.walkedConflicts} conflict${
+          rec.walkedConflicts === 1 ? "" : "s"
+        }, ${rec.walkedUnresolved} unresolved`;
+        if (!rec.match) {
+          banner.classList.add("warn");
+          head += ` — mismatches summary (${rec.summaryConflicts}/${rec.summaryUnresolved})`;
+        }
+      }
+      const dropText =
+        droppedTotal > 0
+          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated — deliberate exclusions, not resolution failures.`
+          : `No deliberate drops in this map summary.`;
+      banner.innerHTML =
+        `<div>${escapeHtml(head)}</div>` +
+        `<div class="diag-dropped">${escapeHtml(dropText)}</div>`;
+      banner.title = `${head} ${dropText}`;
+    }
+
+    if (!diagEntries.length) {
+      body.innerHTML =
+        `<div class="diag-empty">No conflicts or unresolved call sites. The analyser resolved every free-function call it kept.</div>`;
+      return;
+    }
+
+    const groups =
+      diagGroupMode === "file"
+        ? HD.groupByFile(diagEntries)
+        : HD.groupByReason(diagEntries);
+
+    for (const g of groups) {
+      const key =
+        diagGroupMode === "file"
+          ? `file:${g.filePath}`
+          : `reason:${g.reason}`;
+      const collapsed = diagCollapsed.has(key);
+      const countClass = HD.countClassForKinds(g.kinds);
+      const wrap = document.createElement("div");
+      wrap.className = "diag-group";
+
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "diag-group-head";
+      const title = document.createElement("span");
+      title.className = "diag-group-title";
+      title.textContent =
+        diagGroupMode === "file"
+          ? basename(g.filePath) || g.filePath
+          : g.reason;
+      title.title =
+        diagGroupMode === "file" ? g.filePath : g.reason;
+      const count = document.createElement("span");
+      count.className = `diag-group-count ${countClass}`;
+      count.textContent = String(g.entries.length);
+      head.appendChild(title);
+      head.appendChild(count);
+      head.addEventListener("click", () => {
+        if (diagCollapsed.has(key)) diagCollapsed.delete(key);
+        else diagCollapsed.add(key);
+        renderDiagnostics();
+      });
+      wrap.appendChild(head);
+
+      if (!collapsed) {
+        for (const entry of g.entries) {
+          wrap.appendChild(makeDiagEntryButton(entry));
+        }
+      }
+      body.appendChild(wrap);
+    }
+  }
+
+  function makeDiagEntryButton(entry) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "diag-entry" +
+      (diagFocus &&
+      diagFocus.filePath === entry.filePath &&
+      diagFocus.line === entry.line &&
+      diagFocus.callPath === entry.callPath
+        ? " active"
+        : "");
+
+    const top = document.createElement("div");
+    top.className = "diag-entry-top";
+    const kind = document.createElement("span");
+    kind.className = `diag-kind ${entry.kind}`;
+    kind.textContent = entry.kind;
+    const call = document.createElement("span");
+    call.className = "diag-call";
+    call.textContent = entry.callPath || "(empty path)";
+    const loc = document.createElement("span");
+    loc.className = "diag-loc";
+    const enc =
+      entry.enclosing?.type === "function"
+        ? entry.enclosing.functionId
+        : basename(entry.filePath);
+    loc.textContent = `${basename(entry.filePath)} · L${entry.line}`;
+    loc.title = enc || "";
+    top.appendChild(kind);
+    top.appendChild(call);
+    if (entry.fromMacro) {
+      const m = document.createElement("span");
+      m.className = "diag-macro";
+      m.textContent = "macro";
+      m.title = "Recovered from macro token tree";
+      top.appendChild(m);
+    }
+    top.appendChild(loc);
+    btn.appendChild(top);
+
+    if (entry.reason) {
+      const reason = document.createElement("p");
+      reason.className = "diag-reason";
+      reason.textContent = entry.reason;
+      btn.appendChild(reason);
+    }
+
+    if (entry.kind === "conflict" && entry.candidates?.length) {
+      const ul = document.createElement("ul");
+      ul.className = "diag-cands";
+      for (const raw of entry.candidates) {
+        const id = String(raw);
+        const li = document.createElement("li");
+        if (fnIndex.has(id)) {
+          const a = document.createElement("button");
+          a.type = "button";
+          a.className = "diag-cand-jump";
+          a.textContent = id;
+          a.title = "Open candidate in Inspector";
+          a.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            diagFocus = entry;
+            selectFunction(id, { reveal: true, push: true });
+            renderDiagnostics();
+          });
+          li.appendChild(a);
+        } else {
+          li.textContent = id;
+        }
+        ul.appendChild(li);
+      }
+      btn.appendChild(ul);
+    }
+
+    btn.addEventListener("click", () => openDiagnosticEntry(entry));
+    return btn;
   }
 
   function makeSection(label, bodyEl, metaText) {
@@ -1380,8 +2495,11 @@
   function showLoaded() {
     els.importScreen.hidden = true;
     els.mainView.hidden = false;
+    els.toggleLeft.hidden = false;
     els.toggleRight.hidden = false;
-    setRightOpen(true);
+    // Sync chrome to sticky open flags — never force a rail open on load.
+    setLeftOpen(leftOpen);
+    setRightOpen(rightOpen);
   }
 
   function showImport(errorMsg) {
@@ -1396,6 +2514,12 @@
     selectedFnId = null;
     selHistory = [];
     hoverId = null;
+    lastLeftOccupied = null;
+    lastBottomOccupied = null;
+    diagEntries = [];
+    diagReconcile = null;
+    diagFocus = null;
+    setBottomOpen(false);
     els.mainView.hidden = true;
     els.importScreen.hidden = false;
     els.brandSep.hidden = true;
@@ -1465,18 +2589,18 @@
     renderCards();
     renderEdges();
     renderLayers();
+    rebuildDiagnostics();
+    // New map → drop stale DAG; keep dock transform only if Functions re-fits.
+    fnsGraph = null;
+    fnsActiveEdgeId = null;
+    if (bottomOpen) {
+      if (bottomTab === "fns") renderFunctionDag({ fit: true });
+      else renderDiagnostics();
+    }
     fitView();
     if (selectedId) revealCard(selectedId);
     renderInspector();
-
-    // Keep diagnostics module warm / assert it loads (Slice later will render).
-    if (window.HorizonDiagnostics && map) {
-      try {
-        window.HorizonDiagnostics.collectDiagnostics(map);
-      } catch (_) {
-        /* preserved module must not break the map view */
-      }
-    }
+    if (diagFocus) requestAnimationFrame(() => scrollDiagFocusIntoInspector());
 
     void label;
   }
@@ -1487,6 +2611,7 @@
     if (ev.button !== 0) return;
     ev.stopPropagation();
     ev.preventDefault();
+    suppressCardClick = false;
     const p = cardPosition(id);
     cardDrag = {
       id,
@@ -1495,6 +2620,8 @@
       ox: p.x,
       oy: p.y,
       moved: false,
+      rightOpenAtStart: rightOpen,
+      selectedIdAtStart: selectedId,
     };
     const el = cardEls.get(id);
     if (el) el.classList.add("dragging");
@@ -1508,8 +2635,9 @@
     const dy = ev.clientY - cardDrag.sy;
     if (!cardDrag.moved && Math.hypot(dx, dy) < DRAG_MOVE) return;
     cardDrag.moved = true;
-    const nx = cardDrag.ox + dx / zoom;
-    const ny = cardDrag.oy + dy / zoom;
+    const z = zoom > 0 && Number.isFinite(zoom) ? zoom : ZOOM_MIN;
+    const nx = cardDrag.ox + dx / z;
+    const ny = cardDrag.oy + dy / z;
     nodePos.set(cardDrag.id, { x: nx, y: ny });
     const el = cardEls.get(cardDrag.id);
     if (el) {
@@ -1523,6 +2651,22 @@
     if (cardDrag) {
       const el = cardEls.get(cardDrag.id);
       if (el) el.classList.remove("dragging");
+      // Remember drag across the click that browsers fire after pointerup.
+      // Clearing cardDrag here used to make the click handler always select.
+      suppressCardClick = !!cardDrag.moved;
+      lastCardGesture = {
+        id: cardDrag.id,
+        moved: !!cardDrag.moved,
+        suppressCardClick,
+        rightOpenAtStart: cardDrag.rightOpenAtStart,
+        selectedIdAtStart: cardDrag.selectedIdAtStart,
+        rightOpenAfterUp: rightOpen,
+        selectedIdAfterUp: selectedId,
+        // Filled in by the click handler if it runs:
+        clickSuppressed: null,
+        selected: null,
+        rightOpenAfter: null,
+      };
     }
     cardDrag = null;
     window.removeEventListener("pointermove", onCardPointerMove);
@@ -1561,6 +2705,15 @@
 
   els.canvas.addEventListener("pointerdown", onCanvasDown);
 
+  els.canvas.addEventListener(
+    "wheel",
+    (ev) => {
+      ev.preventDefault();
+      zoomMapAt(ev.clientX, ev.clientY, ev.deltaY);
+    },
+    { passive: false }
+  );
+
   els.zoomIn.addEventListener("click", () => {
     zoom = Math.min(ZOOM_MAX, +(zoom + ZOOM_STEP).toFixed(2));
     updateWorldTransform();
@@ -1580,51 +2733,269 @@
   });
 
   els.toggleLeft.addEventListener("click", () => {
-    leftOpen = !leftOpen;
-    els.leftAside.classList.toggle("collapsed", !leftOpen);
-    els.leftRail.hidden = !leftOpen;
+    setLeftOpen(!leftOpen);
+    // Sidebar size must never change the map transform (owner rule).
   });
 
   els.toggleRight.addEventListener("click", () => {
     setRightOpen(!rightOpen);
   });
 
+  // —— Rail resize ——
+  // Grow: consume canvas, then squeeze the opposite rail toward its minimum.
+  // Shrink: restore the opposite rail to its home width before canvas grows.
+  // Never call fitView — zoom/pan stay put. Homes update only on manual drag end.
+
   let leftResize = null;
-  els.leftRail.addEventListener("pointerdown", (ev) => {
-    if (!leftOpen) return;
-    ev.preventDefault();
-    leftResize = { sx: ev.clientX, ow: leftW };
-    window.addEventListener("pointermove", onLeftResizeMove);
-    window.addEventListener("pointerup", onLeftResizeUp);
-  });
-  function onLeftResizeMove(ev) {
-    if (!leftResize) return;
-    setLeftWidth(Math.max(LEFT_MIN, leftResize.ow + (ev.clientX - leftResize.sx)));
-  }
-  function onLeftResizeUp() {
-    leftResize = null;
-    window.removeEventListener("pointermove", onLeftResizeMove);
-    window.removeEventListener("pointerup", onLeftResizeUp);
+  let rightResize = null;
+
+  function detachLeftResizeListeners() {
+    els.leftRail.removeEventListener("pointermove", onLeftResizeMove);
+    els.leftRail.removeEventListener("pointerup", onLeftResizeUp);
+    els.leftRail.removeEventListener("pointercancel", onLeftResizeUp);
+    els.leftRail.removeEventListener("lostpointercapture", onLeftResizeUp);
+    window.removeEventListener("pointerup", onLeftResizeUp, true);
+    window.removeEventListener("pointercancel", onLeftResizeUp, true);
+    window.removeEventListener("blur", onLeftResizeUp);
   }
 
-  let rightResize = null;
-  els.rightRail.addEventListener("pointerdown", (ev) => {
-    if (!rightOpen) return;
-    ev.preventDefault();
-    rightResize = { sx: ev.clientX, ow: rightW };
-    window.addEventListener("pointermove", onRightResizeMove);
-    window.addEventListener("pointerup", onRightResizeUp);
+  function detachRightResizeListeners() {
+    els.rightRail.removeEventListener("pointermove", onRightResizeMove);
+    els.rightRail.removeEventListener("pointerup", onRightResizeUp);
+    els.rightRail.removeEventListener("pointercancel", onRightResizeUp);
+    els.rightRail.removeEventListener("lostpointercapture", onRightResizeUp);
+    window.removeEventListener("pointerup", onRightResizeUp, true);
+    window.removeEventListener("pointercancel", onRightResizeUp, true);
+    window.removeEventListener("blur", onRightResizeUp);
+  }
+
+  function onLeftResizeMove(ev) {
+    if (!leftResize) return;
+    layoutLeftAggressor(leftResize.ow + (ev.clientX - leftResize.sx));
+  }
+  function onLeftResizeUp(ev) {
+    if (!leftResize) return;
+    if (
+      ev &&
+      ev.type === "lostpointercapture" &&
+      typeof ev.buttons === "number" &&
+      (ev.buttons & 1) !== 0
+    ) {
+      return;
+    }
+    endRailDrag(els.leftRail, ev);
+    leftResize = null;
+    detachLeftResizeListeners();
+    // Manual left drag establishes a new home (invalidates prior squeeze memory).
+    leftHomeW = leftW;
+  }
+  els.leftRail.addEventListener("pointerdown", (ev) => {
+    if (!leftOpen || ev.button !== 0) return;
+    beginRailDrag(els.leftRail, ev);
+    leftResize = { sx: ev.clientX, ow: leftW };
+    els.leftRail.addEventListener("pointermove", onLeftResizeMove);
+    els.leftRail.addEventListener("pointerup", onLeftResizeUp);
+    els.leftRail.addEventListener("pointercancel", onLeftResizeUp);
+    els.leftRail.addEventListener("lostpointercapture", onLeftResizeUp);
+    window.addEventListener("pointerup", onLeftResizeUp, true);
+    window.addEventListener("pointercancel", onLeftResizeUp, true);
+    window.addEventListener("blur", onLeftResizeUp);
   });
+
   function onRightResizeMove(ev) {
     if (!rightResize) return;
-    setRightWidth(
-      Math.max(RIGHT_MIN, rightResize.ow - (ev.clientX - rightResize.sx))
+    layoutRightAggressor(rightResize.ow - (ev.clientX - rightResize.sx));
+  }
+  function onRightResizeUp(ev) {
+    if (!rightResize) return;
+    if (
+      ev &&
+      ev.type === "lostpointercapture" &&
+      typeof ev.buttons === "number" &&
+      (ev.buttons & 1) !== 0
+    ) {
+      return;
+    }
+    endRailDrag(els.rightRail, ev);
+    rightResize = null;
+    detachRightResizeListeners();
+    rightHomeW = rightW;
+  }
+  els.rightRail.addEventListener("pointerdown", (ev) => {
+    if (!rightOpen || ev.button !== 0) return;
+    beginRailDrag(els.rightRail, ev);
+    rightResize = { sx: ev.clientX, ow: rightW };
+    els.rightRail.addEventListener("pointermove", onRightResizeMove);
+    els.rightRail.addEventListener("pointerup", onRightResizeUp);
+    els.rightRail.addEventListener("pointercancel", onRightResizeUp);
+    els.rightRail.addEventListener("lostpointercapture", onRightResizeUp);
+    window.addEventListener("pointerup", onRightResizeUp, true);
+    window.addEventListener("pointercancel", onRightResizeUp, true);
+    window.addEventListener("blur", onRightResizeUp);
+  });
+
+  // Window size change may force rails to fit; never touch the map transform.
+  window.addEventListener("resize", () => {
+    enforceWorkspaceFit();
+  });
+
+  // —— Bottom dock resize (vertical; canvas top does not move → no panY) ——
+  let bottomResize = null;
+
+  function detachBottomResizeListeners() {
+    els.bottomRail.removeEventListener("pointermove", onBottomResizeMove);
+    els.bottomRail.removeEventListener("pointerup", onBottomResizeUp);
+    els.bottomRail.removeEventListener("pointercancel", onBottomResizeUp);
+    els.bottomRail.removeEventListener("lostpointercapture", onBottomResizeUp);
+    window.removeEventListener("pointerup", onBottomResizeUp, true);
+    window.removeEventListener("pointercancel", onBottomResizeUp, true);
+    window.removeEventListener("blur", onBottomResizeUp);
+  }
+
+  function onBottomResizeMove(ev) {
+    if (!bottomResize) return;
+    // Drag up (smaller clientY) grows the dock.
+    layoutBottomHeight(bottomResize.oh - (ev.clientY - bottomResize.sy));
+  }
+  function onBottomResizeUp(ev) {
+    if (!bottomResize) return;
+    if (
+      ev &&
+      ev.type === "lostpointercapture" &&
+      typeof ev.buttons === "number" &&
+      (ev.buttons & 1) !== 0
+    ) {
+      return;
+    }
+    endRailDrag(els.bottomRail, ev);
+    els.app.classList.remove("resizing-rail-ns");
+    bottomResize = null;
+    detachBottomResizeListeners();
+    bottomHomeH = bottomH;
+  }
+  if (els.bottomRail) {
+    els.bottomRail.addEventListener("pointerdown", (ev) => {
+      if (!bottomOpen || ev.button !== 0) return;
+      beginRailDrag(els.bottomRail, ev);
+      els.app.classList.add("resizing-rail-ns");
+      bottomResize = { sy: ev.clientY, oh: bottomH };
+      els.bottomRail.addEventListener("pointermove", onBottomResizeMove);
+      els.bottomRail.addEventListener("pointerup", onBottomResizeUp);
+      els.bottomRail.addEventListener("pointercancel", onBottomResizeUp);
+      els.bottomRail.addEventListener("lostpointercapture", onBottomResizeUp);
+      window.addEventListener("pointerup", onBottomResizeUp, true);
+      window.addEventListener("pointercancel", onBottomResizeUp, true);
+      window.addEventListener("blur", onBottomResizeUp);
+    });
+  }
+
+  if (els.bottomClose) {
+    els.bottomClose.addEventListener("click", () => setBottomOpen(false));
+  }
+  if (els.pageDock) {
+    els.pageDock.addEventListener("click", () => {
+      setBottomOpen(!bottomOpen);
+    });
+  }
+  if (els.tabFunctions) {
+    els.tabFunctions.addEventListener("click", () => {
+      if (!bottomOpen) setBottomOpen(true);
+      setBottomTab("fns");
+    });
+  }
+  if (els.tabDiagnostics) {
+    els.tabDiagnostics.addEventListener("click", () => {
+      if (!bottomOpen) setBottomOpen(true);
+      setBottomTab("diag");
+    });
+  }
+  if (els.fnsFit) {
+    els.fnsFit.addEventListener("click", () => fitFunctionDag());
+  }
+  if (els.fnsZoomIn) {
+    els.fnsZoomIn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      fnsZoom = Math.min(ZOOM_MAX, +(fnsZoom + ZOOM_STEP).toFixed(2));
+      updateFnsWorldTransform();
+    });
+  }
+  if (els.fnsZoomOut) {
+    els.fnsZoomOut.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      fnsZoom = Math.max(ZOOM_MIN, +(fnsZoom - ZOOM_STEP).toFixed(2));
+      updateFnsWorldTransform();
+    });
+  }
+  if (els.fnsZoomReset) {
+    els.fnsZoomReset.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      fitFunctionDag();
+    });
+  }
+  if (els.fnsViewport) {
+    els.fnsViewport.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      // HUD buttons handle their own clicks; candidate chips are nested buttons.
+      if (ev.target.closest(".zoom-hud")) return;
+      if (ev.target.closest("button")) return;
+      suppressFnsClick = false;
+      fnsPanDrag = {
+        sx: ev.clientX,
+        sy: ev.clientY,
+        ox: fnsPanX,
+        oy: fnsPanY,
+        moved: false,
+      };
+      try {
+        els.fnsViewport.setPointerCapture?.(ev.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    els.fnsViewport.addEventListener("pointermove", (ev) => {
+      if (!fnsPanDrag) return;
+      const dx = ev.clientX - fnsPanDrag.sx;
+      const dy = ev.clientY - fnsPanDrag.sy;
+      if (!fnsPanDrag.moved && Math.hypot(dx, dy) < DRAG_MOVE) return;
+      if (!fnsPanDrag.moved) {
+        fnsPanDrag.moved = true;
+        els.fnsViewport.classList.add("panning");
+      }
+      fnsPanX = fnsPanDrag.ox + dx;
+      fnsPanY = fnsPanDrag.oy + dy;
+      updateFnsWorldTransform();
+    });
+    const endFnsPan = () => {
+      if (fnsPanDrag) {
+        suppressFnsClick = !!fnsPanDrag.moved;
+      }
+      fnsPanDrag = null;
+      els.fnsViewport?.classList.remove("panning");
+    };
+    els.fnsViewport.addEventListener("pointerup", endFnsPan);
+    els.fnsViewport.addEventListener("pointercancel", endFnsPan);
+    els.fnsViewport.addEventListener(
+      "wheel",
+      (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        zoomFnsAt(ev.clientX, ev.clientY, ev.deltaY);
+      },
+      { passive: false }
     );
   }
-  function onRightResizeUp() {
-    rightResize = null;
-    window.removeEventListener("pointermove", onRightResizeMove);
-    window.removeEventListener("pointerup", onRightResizeUp);
+  if (els.diagGroupMode) {
+    els.diagGroupMode.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-group]");
+      if (!btn) return;
+      const mode = btn.dataset.group;
+      if (mode !== "reason" && mode !== "file") return;
+      diagGroupMode = mode;
+      for (const b of els.diagGroupMode.querySelectorAll("button[data-group]")) {
+        b.classList.toggle("on", b.dataset.group === mode);
+      }
+      renderDiagnostics();
+    });
   }
 
   els.layerSearch.addEventListener("input", () => {
@@ -1707,6 +3078,7 @@
   });
 
   async function boot() {
+    bootStatus = { phase: "start" };
     try {
       const q = new URLSearchParams(location.search);
       if (q.get("theme") === "dark") {
@@ -1722,8 +3094,13 @@
       dark = false;
     }
     applyTheme();
+    // Publish defaults without treating the initial occupied width as a delta.
+    lastLeftOccupied = null;
+    lastBottomOccupied = null;
     setLeftWidth(LEFT_DEFAULT);
     setRightWidth(RIGHT_DEFAULT);
+    publishBottomVars();
+    setBottomOpen(false);
 
     try {
       window
@@ -1735,24 +3112,392 @@
         });
     } catch (_) {}
 
-    // Expose selection for verification / later slices (Diagnostics, DAG).
+    // Expose selection / layout for verification / later slices.
     window.HorizonViewer = {
       selectFile: (id, opts) => selectFile(id, opts || {}),
       selectFunction: (id, opts) => selectFunction(id, opts || {}),
       goBack,
       getSelection: () => snapshotSelection(),
+      loadMap: (map, label) => loadMap(map, label || "api"),
+      getUiState: () => ({
+        bootStatus,
+        importHidden: !!els.importScreen?.hidden,
+        mainHidden: !!els.mainView?.hidden,
+        fileCount: fileNodes.length,
+        edgeCount: fileEdges.length,
+        hasMap: !!currentMap,
+        emptyHidden: !!els.canvasEmpty?.hidden,
+        leftOccupied: leftOccupiedPx(),
+        rightOccupied: rightOccupiedPx(),
+      }),
+      getRailWidths: () => ({
+        // Stored panel widths (authoritative when open; retained while collapsed).
+        leftWidth: leftW,
+        rightWidth: rightW,
+        // Back-compat aliases — NOT occupied space; use *Occupied for that.
+        left: leftW,
+        right: rightW,
+        // Space currently taken in the workspace (0 when collapsed).
+        leftOccupied: leftOccupiedPx(),
+        rightOccupied: rightOccupiedPx(),
+        // Squeeze-restore memory (passive conquest target).
+        leftHome: leftHomeW,
+        rightHome: rightHomeW,
+        leftMin: LEFT_MIN,
+        rightMin: RIGHT_MIN,
+        leftMax: maxLeftWidth(),
+        rightMax: maxRightWidth(),
+        canvas: canvasWidth(),
+        leftOpen,
+        rightOpen,
+        workspace: workspaceWidth(),
+      }),
+      getTransform: () => ({
+        zoom,
+        panX,
+        panY,
+        world: els.world?.style?.transform || "",
+      }),
+      /** Dock Functions canvas transform — independent of getTransform(). */
+      getBottomTransform,
+      setBottomZoom,
+      screenXOfWorld,
+      /** Dock equivalents of screenXOfWorld — rail-drift / pan compensation probes. */
+      screenXOfFnsWorld,
+      screenYOfFnsWorld,
+      getFnsNodeScreenRect,
+      getFnsPaneMetrics,
+      /** Pure JS layout — the runtime that must stay correct (Rust is the oracle). */
+      computeRightAggressorLayout,
+      computeLeftAggressorLayout,
+      setRightWidth,
+      setLeftWidth,
+      setBottomOpen,
+      setBottomHeight,
+      setBottomTab,
+      getBottom: () => ({
+        open: bottomOpen,
+        height: bottomH,
+        home: bottomHomeH,
+        min: BOTTOM_MIN,
+        tab: bottomTab,
+        groupMode: diagGroupMode,
+        entryCount: diagEntries.length,
+        reconcile: diagReconcile,
+      }),
+      /**
+       * Bottom-rail geometry for hit-test verification after rebuild.
+       * Expect width ≈ center-col width, height ≈ 11, top ≈ panel top.
+       */
+      getBottomRailHit: () => {
+        const rail = els.bottomRail;
+        const panel = els.bottomPanel;
+        const col = els.centerCol;
+        if (!rail || !panel) return null;
+        const r = rail.getBoundingClientRect();
+        const p = panel.getBoundingClientRect();
+        const c = col ? col.getBoundingClientRect() : null;
+        return {
+          hidden: !!rail.hidden,
+          width: r.width,
+          height: r.height,
+          top: r.top,
+          left: r.left,
+          bottom: r.bottom,
+          panelTop: p.top,
+          panelLeft: p.left,
+          panelWidth: p.width,
+          centerWidth: c ? c.width : null,
+          // Inset strip: rail top aligns with panel top (±2px).
+          alignedWithDockTop: Math.abs(r.top - p.top) <= 2,
+          stretchesAcross: c ? Math.abs(r.width - c.width) <= 2 : false,
+          heightOk: Math.abs(r.height - 11) <= 1,
+          ok:
+            !rail.hidden &&
+            Math.abs(r.height - 11) <= 1 &&
+            Math.abs(r.top - p.top) <= 2 &&
+            (c ? Math.abs(r.width - c.width) <= 2 : r.width > 100),
+        };
+      },
+      /** Function DAG snapshot for the current selection (Functions tab). */
+      getFunctionDag: () => {
+        if (!fnsGraph) return null;
+        return {
+          scope: fnsGraph.scope,
+          nodeCount: fnsGraph.nodes.length,
+          edgeCount: fnsGraph.edges.length,
+          nodes: fnsGraph.nodes.map((n) => ({
+            id: n.id,
+            kind: n.kind,
+            role: n.role,
+            name: n.name,
+            fnId: n.fnId || null,
+          })),
+          edges: fnsGraph.edges.map((e) => ({
+            id: e.id,
+            from: e.from,
+            to: e.to,
+            kind: e.kind,
+            callPath: e.callPath,
+            line: e.line,
+          })),
+          selectedFnId,
+          selectedFileId: selectedId,
+          tab: bottomTab,
+        };
+      },
+      renderFunctionDag: (opts) => renderFunctionDag(opts || {}),
+      fitFunctionDag,
+      openDiagnosticEntry,
+      renderDiagnostics,
+      /**
+       * Deliberate Inspector-open policy (owner rule).
+       * Selection opens; pan / card-drag / rail-resize / zoom must not.
+       */
+      inspectorOpenPolicy: () => ({
+        selectionOpens: true,
+        viewManipulationOpens: false,
+        cardDragThresholdPx: DRAG_MOVE,
+        openHelper: "openInspectorForSelection",
+      }),
+      /** Outcome of the last card press/release (+ click if any). For hand-drag checks. */
+      getLastCardGesture: () => {
+        const g = lastCardGesture;
+        if (!g) return null;
+        const selNow = selectedId;
+        return {
+          ...g,
+          selectedIdNow: selNow,
+          selectionChanged: g.selectedIdAtStart !== selNow,
+          inspectorOpened:
+            g.rightOpenAtStart === false && rightOpen === true,
+          rightOpenNow: rightOpen,
+        };
+      },
+      /**
+       * Cheap smoke: invoke exported helpers so a missing binding throws here
+       * instead of mid-gesture in production. Call after boot.
+       */
+      smokeCheck: () => {
+        const names = [
+          "getRailWidths",
+          "getTransform",
+          "getBottomTransform",
+          "setBottomZoom",
+          "screenXOfFnsWorld",
+          "screenYOfFnsWorld",
+          "getFnsNodeScreenRect",
+          "getFnsPaneMetrics",
+          "getBottom",
+          "getBottomRailHit",
+          "getFunctionDag",
+          "getSelection",
+          "getUiState",
+          "inspectorOpenPolicy",
+          "getLastCardGesture",
+          "runLayoutAcceptance",
+          "computeRightAggressorLayout",
+          "computeLeftAggressorLayout",
+        ];
+        const checks = [];
+        for (const name of names) {
+          try {
+            const fn = window.HorizonViewer[name];
+            if (typeof fn !== "function") {
+              checks.push({ name, ok: false, error: "not a function" });
+              continue;
+            }
+            if (name === "computeRightAggressorLayout") {
+              fn(1600, 316, true, 236);
+            } else if (name === "computeLeftAggressorLayout") {
+              fn(1600, 236, true, 316);
+            } else if (name === "setBottomZoom") {
+              const before = getBottomTransform();
+              const after = fn(before.zoom);
+              if (
+                !after ||
+                typeof after.zoom !== "number" ||
+                !Number.isFinite(after.zoom)
+              ) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "setBottomZoom did not return a finite transform",
+                });
+                continue;
+              }
+            } else if (name === "screenXOfFnsWorld") {
+              const x = fn(100, 10);
+              if (typeof x !== "number" || !Number.isFinite(x)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "screenXOfFnsWorld did not return a finite number",
+                });
+                continue;
+              }
+            } else if (name === "screenYOfFnsWorld") {
+              const y = fn(100, 10);
+              if (typeof y !== "number" || !Number.isFinite(y)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "screenYOfFnsWorld did not return a finite number",
+                });
+                continue;
+              }
+            } else if (name === "getFnsNodeScreenRect") {
+              // Honest null when no DAG — must not throw.
+              fn("__missing__");
+            } else if (name === "getFnsPaneMetrics") {
+              const m = fn();
+              if (
+                !m ||
+                typeof m.bannerHeight !== "number" ||
+                typeof m.viewportHeight !== "number" ||
+                typeof m.viewportTop !== "number" ||
+                m.viewportMinPx !== FNS_VIEWPORT_MIN
+              ) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "getFnsPaneMetrics returned incomplete metrics",
+                });
+                continue;
+              }
+              // While Functions pane is visible the canvas must not collapse.
+              if (m.fnsVisible && !(m.viewportHeight > 0 && m.viewportAlive)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: `viewport collapsed while Functions open (h=${m.viewportHeight})`,
+                });
+                continue;
+              }
+            } else {
+              fn();
+            }
+            checks.push({ name, ok: true });
+          } catch (err) {
+            checks.push({
+              name,
+              ok: false,
+              error: String(err && err.message ? err.message : err),
+            });
+          }
+        }
+        // Dead symbols from a superseded policy must stay gone.
+        // Name is split so asset needles can ban the contiguous identifier.
+        const deadName = ["diag", "Click", "Opens", "Inspector"].join("");
+        const leaked = typeof window.HorizonViewer[deadName] === "function";
+        checks.push({
+          name: "noDeadDiagAccessor",
+          ok: !leaked,
+          error: leaked ? "dead accessor still exported" : undefined,
+        });
+        return { ok: checks.every((c) => c.ok), checks };
+      },
+      /** Live drag (does not rewrite home — for continuous aggressor simulation). */
+      applyRightWidth: (w) => layoutRightAggressor(w),
+      applyLeftWidth: (w) => layoutLeftAggressor(w),
+      commitLeftHome: () => {
+        leftHomeW = leftW;
+      },
+      commitRightHome: () => {
+        rightHomeW = rightW;
+      },
+      /**
+       * Run the owner worked example against the live JS pure functions.
+       * Returns { ok, steps } — evaluate this in the embedded browser.
+       */
+      runLayoutAcceptance: () => {
+        const W = 1600;
+        const Lmin = LEFT_MIN;
+        const steps = [];
+        let leftHome = 236;
+        let left = 236;
+        let right = 316;
+        const applyR = (desired) => {
+          const next = computeRightAggressorLayout(W, desired, true, leftHome);
+          left = next.left;
+          right = next.right;
+          return {
+            left,
+            right,
+            canvas: Math.max(0, W - left - right),
+            leftHome,
+          };
+        };
+        steps.push({ name: "start", ...applyR(316) });
+        steps.push({ name: "canvasZero", ...applyR(1364) });
+        steps.push({ name: "leftMin", ...applyR(1420) });
+        steps.push({ name: "hardStop", ...applyR(2000) });
+        steps.push({ name: "restoreHome", ...applyR(1364) });
+        steps.push({ name: "canvasGrows", ...applyR(1363) });
+        const expect = [
+          [236, 316, 1048, 236],
+          [236, 1364, 0, 236],
+          [Lmin, 1420, 0, 236],
+          [Lmin, 1420, 0, 236],
+          [236, 1364, 0, 236],
+          [236, 1363, 1, 236],
+        ];
+        const ok = steps.every(
+          (s, i) =>
+            s.left === expect[i][0] &&
+            s.right === expect[i][1] &&
+            s.canvas === expect[i][2] &&
+            s.leftHome === expect[i][3]
+        );
+        return { ok, steps, expect };
+      },
+      fitView,
     };
+
+    // Catch missing bindings at boot — ReferenceErrors in accessors used to
+    // ship undetected because Rust/http needles never evaluate JS.
+    try {
+      const smoke = window.HorizonViewer.smokeCheck();
+      if (!smoke.ok) {
+        console.error("[HorizonViewer.smokeCheck] failed", smoke);
+      }
+    } catch (err) {
+      console.error("[HorizonViewer.smokeCheck] threw", err);
+    }
 
     try {
       const res = await fetch("/api/map");
+      bootStatus = { phase: "fetched", status: res.status, ok: res.ok };
       if (res.ok) {
         const map = await res.json();
-        loadMap(map, "startup");
-        return;
+        try {
+          loadMap(map, "startup");
+          bootStatus = {
+            phase: "loaded",
+            status: res.status,
+            files: fileNodes.length,
+            importHidden: !!els.importScreen?.hidden,
+            mainHidden: !!els.mainView?.hidden,
+          };
+          return;
+        } catch (err) {
+          bootStatus = {
+            phase: "loadMapError",
+            error: String(err && err.message ? err.message : err),
+          };
+          showImport(`Failed to load map: ${bootStatus.error}`);
+          return;
+        }
       }
-    } catch (_) {
-      /* fall through */
+    } catch (err) {
+      bootStatus = {
+        phase: "fetchError",
+        error: String(err && err.message ? err.message : err),
+      };
+      showImport(`Failed to fetch /api/map: ${bootStatus.error}`);
+      return;
     }
+    bootStatus = { phase: "noMap" };
     showImport(null);
   }
 

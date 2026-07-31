@@ -1,13 +1,12 @@
 /**
  * Diagnostics collection & grouping for the Horizon function map.
  *
- * Extracted from the Phase F tree viewer so Slice 1+ can rebuild the
- * diagnostics worklist without rewriting the walk. Nothing in Slice 1
- * calls this yet — attach from the future Diagnostics view / Pages entry.
+ * Reused by the Slice 3 bottom Diagnostics tab. Walks Conflict and Unresolved
+ * CallSites only — deliberate drops (external / constructor / associated) are
+ * never listed (see MapSummary counters elsewhere).
  *
- * Contract: walks every Conflict and Unresolved CallSite. Deliberate drops
- * (external / constructor / associated) never appear in the tree and are
- * not listed here.
+ * Contract matches `horizon_map::CallTarget` adjacent tagging (`kind` + `data`)
+ * and `CallSite` fields including `byte_start` / `byte_end` / `from_macro`.
  *
  * Global: window.HorizonDiagnostics
  */
@@ -40,6 +39,8 @@
         kind,
         callPath: site.call_path || "",
         line: site.line ?? 0,
+        byteStart: site.byte_start ?? 0,
+        byteEnd: site.byte_end ?? 0,
         fromMacro: !!site.from_macro,
         reason: data.reason || "",
         candidates: kind === "conflict" ? data.candidates || [] : [],

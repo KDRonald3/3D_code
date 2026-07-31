@@ -249,8 +249,68 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.js", "selectFunction"),
         ("/static/viewer.js", "fetchSourceInto"),
         ("/static/viewer.js", "renderInspector"),
+        ("/static/viewer.js", "computeRightAggressorLayout"),
+        ("/static/viewer.js", "computeLeftAggressorLayout"),
+        ("/static/viewer.js", "leftHomeW"),
+        ("/static/viewer.js", "setPointerCapture"),
+        ("/static/viewer.js", "runLayoutAcceptance"),
+        ("/static/viewer.js", "lastLeftOccupied"),
+        ("/static/viewer.js", "panX -="),
+        ("/static/viewer.js", "getUiState"),
+        ("/", "import-screen"),
+        ("/", "id=\"bottom-panel\""),
+        ("/", "id=\"tab-diagnostics\""),
+        ("/static/viewer.css", "left-w, 236px) - 11px"),
+        ("/static/viewer.css", ".bottom-panel"),
+        ("/static/viewer.css", ".diag-entry"),
+        ("/static/viewer.js", "renderDiagnostics"),
+        ("/static/viewer.js", "openDiagnosticEntry"),
+        ("/static/viewer.js", "openInspectorForSelection"),
+        ("/static/viewer.js", "suppressCardClick"),
+        ("/static/viewer.js", "getLastCardGesture"),
+        ("/static/viewer.js", "inspectorOpenPolicy"),
+        ("/static/viewer.js", "smokeCheck"),
+        ("/static/viewer.js", "setBottomOpen"),
+        ("/static/viewer.js", "layoutBottomHeight"),
+        ("/static/viewer.js", "leftWidth"),
+        ("/static/viewer.js", "renderFunctionDag"),
+        ("/static/viewer.js", "getFunctionDag"),
+        ("/static/viewer.js", "getBottomRailHit"),
+        ("/static/viewer.js", "getBottomTransform"),
+        ("/static/viewer.js", "setBottomZoom"),
+        ("/static/viewer.js", "screenXOfFnsWorld"),
+        ("/static/viewer.js", "screenYOfFnsWorld"),
+        ("/static/viewer.js", "getFnsNodeScreenRect"),
+        ("/static/viewer.js", "getFnsPaneMetrics"),
+        ("/static/viewer.js", "zoomFnsAt"),
+        ("/static/viewer.js", "zoomMapAt"),
+        // Dock shares left-occupied pan compensation with the map canvas.
+        ("/static/viewer.js", "fnsPanX -= delta"),
+        ("/static/viewer.css", "top: auto; /* release vertical-rail"),
+        ("/static/viewer.css", "width: auto; /* release vertical-rail"),
+        ("/static/viewer.css", ".fns-node"),
+        ("/static/viewer.css", ".bottom-rail"),
+        ("/static/viewer.css", ".fns-viewport > .zoom-hud"),
+        // Banner wrap must not steal viewport height when the dock narrows.
+        ("/static/viewer.css", "Banner must not wrap"),
+        ("/static/viewer.css", "Never collapse to 0"),
+        ("/static/viewer.css", "text-overflow: ellipsis"),
+        ("/static/viewer.js", "FNS_VIEWPORT_MIN"),
+        ("/", "id=\"tab-functions\""),
+        ("/", "id=\"fns-viewport\""),
+        ("/", "id=\"fns-zoom-hud\""),
+        ("/", "id=\"fns-zoom-reset\""),
+        ("/", "/static/function_dag.js"),
         ("/static/diagnostics.js", "collectDiagnostics"),
         ("/static/diagnostics.js", "groupByReason"),
+        ("/static/diagnostics.js", "groupByFile"),
+        ("/static/diagnostics.js", "byteStart"),
+        ("/static/function_dag.js", "HorizonFunctionDag"),
+        ("/static/function_dag.js", "analyser could not resolve"),
+        ("/static/function_dag.js", "role: \"seed\""),
+        // Cycle-safe layering (mutual/recursive calls must not blow the queue).
+        ("/static/function_dag.js", "backEdgeKey"),
+        ("/static/viewer.css", ".resize-rail.bottom-rail"),
     ] {
         let response = router
             .clone()
@@ -267,6 +327,34 @@ async fn serves_index_and_static_assets() {
         let body = body_string(response).await;
         assert!(body.contains(needle), "{uri} missing {needle}");
     }
+
+    // Dead policy symbols must not ship — a leftover accessor caused a
+    // ReferenceError in the live viewer when DIAG_CLICK_OPENS_INSPECTOR
+    // was removed but diagClickOpensInspector still read it.
+    let viewer = router
+        .oneshot(
+            Request::builder()
+                .uri("/static/viewer.js")
+                .header("Host", "127.0.0.1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let viewer_js = body_string(viewer).await;
+    assert!(
+        !viewer_js.contains("DIAG_CLICK_OPENS_INSPECTOR"),
+        "viewer.js must not reference DIAG_CLICK_OPENS_INSPECTOR"
+    );
+    // Contiguous export/call forms only — smokeCheck names the dead API via join.
+    assert!(
+        !viewer_js.contains("diagClickOpensInspector:"),
+        "viewer.js must not export diagClickOpensInspector"
+    );
+    assert!(
+        !viewer_js.contains("diagClickOpensInspector("),
+        "viewer.js must not call diagClickOpensInspector"
+    );
 }
 
 #[tokio::test]
