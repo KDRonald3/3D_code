@@ -28,8 +28,8 @@ pub mod pipeline;
 pub mod resolve;
 
 pub use horizon_map::{
-    map_from_slice, map_to_string, write_map, write_map_compact, write_map_compact_to_file,
-    write_map_to_file,
+    content_hash, map_from_slice, map_to_string, write_map, write_map_compact,
+    write_map_compact_to_file, write_map_to_file,
 };
 pub use horizon_map::{
     CallSite, CallTarget, Conflict, Crate, Dependency, DependencyKind, DocComment, DocCommentKind,
@@ -64,6 +64,7 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
             built_files.push(File {
                 path: path.clone(),
                 module_path: module_path.clone(),
+                content_hash: facts.content_hash.clone(),
                 functions,
                 call_sites: file_calls,
                 doc_comments: facts.doc_comments.clone(),

@@ -77,19 +77,59 @@ fn doc_comments_fixture_exact_text() {
         "Attribute-form docs on zeta."
     );
 
+    // Function ranges: full `ast::Fn` node (docs/attrs included), not `fn` token.
+    let source = std::fs::read_to_string(&file.path).expect("read fixture source");
+    let gamma = by_name("gamma");
+    let gamma_slice = &source[gamma.byte_start as usize..gamma.byte_end as usize];
+    assert!(
+        gamma_slice.starts_with("/// Docs separated from the item by an attribute."),
+        "gamma range must begin at its outer doc; got {:?}",
+        gamma_slice.chars().take(60).collect::<String>()
+    );
+    assert!(gamma_slice.contains("#[inline]"));
+    assert!(gamma_slice.ends_with('}'));
+
+    // Ordinary `//` is a child of the Fn syntax node in ra_ap_syntax, so the
+    // settled full-node range includes it (unlike `doc_comments`, which skips
+    // non-doc comments). Still ends at the closing brace.
+    let epsilon = by_name("epsilon");
+    let epsilon_slice = &source[epsilon.byte_start as usize..epsilon.byte_end as usize];
+    assert!(
+        epsilon_slice.starts_with("// Ordinary line comment"),
+        "ordinary leading // stays inside the Fn node range; got {:?}",
+        epsilon_slice.chars().take(40).collect::<String>()
+    );
+    assert!(epsilon_slice.contains("pub fn epsilon"));
+    assert!(epsilon_slice.ends_with('}'));
+
+    // File.content_hash: stable for unchanged bytes, matches raw disk read.
+    let disk_bytes = std::fs::read(&file.path).expect("raw bytes");
+    let expected_hash = horizon_engine::content_hash(&disk_bytes);
+    assert_eq!(file.content_hash, expected_hash);
+    assert_eq!(file.content_hash.len(), 64);
+    assert_ne!(
+        file.content_hash,
+        horizon_engine::content_hash(b""),
+        "non-empty file must not hash as empty"
+    );
+
     // JSON excerpt: a documented function.
     let alpha = by_name("alpha");
     let excerpt = serde_json::json!({
         "id": alpha.id.as_str(),
         "name": alpha.name,
+        "byte_start": alpha.byte_start,
+        "byte_end": alpha.byte_end,
         "doc_comments": alpha.doc_comments,
     });
     let excerpt_s = serde_json::to_string_pretty(&excerpt).unwrap();
     assert!(excerpt_s.contains("Single-line outer docs on alpha."));
     assert!(excerpt_s.contains("\"kind\": \"outer\""));
+    assert!(excerpt_s.contains("\"byte_start\""));
 
     let json = map_to_string(&map).expect("serialize");
     assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+    assert!(json.contains("\"content_hash\""));
 }
 
 #[test]

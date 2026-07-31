@@ -45,6 +45,10 @@ use std::collections::{HashMap, HashSet};
 /// Facts extracted from one source file, before cross-file resolution.
 #[derive(Debug, Clone, Default)]
 pub struct FileFacts {
+    /// Hex-encoded SHA-256 of the raw file bytes (see [`horizon_map::content_hash`]).
+    /// Populated by the pipeline when the file is read from disk; left empty
+    /// when facts are built from an in-memory source string alone.
+    pub content_hash: String,
     pub functions: Vec<Function>,
     /// Visibility of each function in [`functions`] (same order), for glob
     /// candidate filtering. Not part of the emitted map JSON.
@@ -264,10 +268,17 @@ pub fn extract_facts(
             .unwrap_or_else(|| lines.line_of(u32::from(func.syntax().text_range().start())));
         let visibility = visibility_of(&func);
         let doc_comments = extract_outer_docs(func.syntax());
+        // Full `ast::Fn` node — attributes, outer docs, signature, body.
+        // Not `fn_token()` (drops leading attrs) and not the body alone.
+        let range = func.syntax().text_range();
+        let byte_start = u32::from(range.start());
+        let byte_end = u32::from(range.end());
         raw_defs.push(RawDef {
             name,
             module_path,
             line,
+            byte_start,
+            byte_end,
             visibility,
             doc_comments,
             syntax: func.syntax().clone(),
@@ -283,6 +294,8 @@ pub fn extract_facts(
             name: def.name.clone(),
             module_path: def.module_path.clone(),
             line: def.line,
+            byte_start: def.byte_start,
+            byte_end: def.byte_end,
             call_sites: Vec::new(),
             doc_comments: def.doc_comments.clone(),
         });
@@ -334,6 +347,7 @@ pub fn extract_facts(
     call_sites.sort_by_key(|c| (c.byte_start, c.byte_end));
 
     Ok(FileFacts {
+        content_hash: String::new(),
         functions,
         function_visibility,
         types,
@@ -1095,6 +1109,8 @@ struct RawDef {
     name: String,
     module_path: String,
     line: u32,
+    byte_start: u32,
+    byte_end: u32,
     visibility: ItemVisibility,
     doc_comments: Vec<DocComment>,
     syntax: SyntaxNode,
@@ -1264,6 +1280,66 @@ fn open() {}
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn function_byte_range_spans_full_fn_node_including_attrs_and_docs() {
+        // Slice assertions pin the settled extent: full `ast::Fn` syntax node,
+        // not `fn_token()` (which would start at `fn` / `pub`) and not body-only.
+        let source = "\
+/// Docs above attribute.
+#[inline]
+pub fn gamma() {}
+
+fn plain() {}
+
+#[cfg(unix)]
+fn open() {}
+
+#[cfg(windows)]
+fn open() {}
+";
+        let tree = parse_source(source, &"2021".into()).unwrap();
+        let facts = extract_facts(&tree, source, "demo", "crate", "2021").unwrap();
+        let by_name = |name: &str| {
+            facts
+                .functions
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+
+        let gamma = by_name("gamma");
+        let gamma_slice = &source[gamma.byte_start as usize..gamma.byte_end as usize];
+        assert!(
+            gamma_slice.starts_with("/// Docs above attribute."),
+            "range must begin at the outer doc, not at fn/pub; got {:?}",
+            gamma_slice.chars().take(40).collect::<String>()
+        );
+        assert!(
+            gamma_slice.contains("#[inline]"),
+            "range must include the intervening attribute"
+        );
+        assert!(
+            gamma_slice.ends_with('}'),
+            "range must end at the closing brace"
+        );
+
+        let plain = by_name("plain");
+        let plain_slice = &source[plain.byte_start as usize..plain.byte_end as usize];
+        assert_eq!(plain_slice, "fn plain() {}");
+
+        let opens: Vec<_> = facts.functions.iter().filter(|f| f.name == "open").collect();
+        assert_eq!(opens.len(), 2);
+        for open in &opens {
+            let slice = &source[open.byte_start as usize..open.byte_end as usize];
+            assert!(
+                slice.starts_with("#[cfg("),
+                "cfg-duplicate range must begin at the attribute; got {:?}",
+                slice.chars().take(40).collect::<String>()
+            );
+            assert!(slice.ends_with('}'));
+        }
     }
 
     #[test]

@@ -8,3 +8,6 @@
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# Generated maps and screenshots used while developing the viewer
+/crates/horizon-server/testdata/

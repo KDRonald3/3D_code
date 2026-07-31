@@ -86,11 +86,14 @@ mod tests {
                         File {
                             path: PathBuf::from("/tmp/example/src/shapes.rs"),
                             module_path: "crate::shapes".into(),
+                            content_hash: crate::content_hash(b"pub fn get() {}\n"),
                             functions: vec![Function {
                                 id: get_shapes.clone(),
                                 name: "get".into(),
                                 module_path: "crate::shapes::get".into(),
                                 line: 12,
+                                byte_start: 0,
+                                byte_end: 16,
                                 call_sites: vec![],
                                 doc_comments: vec![DocComment {
                                     kind: DocCommentKind::Outer,
@@ -103,11 +106,14 @@ mod tests {
                         File {
                             path: PathBuf::from("/tmp/example/src/text.rs"),
                             module_path: "crate::text".into(),
+                            content_hash: crate::content_hash(b"pub fn get() {}\n"),
                             functions: vec![Function {
                                 id: get_text.clone(),
                                 name: "get".into(),
                                 module_path: "crate::text::get".into(),
                                 line: 8,
+                                byte_start: 0,
+                                byte_end: 16,
                                 call_sites: vec![],
                                 doc_comments: vec![],
                             }],
@@ -119,11 +125,14 @@ mod tests {
                 files: vec![File {
                     path: PathBuf::from("/tmp/example/src/lib.rs"),
                     module_path: "crate".into(),
+                    content_hash: crate::content_hash(b"fn run() {}\n"),
                     functions: vec![Function {
                         id: main_id,
                         name: "run".into(),
                         module_path: "crate::run".into(),
                         line: 3,
+                        byte_start: 0,
+                        byte_end: 12,
                         call_sites: vec![
                             CallSite {
                                 call_path: "shapes::get".into(),
@@ -180,6 +189,8 @@ mod tests {
         assert!(json.contains("no indexed definition matches `mystery`"));
         assert!(json.contains("\"byte_start\": 64"));
         assert!(json.contains("\"call_sites\""));
+        assert!(json.contains("\"content_hash\""));
+        assert!(json.contains("\"byte_end\": 12"));
     }
 
     #[test]

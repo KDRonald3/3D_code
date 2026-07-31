@@ -1,7 +1,7 @@
 # Horizon JSON output
 
 **Status:** contract for consumers (CLI and library emit the same shape)
-**Date:** 26 July 2026
+**Date:** 30 July 2026
 
 This document describes the JSON written by `horizon` (and by
 `horizon_map::write_map` / `horizon_map::map_to_string`, also re-exported from
@@ -116,6 +116,7 @@ absent.
 |---|---|---|---|
 | `path` | string (absolute path) | no | Source file on disk |
 | `module_path` | string | no | Module path of this file (`"crate"`, `"crate::shapes"`, …) |
+| `content_hash` | string | no | Lowercase hex-encoded SHA-256 (64 hex digits, no algorithm prefix) of the **raw file bytes** as read from disk at extract time — no newline normalisation. On Windows a CRLF edit changes the digest. A consumer that slices source by `Function.byte_*` must re-hash the path and refuse to slice on mismatch. Algorithm is SHA-256 by this contract; switching later would be a wire-format bump |
 | `functions` | array of `Function` | no | Free functions defined in this file |
 | `call_sites` | array of `CallSite` | no | Calls **outside** any free function (e.g. `const` / `static` init). Empty when every path-form call sits inside a function. Never holds calls from `impl` / `trait` items |
 | `doc_comments` | array of `DocComment` | no | Inner module docs (`//!`, `/*! … */`, `#![doc = "…"]`) |
@@ -130,8 +131,17 @@ absent.
 | `name` | string | no | Function name as written |
 | `module_path` | string | no | Full path including name, with a leading `crate` segment (e.g. `"crate::shapes::get"`). Distinct from `id`, which substitutes the crate key for `crate` |
 | `line` | number (u32) | no | 1-based line of the `fn` keyword |
+| `byte_start` | number (u32) | no | UTF-8 byte offset of the start of this free-function item in the file |
+| `byte_end` | number (u32) | no | UTF-8 byte offset one past the end of this free-function item |
 | `call_sites` | array of `CallSite` | no | Outgoing call edges in **source order** |
 | `doc_comments` | array of `DocComment` | no | Outer docs (`///`, `/** … */`, `#[doc = "…"]`) |
+
+The `byte_start` / `byte_end` range is the full `ast::Fn` syntax node: outer
+attributes (`#[cfg]`, `#[inline]`, …), outer doc comments, signature, and body.
+It deliberately does **not** start at the `fn` keyword alone (that would hide
+the attributes an auditor needs when comparing `#[cfg]`-duplicated definitions).
+Doc comment text therefore appears both inside this range and separately in
+`doc_comments`; that duplication is accepted.
 
 Methods and `impl` items never appear as `Function` nodes.
 
@@ -300,9 +310,11 @@ Repository
     ├── folders[] / files[]
     │     └── folders[] / files[]   (nested)
     └── File
+        ├── content_hash            (SHA-256 hex of raw bytes)
         ├── call_sites[]            (module-level)
         ├── doc_comments[]          (inner)
         └── functions[]
+            ├── byte_start / byte_end  (full ast::Fn node)
             ├── call_sites[] → CallTarget
             └── doc_comments[]      (outer)
 ```
@@ -347,12 +359,15 @@ shapes and the conflict payload are what matter for the contract.
         {
           "path": "C:\\Users\\kouat\\code\\Horizon\\tests\\fixtures\\glob-ambiguity\\src\\app.rs",
           "module_path": "crate::app",
+          "content_hash": "ff887c08cd8e3b9e6774779930c60c2dd9c84a14e129a39676c0fb4c9f7ac9fd",
           "functions": [
             {
               "id": "glob_ambiguity::app::run",
               "name": "run",
               "module_path": "crate::app::run",
               "line": 6,
+              "byte_start": 127,
+              "byte_end": 163,
               "call_sites": [
                 {
                   "call_path": "get",
@@ -385,6 +400,7 @@ shapes and the conflict payload are what matter for the contract.
         {
           "path": "C:\\Users\\kouat\\code\\Horizon\\tests\\fixtures\\glob-ambiguity\\src\\lib.rs",
           "module_path": "crate",
+          "content_hash": "9409e87d6569589767475078c65263faf4902488614e1e78edfecea9ed71e006",
           "functions": [],
           "call_sites": [],
           "doc_comments": [
@@ -397,12 +413,15 @@ shapes and the conflict payload are what matter for the contract.
         {
           "path": "C:\\Users\\kouat\\code\\Horizon\\tests\\fixtures\\glob-ambiguity\\src\\shapes.rs",
           "module_path": "crate::shapes",
+          "content_hash": "67f6fe77d04c5f66f3302efe4b3481fc151cb5dd813f9c2f2f0199aecb97ba24",
           "functions": [
             {
               "id": "glob_ambiguity::shapes::get",
               "name": "get",
               "module_path": "crate::shapes::get",
               "line": 3,
+              "byte_start": 52,
+              "byte_end": 95,
               "call_sites": [],
               "doc_comments": []
             }
@@ -418,12 +437,15 @@ shapes and the conflict payload are what matter for the contract.
         {
           "path": "C:\\Users\\kouat\\code\\Horizon\\tests\\fixtures\\glob-ambiguity\\src\\text.rs",
           "module_path": "crate::text",
+          "content_hash": "78d1f9374d2a3bc5e8b6939e16cfc572cddff393124a5ef3964847adb80cd7cd",
           "functions": [
             {
               "id": "glob_ambiguity::text::get",
               "name": "get",
               "module_path": "crate::text::get",
               "line": 3,
+              "byte_start": 50,
+              "byte_end": 93,
               "call_sites": [],
               "doc_comments": []
             }

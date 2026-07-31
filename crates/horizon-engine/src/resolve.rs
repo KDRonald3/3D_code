@@ -2131,6 +2131,8 @@ mod tests {
             name: path.rsplit("::").next().unwrap().to_string(),
             module_path: path.to_string(),
             line,
+            byte_start: 0,
+            byte_end: 0,
             call_sites: Vec::new(),
             doc_comments: Vec::new(),
         }

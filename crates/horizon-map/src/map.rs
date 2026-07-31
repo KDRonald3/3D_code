@@ -305,6 +305,15 @@ pub struct File {
     /// Module path of this file (e.g. `crate`, `crate::shapes`).
     /// The crate root contributes no path segment beyond `crate`.
     pub module_path: String,
+    /// Hex-encoded SHA-256 of the raw file bytes at extract time.
+    ///
+    /// Hashed as `std::fs::read` would return them — no newline normalisation
+    /// — so a saved map can detect drift when the on-disk file changes
+    /// (including CRLF edits on Windows). A source panel must re-hash the path
+    /// and refuse to slice on mismatch rather than silently serving text from
+    /// stale offsets. Format: lowercase hex, 64 digits, no algorithm prefix
+    /// (see [`crate::content_hash`]); the algorithm is SHA-256 by contract.
+    pub content_hash: String,
     pub functions: Vec<Function>,
     /// Call sites outside any free function (e.g. `const` / `static`
     /// initialisers). Same [`CallSite`] type as on [`Function`]; resolved the
@@ -434,6 +443,18 @@ pub struct Function {
     pub module_path: String,
     /// 1-based line of the `fn` keyword (disambiguates cfg duplicates).
     pub line: u32,
+    /// Byte offset (UTF-8) of the start of this free-function item in the file.
+    ///
+    /// The range is the full `ast::Fn` syntax node — outer attributes, outer
+    /// docs, signature, and body — so an auditor judging call attribution
+    /// across `#[cfg]`-duplicated definitions can see the attributes that
+    /// distinguish them. Starting at the `fn` keyword would hide those
+    /// attributes. Doc text therefore appears both in a source-panel slice of
+    /// this range and separately in [`doc_comments`]; that duplication is
+    /// accepted rather than dropping attributes from the range.
+    pub byte_start: u32,
+    /// Byte offset (UTF-8) one past the end of this free-function item.
+    pub byte_end: u32,
     /// Outgoing call sites in source order. Each ends at a [`CallTarget`].
     pub call_sites: Vec<CallSite>,
     pub doc_comments: Vec<DocComment>,

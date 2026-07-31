@@ -51,7 +51,20 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
     for module_file in &walk.files {
         let path = module_file.file.path.clone();
         let module_path = module_file.file.module_path.clone();
-        let source = match std::fs::read_to_string(&path) {
+        // Raw bytes first so `content_hash` matches a later `std::fs::read`
+        // re-check (no newline normalisation — load-bearing on Windows).
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(err) => {
+                eprintln!(
+                    "horizon: could not read {}: {err} (file omitted from map)",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let content_hash = horizon_map::content_hash(&bytes);
+        let source = match String::from_utf8(bytes) {
             Ok(s) => s,
             Err(err) => {
                 eprintln!(
@@ -64,8 +77,9 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
 
         let tree = parse_source(&source, &krate.edition)
             .with_context(|| format!("failed to parse {}", path.display()))?;
-        let facts = extract_facts(&tree, &source, &id_prefix, &module_path, &krate.edition)
+        let mut facts = extract_facts(&tree, &source, &id_prefix, &module_path, &krate.edition)
             .with_context(|| format!("failed to extract {}", path.display()))?;
+        facts.content_hash = content_hash;
         file_facts.push((path, module_path, facts));
     }
 

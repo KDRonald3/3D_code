@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Horizon Map Viewer</title>
+  <link rel="stylesheet" href="/static/viewer.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">Horizon</span>
+      <span class="brand-sub">Function Map</span>
+    </div>
+    <div class="header-actions">
+      <label class="file-picker" title="Load a Horizon JSON file">
+        <span>Open JSON…</span>
+        <input id="file-input" type="file" accept=".json,application/json" />
+      </label>
+    </div>
+  </header>
+
+  <section class="summary-bar" id="summary-bar" hidden>
+    <div class="repo-root" id="repo-root"></div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="toolbar" id="toolbar" hidden>
+    <input
+      id="search"
+      type="search"
+      placeholder="Filter functions by name or id…"
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <div class="quick-filters">
+      <label class="chip-toggle">
+        <input type="checkbox" id="filter-conflicts" />
+        <span>Has conflicts</span>
+      </label>
+      <label class="chip-toggle">
+        <input type="checkbox" id="filter-unresolved" />
+        <span>Has unresolved</span>
+      </label>
+    </div>
+    <div class="match-count" id="match-count"></div>
+  </section>
+
+  <main id="main">
+    <p class="empty-state" id="empty-state">Loading map…</p>
+    <div id="tree" class="tree" hidden></div>
+  </main>
+
+  <script src="/static/viewer.js"></script>
+</body>
+</html>
