@@ -137,6 +137,32 @@ Screenshots: `w9-theme-dark.png`, `w9-pages-fns.png`, `w9-recent.png`.
 
 ---
 
+## W10 — Collapse duplicated rail arithmetic — DONE
+
+**Why.** Rail geometry lived twice (Rust oracle + JS twin) with only a comment
+saying "keep in lockstep".
+
+**Change.** Shared fixture table `web/rail_layout_cases.json` (19 cases covering
+squeeze, restore, hard stop, collapsed opposite, narrow window, custom homes).
+Rust `shared_fixture_table_matches_rust_oracle` and JS
+`HorizonViewer.runRailFixtureTable()` both exercise it. Served at
+`/static/rail_layout_cases.json`. Arithmetic left in place on both sides —
+proven equivalent rather than rewritten mid-flight (avoids I1–I5 risk).
+
+**Measured.** Rust test pass; browser `runRailFixtureTable` →
+`{ ok: true, total: 19, fails: [] }`; smokeCheck ok.
+
+---
+
+## W8 — Structs and impls — STOPPED CLEANLY
+
+Not started. Remaining overnight capacity is better spent on the landed items
+than a half-finished contract extension. Method receiver typing needs a
+deliberate design pass (one-hop inference; uncertain → Conflict/Unresolved).
+Types/Fns filter chips stay disabled. No analyser guesswork introduced.
+
+---
+
 ## Queue status
 
 | Item | Status |
@@ -145,5 +171,5 @@ Screenshots: `w9-theme-dark.png`, `w9-pages-fns.png`, `w9-recent.png`.
 | W6 | done |
 | W7 | done |
 | W9 | done |
-| W10 | next |
-| W8 | pending / may stop cleanly |
+| W10 | done |
+| W8 | stopped cleanly — not started |

@@ -247,7 +247,7 @@ unless a real diff source exists — do not fake it.
 `Repository` JSON (size-capped); Pages are Map / Diff (disabled) / Functions /
 Diagnostics. Diff title states there is no diff source — not faked.
 
-### W10 — Collapse the duplicated rail arithmetic
+### W10 — Collapse the duplicated rail arithmetic — DONE
 
 **Problem.** Rail geometry exists twice: a Rust oracle in
 [`rail_layout.rs`](../../crates/horizon-server/src/rail_layout.rs) and its
@@ -255,6 +255,12 @@ JavaScript twin in `viewer.js`. Two implementations of one rule will drift.
 
 **Done when.** One is the single source of truth, or they are provably
 equivalent by a shared fixture table exercised from both sides.
+
+**Resolved as:** shared fixture table
+[`rail_layout_cases.json`](../../crates/horizon-server/web/rail_layout_cases.json)
+(19 cases) exercised by the Rust oracle test and
+`HorizonViewer.runRailFixtureTable()` in the browser. Both sides report exact
+agreement; arithmetic left in place to avoid rail-invariant regressions.
 
 ### W11 — Qualified calls through an imported path-dependency module — DONE
 
