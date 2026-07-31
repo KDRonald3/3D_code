@@ -308,6 +308,11 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.css", "Banner must not wrap"),
         ("/static/viewer.css", "Never collapse to 0"),
         ("/static/viewer.css", "text-overflow: ellipsis"),
+        // Chrome label wrap (~11px) must not steal viewport height on rail resize.
+        ("/static/viewer.css", "Chrome labels (esp. \"2 hops\") used to"),
+        ("/static/viewer.css", "white-space: nowrap"),
+        ("/static/viewer.js", "contentTopInset"),
+        ("/static/viewer.js", "chromeHeight"),
         ("/static/viewer.js", "FNS_VIEWPORT_MIN"),
         ("/", "id=\"tab-functions\""),
         ("/", "id=\"fns-viewport\""),
@@ -319,10 +324,12 @@ async fn serves_index_and_static_assets() {
         ("/", "defined in another file"),
         ("/", "the analyser could not resolve this call"),
         ("/", "/static/function_dag.js"),
-        // W6 neighborhood depth control.
+        // W6 neighborhood depth control + budget-grown busy default.
         ("/", "id=\"fns-depth-mode\""),
         ("/", "data-depth=\"1\""),
         ("/static/function_dag.js", "function neighborhood"),
+        ("/static/function_dag.js", "DEFAULT_NODE_BUDGET"),
+        ("/static/function_dag.js", "function defaultDepth"),
         ("/static/viewer.js", "setFnsDepth"),
         // W7 in-process analysis.
         ("/", "id=\"analyse-form\""),

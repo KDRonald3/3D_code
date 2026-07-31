@@ -2130,26 +2130,42 @@
   }
 
   /**
-   * Banner / viewport geometry for the Functions dock pane.
-   * Invariant while dock is open on the Functions tab: banner height stays
-   * constant across dock widths (no wrap), and viewport height stays > 0.
+   * Banner / viewport / chrome geometry for the Functions dock pane.
+   * Invariants while dock is open on the Functions tab:
+   * - banner height stays constant across dock widths (no wrap)
+   * - chrome height / contentTopInset stay constant across side-rail resizes
+   *   (chrome labels must not wrap a second line and steal viewport height)
+   * - viewport height stays > 0
    */
   function getFnsPaneMetrics() {
     const banner = els.fnsBanner;
     const vp = els.fnsViewport;
     const pane = els.fnsPane;
+    const panel = els.bottomPanel;
     if (!banner || !vp) return null;
     const br = banner.getBoundingClientRect();
     const vr = vp.getBoundingClientRect();
     const pr = pane ? pane.getBoundingClientRect() : null;
+    const panelRect = panel ? panel.getBoundingClientRect() : null;
+    const chrome = panel ? panel.querySelector(".bottom-chrome") : null;
+    const chromeRect = chrome ? chrome.getBoundingClientRect() : null;
     const fnsVisible = bottomOpen && bottomTab === "fns" && pane && !pane.hidden;
     return {
       bannerHeight: br.height,
+      bannerTop: br.top,
       viewportHeight: vr.height,
       viewportTop: vr.top,
       viewportWidth: vr.width,
       paneHeight: pr ? pr.height : 0,
       paneWidth: pr ? pr.width : 0,
+      panelTop: panelRect ? panelRect.top : 0,
+      panelHeight: panelRect ? panelRect.height : 0,
+      chromeHeight: chromeRect ? chromeRect.height : 0,
+      // Panel top → banner top. Stable across left/right rail resizes.
+      contentTopInset:
+        panelRect && Number.isFinite(br.top)
+          ? br.top - panelRect.top
+          : 0,
       bottomOpen,
       tab: bottomTab,
       fnsVisible,
@@ -2259,7 +2275,7 @@
     let meta;
     try {
       full = HD.build(fileNode.file, fileNode.id, fnIndex);
-      // Per-file depth default: busy graphs open at 1 hop; small ones stay All.
+      // Per-file depth default: budget-grown neighborhood (see HD.defaultDepth).
       if (fnsDepthFileId !== fileNode.id) {
         fnsDepthFileId = fileNode.id;
         fnsDepth = HD.defaultDepth(full);
@@ -3944,8 +3960,9 @@
       /** Current Functions neighborhood depth (`1` | `2` | `'all'`). */
       getFnsDepth: () => fnsDepth,
       /**
-       * Set neighborhood depth and re-render. Busy files default to 1 hop;
-       * pass `'all'` for the full subgraph.
+       * Set neighborhood depth and re-render. Busy files default via
+       * `HorizonFunctionDag.defaultDepth` (node-budget growth); pass `'all'`
+       * for the full subgraph.
        */
       setFnsDepth: (depth, opts) => setFnsDepth(depth, opts || {}),
       renderFunctionDag: (opts) => renderFunctionDag(opts || {}),
