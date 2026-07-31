@@ -1121,6 +1121,84 @@ can miss a file. First-wins on cfg-twinned \texttt{\#[path]} modules remains
 a real limitation. None of these emptied a corpus member or crashed the run.
 
 %==============================================================================
+\chapter{Type Definitions and Inherent Methods}
+\label{ch:types}
+
+The free-function map stops before types and methods by design
+(Chapter~\ref{ch:axioms}, Chapter~\ref{ch:exclusions}). An overnight extension
+temporarily folded type nodes and one-hop method resolution into that same
+pipeline. The owner asked that work to be \emph{un-mixed}: restored out of
+\texttt{horizon-engine}~/~\texttt{horizon-map}, and owned by a sibling crate
+\texttt{horizon-types}. This chapter records what that crate does and why the
+boundary exists.
+
+\section{Why a separate crate}
+
+The free-function algorithm's headline features---glob-ambiguity
+\texttt{Conflict}, constructor and associated drops, import/re-export
+precedence---must remain measurable on a map that does not carry
+\texttt{File.types} or \texttt{Function.receiver\_type}. Mixing type emission
+and method resolution into that algorithm changes summary counters (notably
+\texttt{associated\_dropped}) and couples two designs the owner intends to
+evolve independently. \texttt{horizon-types} therefore depends on
+\texttt{horizon-engine} for discovery, the \texttt{mod} walk, and parsing, and
+runs its own extract$\to$resolve pipeline for types and inherent methods.
+
+\section{Type definitions}
+
+Extraction walks each discovered file for \texttt{struct}, \texttt{enum},
+\texttt{trait}, and \texttt{type} alias items (associated types inside
+\texttt{impl}~/~\texttt{trait} bodies are skipped). Each definition becomes a
+\texttt{TypeItem} with identity, kind, module path, byte range, outer docs,
+enum variant names when applicable, and \texttt{type\_refs} for the type paths
+it names (named fields, enum variant fields, alias right-hand sides).
+
+Resolution of those paths mirrors call resolution in honesty, not in full
+import calculus detail: paths are absolutized relative to the defining module;
+indexed types become \texttt{TypeTarget::Resolved} (or \texttt{Conflict} when
+several candidates remain); unknown local-looking names become
+\texttt{Unresolved}. Primitive and external roots are omitted from
+\texttt{type\_refs} rather than drawn as fake edges---the same refusal that
+drops \texttt{Vec::new} from the free-function map.
+
+\section{Inherent methods and one-hop receivers}
+
+An inherent \texttt{impl Type} (no trait) contributes each method as a
+\texttt{Function} whose path looks like \texttt{crate::Type::method} and whose
+\texttt{receiver\_type} names that type. Trait impls stay closed.
+
+Method-shaped call sites resolve only under \emph{certain} one-hop hints:
+
+\begin{itemize}[nosep]
+  \item a parameter or \texttt{let} type ascription written in source;
+  \item a constructor form \texttt{Type::\ldots{}}~/~\texttt{Type(\ldots{})} on a
+    \texttt{let} right-hand side;
+  \item bare \texttt{self} or \texttt{Self::} inside the inherent impl;
+  \item \texttt{self.field} when that field's declared type is on the inherent
+    struct;
+  \item \texttt{let Some(x) = local\_fn()} (or \texttt{Ok}) when
+    \texttt{local\_fn}'s declared return type peels cleanly to
+    \texttt{Option<T>}~/~\texttt{Result<T,\_>}.
+\end{itemize}
+
+Multi-hop chains such as \texttt{self.a.b.method()}, inference beyond that
+one hop, and trait-impl bodies are not handled. When the receiver type is
+unknown, the site is counted as \texttt{associated\_dropped}; same-named
+inherent methods on unrelated types are never collapsed into a speculative
+\texttt{Conflict}.
+
+\section{Relation to the free-function map}
+
+\texttt{horizon-engine::build\_function\_map} again means free functions only:
+\texttt{Type::assoc} and \texttt{.method} return to associated drops, and the
+JSON contract has no \texttt{types} or \texttt{receiver\_type} keys. Callers
+that want the enriched analysis invoke
+\texttt{horizon\_types::build\_type\_map}. The review UI's Types filter chip is
+inert while the served map is the free-function contract; maps on disk that
+still carry a \texttt{types} array continue to deserialise because unknown
+fields are ignored.
+
+%==============================================================================
 \chapter{Limitations and Future Work}
 \label{ch:limits}
 
@@ -1148,7 +1226,9 @@ every crate before resolve). Broader macro recovery would need its own
 false-positive measurement. Cross-crate LSIF breadth, UpperCamelCase module
 mis-drops, nested free-function unqualified recursion, and treating
 dev-dependencies as external roots are recorded as open. Multi-language
-support and type-aware method resolution belong to other products.
+support belong to other products. Type definitions and one-hop inherent-method
+resolution live in the sibling crate \texttt{horizon-types}
+(Chapter~\ref{ch:types}), not in the free-function algorithm.
 
 \section{Implementation notes noticed in reading}
 
@@ -1230,6 +1310,8 @@ that carry \texttt{expected-edges.json}.
 \texttt{proc-macro-crate} & \texttt{proc-macro} target kind discovery \\
 \texttt{lib-and-bin} & \texttt{[bin]} FunctionId disambiguation \\
 \texttt{doc-comments} & Outer/inner/block/\texttt{\#[doc]} attachment \\
+\texttt{type-definitions} & Type nodes and field/alias \texttt{type\_refs} (\texttt{horizon-types}) \\
+\texttt{inherent-methods} & Inherent methods and one-hop receivers (\texttt{horizon-types}) \\
 \bottomrule
 \end{tabular}
 \caption{Primary fixtures and the hazards they isolate.}
