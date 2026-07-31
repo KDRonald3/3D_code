@@ -9,8 +9,10 @@
  * Busy files (many seeds, dense internal edges) are navigated with
  * focus-plus-context: [`neighborhood`] keeps the focused function and every
  * node within N hops along the undirected call graph. Depth `all` restores the
- * full subgraph. Hidden nodes/edges are counted so the banner can stay honest
- * — edge kinds on the visible remnant are unchanged.
+ * full subgraph. The per-file default grows hops until a node budget is met
+ * (or opens fully under a hairball cap) so a dense file is never greeted with
+ * a two-node stub of its graph. Hidden nodes/edges are counted so the banner
+ * can stay honest — edge kinds on the visible remnant are unchanged.
  *
  * Layout: deterministic layered placement (no RNG). Seed functions ordered by
  * source line occupy the leftmost columns by topo depth within the subgraph;
@@ -331,19 +333,6 @@
   }
 
   /**
-   * Suggest a starting depth for a built graph. Small files stay fully visible;
-   * busy ones open at 1 hop so the dock is readable until the reviewer widens it.
-   * @param {{nodes?: object[], edges?: object[]}} graph
-   * @returns {1|2|'all'}
-   */
-  function defaultDepth(graph) {
-    const n = (graph?.nodes || []).length;
-    const e = (graph?.edges || []).length;
-    if (n > 24 || e > 40) return 1;
-    return "all";
-  }
-
-  /**
    * Pick the neighborhood focus: preferred id when present, else the first seed
    * by source line (then id). Returns null only for an empty graph.
    * @param {{nodes?: object[]}} graph
@@ -480,12 +469,48 @@
     };
   }
 
+  /**
+   * Target visible-node count for the per-file default. Below this the full
+   * subgraph opens; above it we grow 1→2 hops until the neighborhood is dense
+   * enough, then fall back to `all` under the hairball caps (or stay at 2).
+   */
+  const DEFAULT_NODE_BUDGET = 36;
+  /** Full-graph open is fine up to this size; beyond it default stays at 2 hops. */
+  const DEFAULT_ALL_NODE_CAP = 120;
+  const DEFAULT_ALL_EDGE_CAP = 400;
+
+  /**
+   * Suggest a starting depth for a built graph.
+   * Prefer an informative neighborhood over a 1-hop stub of a large file, and
+   * prefer `all` over a still-tiny 2-hop slice when the full graph is manageable.
+   * @param {{nodes?: object[], edges?: object[]}} graph
+   * @returns {1|2|'all'}
+   */
+  function defaultDepth(graph) {
+    const n = (graph?.nodes || []).length;
+    const e = (graph?.edges || []).length;
+    if (n === 0) return "all";
+    if (n <= DEFAULT_NODE_BUDGET) return "all";
+
+    // Grow through the UI depths until the neighborhood meets the budget.
+    for (const d of [1, 2]) {
+      const sliced = neighborhood(graph, null, d);
+      if ((sliced.nodes || []).length >= DEFAULT_NODE_BUDGET) return d;
+    }
+    // 2 hops still under budget — open fully when it is not a true hairball.
+    if (n <= DEFAULT_ALL_NODE_CAP && e <= DEFAULT_ALL_EDGE_CAP) return "all";
+    return 2;
+  }
+
   window.HorizonFunctionDag = {
     build,
     layout,
     defaultDepth,
     pickFocus,
     neighborhood,
+    DEFAULT_NODE_BUDGET,
+    DEFAULT_ALL_NODE_CAP,
+    DEFAULT_ALL_EDGE_CAP,
     NODE_W,
     NODE_H,
   };
