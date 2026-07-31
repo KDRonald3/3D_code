@@ -548,6 +548,66 @@
     return { left: L, right: Math.max(Rmin, W - L) };
   }
 
+  /**
+   * Prove JS rail arithmetic matches the shared fixture table (same file the
+   * Rust oracle tests). Fetches `/static/rail_layout_cases.json`.
+   * @returns {Promise<{ok:boolean,total:number,fails:object[]}>}
+   */
+  async function runRailFixtureTable() {
+    const res = await fetch("/static/rail_layout_cases.json");
+    if (!res.ok) {
+      return {
+        ok: false,
+        total: 0,
+        fails: [{ name: "fetch", error: `HTTP ${res.status}` }],
+      };
+    }
+    const doc = await res.json();
+    if (
+      Math.abs(Number(doc.left_min) - LEFT_MIN) > 1e-9 ||
+      Math.abs(Number(doc.right_min) - RIGHT_MIN) > 1e-9
+    ) {
+      return {
+        ok: false,
+        total: 0,
+        fails: [
+          {
+            name: "mins",
+            error: `fixture mins ${doc.left_min}/${doc.right_min} ≠ ${LEFT_MIN}/${RIGHT_MIN}`,
+          },
+        ],
+      };
+    }
+    const fails = [];
+    for (const c of doc.cases || []) {
+      const got =
+        c.side === "right"
+          ? computeRightAggressorLayout(
+              c.workspace,
+              c.desired,
+              c.other_open,
+              c.other_home
+            )
+          : computeLeftAggressorLayout(
+              c.workspace,
+              c.desired,
+              c.other_open,
+              c.other_home
+            );
+      if (
+        Math.abs(got.left - c.expect_left) > 1e-9 ||
+        Math.abs(got.right - c.expect_right) > 1e-9
+      ) {
+        fails.push({
+          name: c.name,
+          got,
+          expect: { left: c.expect_left, right: c.expect_right },
+        });
+      }
+    }
+    return { ok: fails.length === 0, total: (doc.cases || []).length, fails };
+  }
+
   /** Apply pure right-aggressor result; does not modify homes. */
   function layoutRightAggressor(desiredRight) {
     const next = computeRightAggressorLayout(
@@ -3759,6 +3819,8 @@
       /** Pure JS layout — the runtime that must stay correct (Rust is the oracle). */
       computeRightAggressorLayout,
       computeLeftAggressorLayout,
+      /** Shared fixture table vs JS twin (async — fetches the rail cases JSON). */
+      runRailFixtureTable,
       setRightWidth,
       setLeftWidth,
       setBottomOpen,

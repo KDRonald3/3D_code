@@ -1,7 +1,9 @@
 //! Pure sidebar rail layout arithmetic (squeeze / restore).
 //!
 //! Mirrored by `web/viewer.js` (`computeRightAggressorLayout` /
-//! `computeLeftAggressorLayout`). Keep the two in lockstep.
+//! `computeLeftAggressorLayout`). Equivalence is pinned by the shared fixture
+//! table [`../web/rail_layout_cases.json`](../web/rail_layout_cases.json),
+//! exercised here and by `HorizonViewer.runRailFixtureTable` in the browser.
 //!
 //! Owner rules:
 //! 1. Resizing a rail must never change the canvas transform (enforced in JS;
@@ -223,12 +225,72 @@ pub fn compute_left_aggressor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
 
     fn approx(a: f64, b: f64) {
         assert!(
             (a - b).abs() < 1e-9,
             "expected {b}, got {a}"
         );
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct FixtureFile {
+        left_min: f64,
+        right_min: f64,
+        cases: Vec<FixtureCase>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct FixtureCase {
+        name: String,
+        side: String,
+        workspace: f64,
+        desired: f64,
+        other_open: bool,
+        other_home: f64,
+        expect_left: f64,
+        expect_right: f64,
+    }
+
+    /// Shared table with the JS twin — any drift fails this test.
+    #[test]
+    fn shared_fixture_table_matches_rust_oracle() {
+        let doc: FixtureFile = serde_json::from_str(include_str!("../web/rail_layout_cases.json"))
+            .expect("rail_layout_cases.json");
+        assert!(!doc.cases.is_empty(), "fixture table must not be empty");
+        approx(doc.left_min, LEFT_MIN);
+        approx(doc.right_min, RIGHT_MIN);
+
+        for case in &doc.cases {
+            let (left, right) = match case.side.as_str() {
+                "right" => compute_right_aggressor(
+                    case.workspace,
+                    case.desired,
+                    case.other_open,
+                    case.other_home,
+                    doc.left_min,
+                    doc.right_min,
+                ),
+                "left" => compute_left_aggressor(
+                    case.workspace,
+                    case.desired,
+                    case.other_open,
+                    case.other_home,
+                    doc.left_min,
+                    doc.right_min,
+                ),
+                other => panic!("unknown side {other} in {}", case.name),
+            };
+            assert!(
+                (left - case.expect_left).abs() < 1e-9
+                    && (right - case.expect_right).abs() < 1e-9,
+                "{}: got ({left}, {right}), expect ({}, {})",
+                case.name,
+                case.expect_left,
+                case.expect_right
+            );
+        }
     }
 
     /// Owner worked example: 1600px window, left 236, right 316.

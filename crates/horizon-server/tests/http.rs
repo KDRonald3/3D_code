@@ -338,6 +338,9 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.js", "horizon.theme"),
         ("/static/viewer.js", "getTheme"),
         ("/static/viewer.css", "recent-chip"),
+        // W10 shared rail fixture table.
+        ("/static/rail_layout_cases.json", "right_squeeze_left_to_min"),
+        ("/static/viewer.js", "runRailFixtureTable"),
         ("/static/diagnostics.js", "collectDiagnostics"),
         ("/static/diagnostics.js", "groupByReason"),
         ("/static/diagnostics.js", "groupByFile"),
