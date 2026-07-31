@@ -83,10 +83,13 @@ regression.
 ## Work items
 
 Each item states the problem, the evidence, what done means, and how to prove
-it. Items W1–W4 were in flight when this document was written; confirm their
-state before starting.
+it.
 
-### W1 — DAG node clicks are swallowed by drag-to-pan
+**W1–W4 are done and verified** — they are kept below with their evidence
+because they define behaviour that must not regress. The open work is
+**W5–W11**.
+
+### W1 — DAG node clicks are swallowed by drag-to-pan — DONE
 
 **Problem.** Clicking a function node in the Functions tab frequently does
 nothing.
@@ -105,7 +108,11 @@ fix.
 **Prove it.** Replay 0/3/8/20px jitter clicks and assert `getSelection().fnId`
 changes each time; assert background drags still pan.
 
-### W2 — Node shading misleads, and there is no legend
+**Resolved as:** a press beginning on `.fns-node` never pans; pan starts only
+from empty background. Verified at 0, 8 and 24px drift, all selecting
+correctly, with background drag still panning (panX 61 → 1) and zoom untouched.
+
+### W2 — Node shading misleads, and there is no legend — DONE
 
 **Problem.** The owner asked why nodes are "shaded dark even when they have been
 resolved".
@@ -124,7 +131,12 @@ this file / defined in another file / **the analyser could not resolve this
 call**. Clicking an unresolved stub surfaces the analyser's reason instead of
 selecting an unrelated function. Must not violate I6.
 
-### W3 — Closure calls reported as unresolved functions
+**Resolved as:** cross-file nodes keep the full-opacity cream fill with a dashed
+border and a blue left accent; in-file nodes carry a green accent, unresolved a
+red wash. An absolute-positioned `#fns-legend` names all three states, so it
+steals no canvas height (I6 measured intact afterwards).
+
+### W3 — Closure calls reported as unresolved functions — DONE
 
 **Problem.** 19 of 28 unresolved sites on the self-map are closures, not missing
 functions.
@@ -141,7 +153,13 @@ the existing `external` / `constructor` / `associated` counts so the map stays
 auditable. A local `fn` item declared inside a function body **is** a real free
 function and must still resolve.
 
-### W4 — Imports into inline `mod tests` are not followed
+**Resolved as:** the extractor records `let` bindings and parameters per
+function; unqualified calls to those names are dropped as
+`ExclusionKind::LocalBinding` under a new `local_dropped` summary counter, so
+the drop stays auditable rather than silent. Nested `fn` items resolve first.
+Fixtures: `tests/fixtures/local-bindings/`.
+
+### W4 — Imports into inline `mod tests` are not followed — DONE
 
 **Problem.** 6 of 28 unresolved sites are real, resolvable calls.
 
@@ -156,14 +174,22 @@ the existing `super_glob_sees_parent_private` and
 `private_fn_not_in_glob_from_sibling` tests). These sites must **resolve**, not
 be dropped or guessed.
 
-### W5 — Every remaining unresolved site must be accounted for
+**Resolved as:** glob and import following now includes private `use` bindings
+visible to descendants, so `use super::*` sees parent private helpers and parent
+private imports. Sibling globs still exclude private names. Fixtures:
+`tests/fixtures/inline-mod-imports/`.
 
-**Done when.** After W3 and W4, re-run the CLI on this repository and, for each
-site still reported unresolved, state whether it is a true positive (the code
-really has no such free function) or another class of analyser bug worth its own
-item. Baseline before W3/W4: *23 files across 8 crates · 0 conflicts, 28
-unresolved; dropped 138 external, 220 constructor, 166 associated.* The goal is
-not zero unresolved — it is that every remaining one is **honest**.
+### W5 — Every remaining unresolved site is accounted for — DONE
+
+**Outcome.** The self-map went from **35 unresolved to 3**: 26 closure and
+local-binding false positives dropped, 6 `is_item_macro_allowlisted` sites now
+resolved. Counts after: *24 files across 8 crates · 0 conflicts · 3 unresolved;
+dropped 145 external, 226 constructor, 201 associated, 26 local.*
+
+All three survivors are the same bug, now tracked as **W11** — none is a true
+positive, so the map currently reports no genuinely missing function. Re-run
+this accounting after W11 and after any resolver change; the goal is not zero
+unresolved but that every remaining one is **honest**.
 
 ### W6 — The DAG is unreadable for busy files
 
@@ -211,6 +237,24 @@ JavaScript twin in `viewer.js`. Two implementations of one rule will drift.
 **Done when.** One is the single source of truth, or they are provably
 equivalent by a shared fixture table exercised from both sides.
 
+### W11 — Qualified calls through an imported path-dependency module
+
+**Problem.** The only 3 unresolved sites left on the self-map, all the same
+cause.
+
+**Evidence.** In `horizon-correctness`: `use horizon_engine::discover;` then
+`discover::normalize_path(...)` at `collect_call_outcomes` L278, `compare_lsif`
+L376 and `uri_to_path` L906. `normalize_path` is a real `pub fn` in the
+path-dependency crate `horizon_engine`. The resolver reports ``path
+`discover::normalize_path` uses `discover` which is not a module in this crate``
+— it never follows the *imported module binding* across the crate boundary.
+
+**Done when.** A qualified call whose leading segment is a module imported from a
+declared path dependency resolves into that crate, honouring the existing
+dependency gate and cross-crate visibility rules (`pub` plus an unbroken module
+chain). Renamed imports (`use x::y as z;`) must work too. Add a fixture pairing
+two path-dependency crates, and re-run the W5 accounting afterwards.
+
 ---
 
 ## Manual test matrix
@@ -218,8 +262,9 @@ equivalent by a shared fixture table exercised from both sides.
 The UI is a review instrument, so it earns trust only by being driven. Exercise
 every control, and after each one confirm `smokeCheck().ok` and an empty console.
 
-**Top bar:** `☰` layers toggle · breadcrumb · counts chip (`23 frames · 23 links
-· 28 unresolved`) · `Switch project` · `☾` theme · `☰` inspector toggle.
+**Top bar:** `☰` layers toggle · breadcrumb · counts chip (now `24 frames ·
+3 unresolved` after W3–W5; it read 28 unresolved before) · `Switch project` ·
+`☾` theme · `☰` inspector toggle.
 
 **Pages rail:** `Map` · `Diff · PR #142` (disabled) · `Diagnostics` with its
 count badge.
@@ -254,8 +299,11 @@ stale-hash and a missing-file case · every call-site row, following its
 node — it must open (I11). Resize a rail with the Inspector collapsed — it must
 stay closed. Zoom the dock, switch tabs, return — zoom preserved (I9). Load a
 second map while a function is selected. Select a file with an empty graph.
-Select `resolve.rs` (58 nodes, 199 edges) and `extract.rs` (44 seeds, 86
-resolved, 19 unresolved) — neither may hang or throw (I13).
+Select `resolve.rs` (58 nodes, 199 edges) and `extract.rs` (44 seed functions;
+its 19 unresolved edges became dropped local bindings in W3, so it is now a good
+check that the legend's third state is reachable elsewhere) — neither may hang or
+throw (I13). Regenerate the map first; the numbers above shift as the resolver
+improves, so treat them as landmarks rather than assertions.
 
 **Data to test against:** `testdata/horizon-self-map.json` (this repo),
 `testdata/cellular-automata-map.json` (a foreign codebase),

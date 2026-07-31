@@ -232,6 +232,7 @@ mod client {
         facts.types,
         facts.imports,
         vis,
+        facts.local_bindings,
         Default::default(),
         Default::default(),
     );
@@ -263,4 +264,55 @@ mod client {
         ResolveResult::Target(CallTarget::Unresolved(_)) => {}
         other => panic!("private must not come through sibling glob: {other:?}"),
     }
+}
+
+#[test]
+fn inline_mod_imports_honour_super_glob_and_explicit() {
+    let map = build_function_map(fixture("inline-mod-imports")).expect("build map");
+    let krate = &map.crates[0];
+    assert_eq!(krate.name, "inline-mod-imports");
+    let files = all_files(krate);
+
+    let via_glob = find_fn(&files, "inline_mod_imports::tests::via_glob");
+    for (path, suffix) in [
+        ("parent_private", "inline_mod_imports::parent_private"),
+        ("shared", "inline_mod_imports::sibling::shared"),
+    ] {
+        let edge = via_glob
+            .call_sites
+            .iter()
+            .find(|c| c.call_path == path)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing {path}; sites: {:?}",
+                    via_glob
+                        .call_sites
+                        .iter()
+                        .map(|c| &c.call_path)
+                        .collect::<Vec<_>>()
+                )
+            });
+        match &edge.target {
+            CallTarget::Resolved(id) => {
+                assert_eq!(id.as_str(), suffix, "{path}");
+            }
+            other => panic!("use super::* must resolve {path}, got {other:?}"),
+        }
+    }
+
+    let via_explicit = find_fn(&files, "inline_mod_imports::tests::via_explicit");
+    let edge = via_explicit
+        .call_sites
+        .iter()
+        .find(|c| c.call_path == "also_private")
+        .expect("also_private via explicit use super::");
+    match &edge.target {
+        CallTarget::Resolved(id) => {
+            assert_eq!(id.as_str(), "inline_mod_imports::also_private");
+        }
+        other => panic!("explicit use super::name must resolve, got {other:?}"),
+    }
+
+    assert_eq!(map.summary.unresolved, 0);
+    assert_eq!(map.summary.conflicts, 0);
 }

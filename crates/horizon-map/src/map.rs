@@ -137,8 +137,8 @@ impl std::fmt::Display for FunctionId {
 ///
 /// `unresolved` is only for genuine free-function calls that could not be
 /// resolved. Deliberate exclusions (`external_dropped`,
-/// `constructor_dropped`, `associated_dropped`) are counted separately and
-/// do **not** appear as sites in the tree.
+/// `constructor_dropped`, `associated_dropped`, `local_dropped`) are counted
+/// separately and do **not** appear as sites in the tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapSummary {
     /// Call sites whose target is a [`Conflict`] (several candidates).
@@ -154,6 +154,10 @@ pub struct MapSummary {
     /// Associated functions on types (`Vec::new`, `FunctionId::from_parts`)
     /// dropped because `impl` items are out of scope (same rule as methods).
     pub associated_dropped: usize,
+    /// Calls through a local binding (closure / `let` / parameter) rather than
+    /// a free function — dropped because they are out of the map's scope.
+    #[serde(default)]
+    pub local_dropped: usize,
 }
 
 impl MapSummary {
@@ -179,6 +183,10 @@ impl MapSummary {
 
     pub fn record_associated_dropped(&mut self) {
         self.associated_dropped += 1;
+    }
+
+    pub fn record_local_dropped(&mut self) {
+        self.local_dropped += 1;
     }
 }
 

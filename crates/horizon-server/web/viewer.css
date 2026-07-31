@@ -1776,6 +1776,63 @@ select {
   cursor: grabbing;
 }
 
+/*
+ * Overlay legend inside #fns-viewport — does not consume flex height.
+ * Leave the bottom-right corner clear for .zoom-hud.
+ */
+.fns-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-width: min(420px, calc(100% - 110px));
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 1px 2px var(--shadow);
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--text2);
+  pointer-events: none;
+}
+
+.fns-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.fns-legend-swatch {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1.5px solid var(--border);
+  background: var(--panel);
+  box-sizing: border-box;
+}
+
+.fns-legend-swatch.function {
+  border-left: 3px solid var(--kind-fn);
+}
+
+.fns-legend-swatch.external {
+  border-style: dashed;
+  border-left-style: solid;
+  border-left-width: 3px;
+  border-left-color: var(--kind-file);
+}
+
+.fns-legend-swatch.unresolved {
+  border-left: 3px solid var(--warn);
+  background: var(--warnbg);
+}
+
 .fns-world {
   position: absolute;
   left: 0;
@@ -1872,9 +1929,17 @@ select {
   border-left: 3px solid var(--kind-fn);
 }
 
+/*
+ * Cross-file callee — healthy + resolved. Do not fade or muddy the fill
+ * (that read as disabled/broken). File badge already names the other file;
+ * use a distinct left accent + dashed border as the "elsewhere" cue.
+ */
 .fns-node.function.external {
-  opacity: 0.92;
-  background: var(--panel2);
+  background: var(--panel);
+  border-style: dashed;
+  border-left-style: solid;
+  border-left-width: 3px;
+  border-left-color: var(--kind-file);
 }
 
 .fns-node.conflict {
@@ -1885,6 +1950,11 @@ select {
 .fns-node.unresolved {
   border-left: 3px solid var(--warn);
   background: var(--warnbg);
+}
+
+.fns-node.stub-active {
+  box-shadow: 0 0 0 2px var(--warnbg);
+  border-color: var(--warn);
 }
 
 .fns-node-name {

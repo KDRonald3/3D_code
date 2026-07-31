@@ -419,3 +419,74 @@ fn macro_modules_recovers_cfg_if_and_cfg_star() {
         }
     }
 }
+
+#[test]
+fn local_bindings_drop_closures_but_resolve_nested_fn() {
+    let map = build_function_map(fixture("local-bindings")).expect("build map");
+    let krate = &map.crates[0];
+    assert_eq!(krate.name, "local-bindings");
+    let files = all_files(krate);
+
+    let with_closure = find_fn(&files, "local_bindings::run_with_closure");
+    assert!(
+        !with_closure
+            .call_sites
+            .iter()
+            .any(|c| c.call_path == "by_name"),
+        "closure call by_name must be dropped, sites: {:?}",
+        with_closure
+            .call_sites
+            .iter()
+            .map(|c| &c.call_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        with_closure
+            .call_sites
+            .iter()
+            .any(|c| c.call_path == "helper" && matches!(c.target, CallTarget::Resolved(_))),
+        "helper() inside closure-arg expression must still resolve"
+    );
+
+    let in_macro = find_fn(&files, "local_bindings::run_closure_in_macro");
+    assert!(
+        !in_macro
+            .call_sites
+            .iter()
+            .any(|c| c.call_path == "by_local"),
+        "closure call inside assert_eq! must be dropped"
+    );
+
+    let nested = find_fn(&files, "local_bindings::run_with_nested_fn");
+    let nested_call = nested
+        .call_sites
+        .iter()
+        .find(|c| c.call_path == "nested")
+        .expect("nested() must remain as a resolved free-function call");
+    match &nested_call.target {
+        CallTarget::Resolved(id) => {
+            assert!(
+                id.as_str().ends_with("run_with_nested_fn::nested"),
+                "got {}",
+                id.as_str()
+            );
+        }
+        other => panic!("nested fn must resolve, got {other:?}"),
+    }
+
+    let with_param = find_fn(&files, "local_bindings::run_with_param");
+    assert!(
+        !with_param
+            .call_sites
+            .iter()
+            .any(|c| c.call_path == "cb"),
+        "parameter call cb(...) must be dropped as a local binding"
+    );
+
+    assert!(
+        map.summary.local_dropped >= 3,
+        "expected local_dropped ≥ 3, got {}",
+        map.summary.local_dropped
+    );
+    assert_eq!(map.summary.unresolved, 0);
+}

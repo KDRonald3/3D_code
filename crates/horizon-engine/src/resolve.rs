@@ -79,6 +79,11 @@
 //! Prefer known import / module / type facts over the leading-uppercase
 //! type-name convention whenever the table can tell the truth.
 //!
+//! Calls through a **local binding** (a `let`-bound closure, function
+//! parameter, etc.) are also dropped ([`ExclusionKind::LocalBinding`]) —
+//! they are not free-function calls. Nested `fn` items inside a function body
+//! remain real free functions and still resolve.
+//!
 //! # Function-body `use` limitation
 //!
 //! Imports extracted from inside a function body are attributed to the
@@ -116,6 +121,8 @@ pub enum ExclusionKind {
     VariantOrConstructor,
     /// Associated function on a type (`Type::name`) — `impl` item, out of scope.
     AssociatedFunction,
+    /// Call through a local binding (closure / `let` / parameter), not a free function.
+    LocalBinding,
 }
 
 /// Result of resolving one call site.
@@ -355,6 +362,8 @@ pub struct ResolveIndex {
     explicits: HashMap<(String, String), Vec<ExplicitBinding>>,
     /// Glob imports: `importing_module` → globbed module paths.
     globs: HashMap<String, Vec<String>>,
+    /// Local bindings (`let` / params) inside free functions, keyed by id.
+    local_bindings: HashMap<FunctionId, HashSet<String>>,
 }
 
 impl ResolveIndex {
@@ -375,6 +384,7 @@ impl ResolveIndex {
         types: Vec<TypeDef>,
         imports: Vec<Import>,
         function_visibility: HashMap<FunctionId, ItemVisibility>,
+        local_bindings: HashMap<FunctionId, HashSet<String>>,
         path_crates: HashMap<String, PathCrateIndex>,
         all_crates: HashMap<String, PathCrateIndex>,
     ) -> Self {
@@ -465,7 +475,15 @@ impl ResolveIndex {
             function_visibility,
             explicits,
             globs,
+            local_bindings,
         }
+    }
+
+    /// Whether `name` is bound locally inside the given free function.
+    fn has_local_binding(&self, func: &FunctionId, name: &str) -> bool {
+        self.local_bindings
+            .get(func)
+            .is_some_and(|names| names.contains(name))
     }
 
     /// Look up definitions by [`FunctionId`].
@@ -544,6 +562,19 @@ impl ResolveIndex {
         self.explicits_in(module, name)
             .iter()
             .filter(|b| b.is_reexport && is_visible_from(&b.visibility, module, from))
+            .map(|b| b.target.clone())
+            .collect()
+    }
+
+    /// Import bindings of `name` in `module` visible from `from`.
+    ///
+    /// Includes private `use` items — a child module's `use super::*` must see
+    /// the parent's private imports (rustc: private items are visible to
+    /// descendants). Sibling globs still exclude them via [`is_visible_from`].
+    fn visible_imports(&self, module: &str, name: &str, from: &str) -> Vec<String> {
+        self.explicits_in(module, name)
+            .iter()
+            .filter(|b| is_visible_from(&b.visibility, module, from))
             .map(|b| b.target.clone())
             .collect()
     }
@@ -652,18 +683,36 @@ fn is_external_root(first: &str, index: &ResolveIndex) -> bool {
 }
 
 fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> ResolveResult {
-    let mut locals = index.lookup_in_module(&site.module_path, name);
-
-    // Nested free functions live under the enclosing function's path.
+    // Nested free functions live under the enclosing function's path and are
+    // real free-function definitions — resolve them before considering locals.
+    let mut nested = Vec::new();
     if let Some(enc_id) = site.enclosing_function.as_ref() {
         if let Some(enc) = index.get(enc_id) {
-            for id in index.lookup_in_module(&enc.module_path, name) {
-                if !locals.contains(&id) {
-                    locals.push(id);
-                }
-            }
+            nested = index.lookup_in_module(&enc.module_path, name);
         }
     }
+    if !nested.is_empty() {
+        return match nested.as_slice() {
+            [only] => ResolveResult::Target(CallTarget::Resolved(only.clone())),
+            _ => ResolveResult::Target(CallTarget::Conflict(Conflict {
+                candidates: nested,
+                reason: format!(
+                    "multiple nested definitions of `{name}` visible in `{}`",
+                    site.module_path
+                ),
+            })),
+        };
+    }
+
+    // Closure / let / parameter binding in the enclosing function — not a
+    // free-function call. Drop rather than report Unresolved.
+    if let Some(enc_id) = site.enclosing_function.as_ref() {
+        if index.has_local_binding(enc_id, name) {
+            return ResolveResult::Excluded(ExclusionKind::LocalBinding);
+        }
+    }
+
+    let locals = index.lookup_in_module(&site.module_path, name);
 
     let explicits = index.explicits_in(&site.module_path, name);
 
@@ -1045,21 +1094,12 @@ fn lookup_item_in_module(
         return TargetResolve::Functions(locals);
     }
 
-    // Re-exports visible from the call site, plus same-module private uses.
+    // Imports visible from the call site — public re-exports everywhere they
+    // permit, private `use` in the defining module and its descendants
+    // (so `super::imported_name` from a child works; siblings stay excluded).
     let mut targets = Vec::new();
     for binding in index.explicits_in(module, name) {
-        if binding.is_reexport {
-            // For qualified paths like `crate::mean` from another module, only
-            // re-exports apply. Re-export visibility is the filter for path
-            // segments after the first.
-            if is_visible_from(&binding.visibility, module, &site.module_path) {
-                targets.push(binding.target.clone());
-            }
-        } else if module == site.module_path {
-            // Unqualified already handled; for `self::name` after self→module,
-            // private uses in the same module count. Private uses in *other*
-            // modules must NOT contribute when looking up via a fully
-            // qualified path into `module`.
+        if is_visible_from(&binding.visibility, module, &site.module_path) {
             targets.push(binding.target.clone());
         }
     }
@@ -1169,19 +1209,11 @@ fn resolve_target_path(
         return TargetResolve::Functions(direct);
     }
 
-    // Follow re-export at the target's parent.
+    // Follow imports at the target's parent (pub re-exports and private uses
+    // visible from the call site — needed when `use super::name` absolutizes
+    // to `parent::name` but `name` is itself an import in the parent).
     if let Some((parent, name)) = split_parent_name(target) {
-        let reexports = index.visible_reexports(&parent, &name, &site.module_path);
-        // Also follow same-module private uses when resolving an import target
-        // that itself points at a re-export name in its defining module.
-        let mut targets = reexports;
-        if targets.is_empty() {
-            for binding in index.explicits_in(&parent, &name) {
-                if binding.is_reexport {
-                    targets.push(binding.target.clone());
-                }
-            }
-        }
+        let targets = index.visible_imports(&parent, &name, &site.module_path);
         if targets.len() == 1 {
             return resolve_target_path(&targets[0], site, index, hops + 1);
         }
@@ -1783,8 +1815,9 @@ fn collect_glob_function_candidates(
                 out.push(id);
             }
         }
-        // Re-exports in the globbed module under this name.
-        for target in index.visible_reexports(glob_mod, name, from_module) {
+        // Imports in the globbed module under this name — including private
+        // `use` when the importer is a descendant (`use super::*`).
+        for target in index.visible_imports(glob_mod, name, from_module) {
             let site = PendingCall {
                 call_path: name.into(),
                 line: 0,
@@ -2170,6 +2203,7 @@ mod tests {
             vis,
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
         )
     }
 
@@ -2343,6 +2377,7 @@ mod tests {
             vis,
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
         );
         let r = resolve_call(&site("hidden", "crate::app"), &index).unwrap();
         assert!(
@@ -2373,6 +2408,7 @@ mod tests {
             vis,
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
         );
         let r = resolve_call(&site("helper", "crate::app::tests"), &index).unwrap();
         match r {
@@ -2381,6 +2417,68 @@ mod tests {
             }
             other => panic!("use super::* should see parent private: {other:?}"),
         }
+    }
+
+    #[test]
+    fn super_glob_sees_parent_private_use_of_sibling() {
+        // Parent: `use crate::extract::allowlisted;` (private) + child `use super::*`.
+        let allowlisted = fn_at("crate::extract::allowlisted", 1);
+        let mut vis = HashMap::new();
+        vis.insert(allowlisted.id.clone(), ItemVisibility::Public);
+        let modules = HashSet::from([
+            "crate".into(),
+            "crate::extract".into(),
+            "crate::modules".into(),
+            "crate::modules::tests".into(),
+        ]);
+        let imports = vec![
+            explicit("crate::modules", "crate::extract::allowlisted", None),
+            glob("crate::modules::tests", "crate::modules"),
+        ];
+        let index = ResolveIndex::build(
+            vec![allowlisted],
+            modules,
+            HashSet::new(),
+            vec![],
+            imports,
+            vis,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let r = resolve_call(&site("allowlisted", "crate::modules::tests"), &index).unwrap();
+        match r {
+            ResolveResult::Target(CallTarget::Resolved(id)) => {
+                assert_eq!(id.as_str(), "demo::extract::allowlisted");
+            }
+            other => panic!("use super::* must follow parent private use: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_binding_is_dropped_not_unresolved() {
+        let owner = fn_at("crate::tests::run", 1);
+        let mut locals = HashMap::new();
+        locals.insert(owner.id.clone(), HashSet::from(["by_name".into()]));
+        let modules = HashSet::from(["crate".into(), "crate::tests".into()]);
+        let index = ResolveIndex::build(
+            vec![owner.clone()],
+            modules,
+            HashSet::new(),
+            vec![],
+            vec![],
+            HashMap::new(),
+            locals,
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let mut call = site("by_name", "crate::tests");
+        call.enclosing_function = Some(owner.id.clone());
+        let r = resolve_call(&call, &index).unwrap();
+        assert!(
+            matches!(r, ResolveResult::Excluded(ExclusionKind::LocalBinding)),
+            "expected LocalBinding drop, got {r:?}"
+        );
     }
 
     #[test]

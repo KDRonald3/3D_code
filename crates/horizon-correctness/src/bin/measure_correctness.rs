@@ -332,12 +332,13 @@ fn print_fixture_summary(reports: &[OracleReport]) {
 fn print_self_summary(report: &SelfMapReport) {
     println!("=== Self-map ===");
     println!(
-        "  summary: conflicts={} unresolved={} external={} constructor={} associated={}",
+        "  summary: conflicts={} unresolved={} external={} constructor={} associated={} local={}",
         report.summary.conflicts,
         report.summary.unresolved,
         report.summary.external_dropped,
         report.summary.constructor_dropped,
-        report.summary.associated_dropped
+        report.summary.associated_dropped,
+        report.summary.local_dropped
     );
     println!(
         "  edges: resolved={} conflicts={} unresolved={}",
@@ -390,16 +391,18 @@ fn print_lsif_cohort(label: &str, c: &horizon_correctness::LsifCohort) {
 fn print_exclusion_summary(audit: &ExclusionAudit) {
     println!("=== Exclusion audit ===");
     println!(
-        "  counts: external={} constructor={} associated={} suspicious={}",
+        "  counts: external={} constructor={} associated={} local={} suspicious={}",
         audit.external_dropped,
         audit.constructor_dropped,
         audit.associated_dropped,
+        audit.local_dropped,
         audit.suspicious.len()
     );
     for (label, samples) in [
         ("external", &audit.samples.external),
         ("constructor", &audit.samples.constructor),
         ("associated", &audit.samples.associated),
+        ("local", &audit.samples.local),
     ] {
         println!("  sample {label}:");
         for s in samples {

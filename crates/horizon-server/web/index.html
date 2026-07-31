@@ -185,6 +185,24 @@
                   Independent dock viewport HUD — same − N% + idiom as #canvas .zoom-hud.
                   Lives inside #fns-pane so Diagnostics (a list) never shows it.
                 -->
+                <!--
+                  Compact overlay legend — absolute so it never steals #fns-viewport
+                  flex height (banner must stay one non-wrapping line; viewport ≥ 48px).
+                -->
+                <div class="fns-legend" id="fns-legend" aria-label="Function DAG legend">
+                  <span class="fns-legend-item">
+                    <span class="fns-legend-swatch function" aria-hidden="true"></span>
+                    defined in this file
+                  </span>
+                  <span class="fns-legend-item">
+                    <span class="fns-legend-swatch external" aria-hidden="true"></span>
+                    defined in another file
+                  </span>
+                  <span class="fns-legend-item">
+                    <span class="fns-legend-swatch unresolved" aria-hidden="true"></span>
+                    the analyser could not resolve this call
+                  </span>
+                </div>
                 <div class="zoom-hud" id="fns-zoom-hud">
                   <button type="button" id="fns-zoom-out" title="Zoom out">−</button>
                   <button type="button" id="fns-zoom-reset" title="Fit to content">100%</button>

@@ -7,7 +7,7 @@
 use crate::discover::{self, rustc_crate_name};
 use crate::extract::{
     FileFacts, Import, ItemVisibility, TypeDef, assign_function_ids, extract_facts,
-    remap_pending_calls,
+    remap_local_bindings, remap_pending_calls,
 };
 use horizon_map::{Crate, Dependency, DependencyKind, Function, FunctionId};
 use crate::modules::walk_modules;
@@ -28,6 +28,9 @@ pub struct ExtractedCrate {
     pub module_visibility: HashMap<String, ItemVisibility>,
     pub types: Vec<TypeDef>,
     pub imports: Vec<Import>,
+    /// Local bindings (`let` / params) keyed by function id, for dropping
+    /// closure calls at resolve time.
+    pub local_bindings: HashMap<FunctionId, HashSet<String>>,
 }
 
 /// Discover every crate under `repo_root` and extract facts for each.
@@ -97,11 +100,19 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
     }
 
     let mut func_offset = 0usize;
+    let mut local_bindings: HashMap<FunctionId, HashSet<String>> = HashMap::new();
     for (_, _, facts) in &mut file_facts {
         let n = facts.functions.len();
         facts.functions = all_functions[func_offset..func_offset + n].to_vec();
         func_offset += n;
         remap_pending_calls(&mut facts.call_sites, &remap);
+        remap_local_bindings(&mut facts.local_bindings, &remap);
+        for (id, names) in &facts.local_bindings {
+            local_bindings
+                .entry(id.clone())
+                .or_default()
+                .extend(names.iter().cloned());
+        }
     }
 
     let types: Vec<TypeDef> = file_facts
@@ -123,6 +134,7 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
         module_visibility: walk.module_visibility,
         types,
         imports,
+        local_bindings,
     })
 }
 
@@ -138,6 +150,7 @@ pub fn resolve_index_for(extracted: &[ExtractedCrate], i: usize) -> ResolveIndex
         extracted[i].types.clone(),
         extracted[i].imports.clone(),
         extracted[i].function_visibility.clone(),
+        extracted[i].local_bindings.clone(),
         path_crates,
         all_crates,
     )

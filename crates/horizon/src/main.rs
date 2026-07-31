@@ -96,7 +96,7 @@ fn write_summary_line(map: &Repository, mut err: impl Write) -> Result<()> {
         err,
         "horizon: {} crate{}, {} function{}; \
          call sites: {} resolved, {} conflict{}, {} unresolved; \
-         dropped: {} external, {} constructor, {} associated",
+         dropped: {} external, {} constructor, {} associated, {} local",
         map.crates.len(),
         plural(map.crates.len()),
         stats.functions,
@@ -108,6 +108,7 @@ fn write_summary_line(map: &Repository, mut err: impl Write) -> Result<()> {
         map.summary.external_dropped,
         map.summary.constructor_dropped,
         map.summary.associated_dropped,
+        map.summary.local_dropped,
     )
     .context("failed to write summary to stderr")?;
     Ok(())

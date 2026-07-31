@@ -284,6 +284,12 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.js", "getFnsPaneMetrics"),
         ("/static/viewer.js", "zoomFnsAt"),
         ("/static/viewer.js", "zoomMapAt"),
+        // Functions dock: node press selects; pan only from empty background.
+        ("/static/viewer.js", "resolveFnsPointerGesture"),
+        ("/static/viewer.js", "closest(\".fns-node\")"),
+        ("/static/viewer.js", "fnsPanFromBackgroundOnly"),
+        ("/static/viewer.js", "getLastFnsNodeActivation"),
+        ("/static/viewer.js", "surfacedReason"),
         // Dock shares left-occupied pan compensation with the map canvas.
         ("/static/viewer.js", "fnsPanX -= delta"),
         ("/static/viewer.css", "top: auto; /* release vertical-rail"),
@@ -291,6 +297,9 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.css", ".fns-node"),
         ("/static/viewer.css", ".bottom-rail"),
         ("/static/viewer.css", ".fns-viewport > .zoom-hud"),
+        ("/static/viewer.css", ".fns-legend"),
+        // Cross-file callees: elsewhere cue, not faded/muddy (was opacity 0.92).
+        ("/static/viewer.css", "border-left-color: var(--kind-file)"),
         // Banner wrap must not steal viewport height when the dock narrows.
         ("/static/viewer.css", "Banner must not wrap"),
         ("/static/viewer.css", "Never collapse to 0"),
@@ -300,6 +309,11 @@ async fn serves_index_and_static_assets() {
         ("/", "id=\"fns-viewport\""),
         ("/", "id=\"fns-zoom-hud\""),
         ("/", "id=\"fns-zoom-reset\""),
+        ("/", "id=\"fns-legend\""),
+        ("/", "class=\"fns-legend\""),
+        ("/", "defined in this file"),
+        ("/", "defined in another file"),
+        ("/", "the analyser could not resolve this call"),
         ("/", "/static/function_dag.js"),
         ("/static/diagnostics.js", "collectDiagnostics"),
         ("/static/diagnostics.js", "groupByReason"),
@@ -332,6 +346,7 @@ async fn serves_index_and_static_assets() {
     // ReferenceError in the live viewer when DIAG_CLICK_OPENS_INSPECTOR
     // was removed but diagClickOpensInspector still read it.
     let viewer = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/static/viewer.js")
@@ -354,6 +369,23 @@ async fn serves_index_and_static_assets() {
     assert!(
         !viewer_js.contains("diagClickOpensInspector("),
         "viewer.js must not call diagClickOpensInspector"
+    );
+
+    // Cross-file DAG nodes must not look degraded (old encoding used opacity).
+    let css = router
+        .oneshot(
+            Request::builder()
+                .uri("/static/viewer.css")
+                .header("Host", "127.0.0.1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let css_body = body_string(css).await;
+    assert!(
+        !css_body.contains("opacity: 0.92"),
+        "viewer.css must not fade .fns-node.function.external"
     );
 }
 

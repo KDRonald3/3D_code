@@ -25,6 +25,7 @@ pub enum CallOutcomeKind {
     ExternalDropped,
     ConstructorDropped,
     AssociatedDropped,
+    LocalDropped,
 }
 
 /// One call after extract+resolve, including deliberate drops.
@@ -140,6 +141,7 @@ pub struct ExclusionAudit {
     pub external_dropped: usize,
     pub constructor_dropped: usize,
     pub associated_dropped: usize,
+    pub local_dropped: usize,
     pub suspicious: Vec<CallOutcome>,
     pub samples: ExclusionSamples,
 }
@@ -149,6 +151,7 @@ pub struct ExclusionSamples {
     pub external: Vec<CallOutcome>,
     pub constructor: Vec<CallOutcome>,
     pub associated: Vec<CallOutcome>,
+    pub local: Vec<CallOutcome>,
 }
 
 /// Load `expected-edges.json` from a fixture directory.
@@ -293,6 +296,7 @@ pub fn audit_exclusions(outcomes: &[CallOutcome], sample_n: usize) -> ExclusionA
     let mut externals = Vec::new();
     let mut constructors = Vec::new();
     let mut associated = Vec::new();
+    let mut locals = Vec::new();
 
     // Known free-function names in this run (from resolved edges).
     let known_fns: HashSet<String> = outcomes
@@ -325,6 +329,10 @@ pub fn audit_exclusions(outcomes: &[CallOutcome], sample_n: usize) -> ExclusionA
                     audit.suspicious.push(o.clone());
                 }
             }
+            CallOutcomeKind::LocalDropped => {
+                audit.local_dropped += 1;
+                locals.push(o.clone());
+            }
             _ => {}
         }
     }
@@ -332,6 +340,7 @@ pub fn audit_exclusions(outcomes: &[CallOutcome], sample_n: usize) -> ExclusionA
     audit.samples.external = take_spread(&externals, sample_n);
     audit.samples.constructor = take_spread(&constructors, sample_n);
     audit.samples.associated = take_spread(&associated, sample_n);
+    audit.samples.local = take_spread(&locals, sample_n);
     audit
 }
 
@@ -663,6 +672,9 @@ fn outcome_for(pending: &PendingCall, path: &Path, index: &ResolveIndex) -> Resu
         }
         ResolveResult::Excluded(ExclusionKind::AssociatedFunction) => {
             (CallOutcomeKind::AssociatedDropped, vec![], None)
+        }
+        ResolveResult::Excluded(ExclusionKind::LocalBinding) => {
+            (CallOutcomeKind::LocalDropped, vec![], None)
         }
     };
 

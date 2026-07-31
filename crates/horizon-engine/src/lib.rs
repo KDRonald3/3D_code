@@ -149,6 +149,10 @@ fn resolve_pending(
             summary.record_associated_dropped();
             return Ok(None);
         }
+        ResolveResult::Excluded(ExclusionKind::LocalBinding) => {
+            summary.record_local_dropped();
+            return Ok(None);
+        }
     };
 
     match &target {

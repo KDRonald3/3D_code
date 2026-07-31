@@ -170,10 +170,13 @@
   let fnsWorldH = 160;
   let fnsPanDrag = null;
   /**
-   * Set when a dock pan gesture exceeded DRAG_MOVE. Consumed by fns-node /
-   * fns-edge click handlers so a pan starting on a node does not select it.
+   * Set when a dock pan gesture exceeded DRAG_MOVE. Consumed by fns-edge
+   * click handlers so a pan starting on an edge does not activate it.
+   * Node presses never pan (see resolveFnsPointerGesture) so they never set this.
    */
   let suppressFnsClick = false;
+  /** @type {object|null} last Functions-node activation (stub reason / selection). */
+  let lastFnsNodeActivation = null;
   /** @type {string|null} */
   let fnsActiveEdgeId = null;
   /** Last boot outcome for diagnostics (null while in flight). */
@@ -1821,6 +1824,62 @@
   }
 
   /**
+   * Pure Functions-dock pointer policy — assertable without a browser DOM.
+   *
+   * Rule: a gesture that begins on a node is selection, never pan. Pan only
+   * originates from empty canvas background (or an edge stroke). Small drift
+   * on a node must not lose the click; release inside the node still selects
+   * even at 20+ px movement.
+   *
+   * @param {{
+   *   startedOn: "node"|"edge"|"background"|"hud",
+   *   movePx?: number,
+   *   releasedInsideNode?: boolean,
+   * }} opts
+   * @returns {{
+   *   action: "select"|"pan"|"activateEdge"|"ignore"|"none",
+   *   pan: boolean,
+   *   select: boolean,
+   *   suppressClick: boolean,
+   * }}
+   */
+  function resolveFnsPointerGesture(opts) {
+    const startedOn = opts && opts.startedOn;
+    const movePx = Number(opts && opts.movePx);
+    const moved = Number.isFinite(movePx) && movePx >= DRAG_MOVE;
+    if (startedOn === "hud") {
+      return { action: "ignore", pan: false, select: false, suppressClick: false };
+    }
+    if (startedOn === "node") {
+      // Never pan from a node. Click wins while the release stays on the node.
+      const inside =
+        opts.releasedInsideNode === undefined ? true : !!opts.releasedInsideNode;
+      return {
+        action: inside ? "select" : "none",
+        pan: false,
+        select: inside,
+        suppressClick: false,
+      };
+    }
+    if (startedOn === "edge") {
+      if (moved) {
+        return { action: "pan", pan: true, select: false, suppressClick: true };
+      }
+      return {
+        action: "activateEdge",
+        pan: false,
+        select: false,
+        suppressClick: false,
+      };
+    }
+    // background
+    if (moved) {
+      return { action: "pan", pan: true, select: false, suppressClick: true };
+    }
+    return { action: "none", pan: false, select: false, suppressClick: false };
+  }
+
+  /**
    * Banner / viewport geometry for the Functions dock pane.
    * Invariant while dock is open on the Functions tab: banner height stays
    * constant across dock widths (no wrap), and viewport height stays > 0.
@@ -2000,12 +2059,19 @@
       if (!p) continue;
       // div (not button) so conflict candidate chips can be nested buttons.
       const el = document.createElement("div");
+      const stubEdge =
+        node.kind !== "function"
+          ? graph.edges.find((e) => e.to === node.id)
+          : null;
+      const stubActive =
+        !!stubEdge && !!fnsActiveEdgeId && stubEdge.id === fnsActiveEdgeId;
       el.className =
         `fns-node ${node.kind}` +
         (node.external ? " external" : "") +
         (node.kind === "function" && node.fnId === selectedFnId
           ? " selected"
-          : "");
+          : "") +
+        (stubActive ? " stub-active" : "");
       el.style.left = `${p.x}px`;
       el.style.top = `${p.y}px`;
       el.setAttribute("role", "button");
@@ -2046,25 +2112,57 @@
       const activateNode = () => {
         if (node.kind === "function" && node.fnId) {
           selectFunction(node.fnId, { reveal: true, push: true });
+          lastFnsNodeActivation = {
+            kind: "function",
+            nodeId: node.id,
+            fnId: node.fnId,
+            external: !!node.external,
+            reason: null,
+            callerFnId: null,
+            selectedFnId,
+            surfacedReason: false,
+          };
           return;
         }
-        // Stub: open the call site (honest analyser outcome), not a fake callee.
+        // Stub: no definition to open. Surface the analyser's reason via the
+        // caller's call-site focus — never pretend the stub is a selectable fn.
         const edge = (fnsGraph?.edges || []).find((e) => e.to === node.id);
-        if (edge) focusDagCallSite(edge);
-        else {
-          focusDagCallSite({
-            kind: node.kind,
-            callerFnId: node.callerFnId,
-            callPath: node.name,
-            line: node.line,
-            reason: node.reason,
-            candidates: node.candidates,
-          });
-        }
+        const reason =
+          (node.reason && String(node.reason)) ||
+          (edge && edge.reason && String(edge.reason)) ||
+          "analyser could not resolve this call";
+        const payload = edge
+          ? {
+              ...edge,
+              // Prefer the stub's honest reason (edge may have "").
+              reason,
+              kind: edge.kind || node.kind,
+            }
+          : {
+              kind: node.kind,
+              callerFnId: node.callerFnId,
+              callPath: node.name,
+              line: node.line,
+              reason,
+              candidates: node.candidates,
+            };
+        focusDagCallSite(payload);
+        lastFnsNodeActivation = {
+          kind: node.kind,
+          nodeId: node.id,
+          fnId: null,
+          external: false,
+          reason,
+          callerFnId: payload.callerFnId || null,
+          selectedFnId,
+          surfacedReason: !!reason,
+        };
       };
       el.addEventListener("click", (ev) => {
         if (ev.target.closest("button")) return;
         ev.stopPropagation();
+        // Node presses never start pan, so suppressFnsClick should stay false.
+        // Keep the guard for safety if a future gesture path sets it.
         if (suppressFnsClick) {
           suppressFnsClick = false;
           return;
@@ -2938,6 +3036,9 @@
       // HUD buttons handle their own clicks; candidate chips are nested buttons.
       if (ev.target.closest(".zoom-hud")) return;
       if (ev.target.closest("button")) return;
+      // Node gesture → select, never pan (matches resolveFnsPointerGesture).
+      // Ordinary mouse/trackpad drift must not swallow the click.
+      if (ev.target.closest(".fns-node")) return;
       suppressFnsClick = false;
       fnsPanDrag = {
         sx: ev.clientX,
@@ -2945,6 +3046,8 @@
         ox: fnsPanX,
         oy: fnsPanY,
         moved: false,
+        // Edge strokes may start a pan; background always may.
+        startedOn: ev.target.closest(".fns-edge") ? "edge" : "background",
       };
       try {
         els.fnsViewport.setPointerCapture?.(ev.pointerId);
@@ -2956,7 +3059,12 @@
       if (!fnsPanDrag) return;
       const dx = ev.clientX - fnsPanDrag.sx;
       const dy = ev.clientY - fnsPanDrag.sy;
-      if (!fnsPanDrag.moved && Math.hypot(dx, dy) < DRAG_MOVE) return;
+      const movePx = Math.hypot(dx, dy);
+      const decision = resolveFnsPointerGesture({
+        startedOn: fnsPanDrag.startedOn || "background",
+        movePx,
+      });
+      if (!decision.pan) return;
       if (!fnsPanDrag.moved) {
         fnsPanDrag.moved = true;
         els.fnsViewport.classList.add("panning");
@@ -3258,8 +3366,18 @@
         selectionOpens: true,
         viewManipulationOpens: false,
         cardDragThresholdPx: DRAG_MOVE,
+        // Functions dock: node press selects; pan only from empty background.
+        fnsNodePressSelects: true,
+        fnsPanFromBackgroundOnly: true,
         openHelper: "openInspectorForSelection",
       }),
+      /** Pure click-vs-pan rule for the Functions dock (no DOM required). */
+      resolveFnsPointerGesture,
+      /** Last Functions-node activation — honest null before any click. */
+      getLastFnsNodeActivation: () =>
+        lastFnsNodeActivation ? { ...lastFnsNodeActivation } : null,
+      /** Current call-site / stub focus — honest null when none. */
+      getDiagFocus: () => (diagFocus ? { ...diagFocus } : null),
       /** Outcome of the last card press/release (+ click if any). For hand-drag checks. */
       getLastCardGesture: () => {
         const g = lastCardGesture;
@@ -3295,6 +3413,9 @@
           "getUiState",
           "inspectorOpenPolicy",
           "getLastCardGesture",
+          "getLastFnsNodeActivation",
+          "getDiagFocus",
+          "resolveFnsPointerGesture",
           "runLayoutAcceptance",
           "computeRightAggressorLayout",
           "computeLeftAggressorLayout",
@@ -3349,6 +3470,83 @@
             } else if (name === "getFnsNodeScreenRect") {
               // Honest null when no DAG — must not throw.
               fn("__missing__");
+            } else if (name === "getLastFnsNodeActivation") {
+              // Honest null before any click — must not read undefined fields.
+              const g = fn();
+              if (g !== null && (typeof g !== "object" || !g.kind)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "getLastFnsNodeActivation returned unexpected value",
+                });
+                continue;
+              }
+            } else if (name === "getDiagFocus") {
+              const g = fn();
+              if (g !== null && typeof g !== "object") {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "getDiagFocus returned unexpected value",
+                });
+                continue;
+              }
+            } else if (name === "resolveFnsPointerGesture") {
+              const cases = [
+                {
+                  name: "nodeDrift8",
+                  opts: {
+                    startedOn: "node",
+                    movePx: 8,
+                    releasedInsideNode: true,
+                  },
+                  expect: { action: "select", pan: false, suppressClick: false },
+                },
+                {
+                  name: "nodeDrift20",
+                  opts: {
+                    startedOn: "node",
+                    movePx: 20,
+                    releasedInsideNode: true,
+                  },
+                  expect: { action: "select", pan: false, suppressClick: false },
+                },
+                {
+                  name: "nodeReleaseOutside",
+                  opts: {
+                    startedOn: "node",
+                    movePx: 20,
+                    releasedInsideNode: false,
+                  },
+                  expect: { action: "none", pan: false, select: false },
+                },
+                {
+                  name: "backgroundPan",
+                  opts: { startedOn: "background", movePx: 8 },
+                  expect: { action: "pan", pan: true, suppressClick: true },
+                },
+                {
+                  name: "backgroundTap",
+                  opts: { startedOn: "background", movePx: 0 },
+                  expect: { action: "none", pan: false },
+                },
+              ];
+              for (const c of cases) {
+                const got = fn(c.opts);
+                const bad = Object.keys(c.expect).some(
+                  (k) => got[k] !== c.expect[k]
+                );
+                if (bad) {
+                  checks.push({
+                    name: `resolveFnsPointerGesture:${c.name}`,
+                    ok: false,
+                    error: `expected ${JSON.stringify(c.expect)} got ${JSON.stringify(got)}`,
+                  });
+                }
+              }
+              if (checks.some((c) => c.name.startsWith("resolveFnsPointerGesture:") && !c.ok)) {
+                continue;
+              }
             } else if (name === "getFnsPaneMetrics") {
               const m = fn();
               if (
@@ -3371,6 +3569,22 @@
                   name,
                   ok: false,
                   error: `viewport collapsed while Functions open (h=${m.viewportHeight})`,
+                });
+                continue;
+              }
+            } else if (name === "inspectorOpenPolicy") {
+              const p = fn();
+              if (
+                !p ||
+                p.selectionOpens !== true ||
+                p.viewManipulationOpens !== false ||
+                p.fnsNodePressSelects !== true ||
+                p.fnsPanFromBackgroundOnly !== true
+              ) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "inspectorOpenPolicy missing Functions gesture flags",
                 });
                 continue;
               }

@@ -59,6 +59,11 @@ pub struct FileFacts {
     /// Call sites not yet attached to a defining function or file.
     pub call_sites: Vec<PendingCall>,
     pub doc_comments: Vec<DocComment>,
+    /// Names bound locally inside each free function (`let`, parameters, …).
+    /// Used at resolve time to drop closure / binding calls rather than report
+    /// them as unresolved free functions. Nested `fn` items are not listed —
+    /// those remain real free-function definitions.
+    pub local_bindings: HashMap<FunctionId, HashSet<String>>,
 }
 
 /// Kind of type-level item collected during extraction.
@@ -311,6 +316,14 @@ pub fn extract_facts(
     let types = extract_types(root, file_module_path);
     let imports = extract_imports(root, file_module_path);
 
+    let mut local_bindings: HashMap<FunctionId, HashSet<String>> = HashMap::new();
+    for (raw, func) in raw_defs.iter().zip(functions.iter()) {
+        let names = local_binding_names(&raw.syntax);
+        if !names.is_empty() {
+            local_bindings.insert(func.id.clone(), names);
+        }
+    }
+
     let mut call_sites = Vec::new();
     let mut seen_ranges: HashSet<(u32, u32)> = HashSet::new();
     for node in root.descendants() {
@@ -354,7 +367,36 @@ pub fn extract_facts(
         imports,
         call_sites,
         doc_comments: extract_inner_docs(root),
+        local_bindings,
     })
+}
+
+/// Ident patterns bound in `fn_node`'s own body and parameter list.
+///
+/// Nested free-function bodies are skipped so each function only owns its
+/// own locals. Nested `fn` *names* are definitions, not bindings here.
+fn local_binding_names(fn_node: &SyntaxNode) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_local_bindings(fn_node, &mut names, true);
+    names
+}
+
+fn collect_local_bindings(node: &SyntaxNode, names: &mut HashSet<String>, is_root_fn: bool) {
+    if !is_root_fn && node.kind() == SyntaxKind::FN {
+        // Nested free function — its params/locals belong to that function.
+        return;
+    }
+    if let Some(ident) = ast::IdentPat::cast(node.clone()) {
+        if let Some(name) = ident.name() {
+            let text = name.text().to_string();
+            if text != "_" {
+                names.insert(text);
+            }
+        }
+    }
+    for child in node.children() {
+        collect_local_bindings(&child, names, false);
+    }
 }
 
 /// Shared state for allowlisted macro token-tree recovery.
@@ -1105,6 +1147,18 @@ pub fn remap_pending_calls(calls: &mut [PendingCall], remap: &HashMap<FunctionId
     }
 }
 
+/// Remap [`FileFacts::local_bindings`] keys after crate-wide id assignment.
+pub fn remap_local_bindings(
+    bindings: &mut HashMap<FunctionId, HashSet<String>>,
+    remap: &HashMap<FunctionId, FunctionId>,
+) {
+    let old = std::mem::take(bindings);
+    for (id, names) in old {
+        let new_id = remap.get(&id).cloned().unwrap_or(id);
+        bindings.insert(new_id, names);
+    }
+}
+
 struct RawDef {
     name: String,
     module_path: String,
@@ -1462,6 +1516,64 @@ fn f() {
             .find(|i| i.local_name() == Some("helper"))
             .expect("helper import");
         assert_eq!(imp.module_path, "crate");
+    }
+
+    #[test]
+    fn extracts_local_bindings_but_not_nested_fn_names() {
+        let source = r#"
+fn run(cb: fn()) {
+    let by_name = || {};
+    fn nested() {}
+    by_name();
+    nested();
+    cb();
+}
+"#;
+        let tree = parse_source(source, &"2021".into()).unwrap();
+        let facts = extract_facts(&tree, source, "demo", "crate", "2021").unwrap();
+        let run = facts.functions.iter().find(|f| f.name == "run").unwrap();
+        let locals = facts.local_bindings.get(&run.id).expect("run locals");
+        assert!(locals.contains("by_name"), "{locals:?}");
+        assert!(locals.contains("cb"), "{locals:?}");
+        assert!(
+            !locals.contains("nested"),
+            "nested fn name is a definition, not a local binding: {locals:?}"
+        );
+        let nested = facts.functions.iter().find(|f| f.name == "nested").unwrap();
+        assert!(
+            nested.module_path.ends_with("run::nested"),
+            "{}",
+            nested.module_path
+        );
+    }
+
+    #[test]
+    fn inline_mod_use_super_is_attributed_to_child_module() {
+        let source = r#"
+fn helper() {}
+mod tests {
+    use super::*;
+    use super::helper;
+    fn t() { helper(); }
+}
+"#;
+        let tree = parse_source(source, &"2021".into()).unwrap();
+        let facts = extract_facts(&tree, source, "demo", "crate", "2021").unwrap();
+        assert!(
+            facts
+                .imports
+                .iter()
+                .any(|i| i.is_glob && i.module_path == "crate::tests" && i.path == "crate"),
+            "use super::* must land on crate::tests → crate: {:?}",
+            facts.imports
+        );
+        let explicit = facts
+            .imports
+            .iter()
+            .find(|i| !i.is_glob && i.local_name() == Some("helper"))
+            .expect("explicit use super::helper");
+        assert_eq!(explicit.module_path, "crate::tests");
+        assert_eq!(explicit.path, "crate::helper");
     }
 
     #[test]
