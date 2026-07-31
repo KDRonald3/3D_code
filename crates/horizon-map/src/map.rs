@@ -571,19 +571,28 @@ pub struct TypeItem {
     pub doc_comments: Vec<DocComment>,
 }
 
-/// A free function definition — the only place canonical function identity lives.
+/// A free function or inherent method definition — the place canonical
+/// function identity lives.
 ///
-/// Methods and `impl` items remain out of the function list until W8 method
-/// support lands; associated-function call sites stay in
-/// [`MapSummary::associated_dropped`] until then.
+/// Inherent `impl Type { fn … }` methods appear here with
+/// [`receiver_type`] set. Trait impl methods and trait items stay excluded.
+/// Associated-function call sites that cannot be tied to an indexed inherent
+/// method remain in [`MapSummary::associated_dropped`] (external / unknown
+/// types); indexed `Type::method` forms resolve to these nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Function {
     pub id: FunctionId,
     pub name: String,
-    /// Full module path of the function (e.g. `crate::shapes::get`).
+    /// Full module path of the function (e.g. `crate::shapes::get`, or
+    /// `crate::Cache::new` for an inherent method).
     /// Distinguishes same-named free functions at different module depths
     /// within one file (inline modules are not separate map nodes).
     pub module_path: String,
+    /// When present, this item is an inherent method of the named type.
+    /// Absent (and omitted from JSON) for free functions. Old maps without
+    /// the field deserialise as free functions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_type: Option<TypeId>,
     /// 1-based line of the `fn` keyword (disambiguates cfg duplicates).
     pub line: u32,
     /// Byte offset (UTF-8) of the start of this free-function item in the file.

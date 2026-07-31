@@ -130,7 +130,8 @@ absent.
 |---|---|---|---|
 | `id` | string (`FunctionId`) | no | Canonical identity — see below |
 | `name` | string | no | Function name as written |
-| `module_path` | string | no | Full path including name, with a leading `crate` segment (e.g. `"crate::shapes::get"`). Distinct from `id`, which substitutes the crate key for `crate` |
+| `module_path` | string | no | Full path including name, with a leading `crate` segment (e.g. `"crate::shapes::get"`, or `"crate::Cache::new"` for an inherent method). Distinct from `id`, which substitutes the crate key for `crate` |
+| `receiver_type` | string (`TypeId`) | yes | Present when this item is an inherent method of that type; omitted for free functions |
 | `line` | number (u32) | no | 1-based line of the `fn` keyword |
 | `byte_start` | number (u32) | no† | UTF-8 byte offset of the start of this free-function item in the file |
 | `byte_end` | number (u32) | no† | UTF-8 byte offset one past the end of this free-function item |

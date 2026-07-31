@@ -181,9 +181,39 @@ omitted from `type_refs`. Fns / Types chips dim file cards by `fnCount` /
 | Old maps without `types` | still load (`#[serde(default)]`, I12 style) |
 | Browser (filters / self-map) | pending rebuild + drive after commit |
 
-**Not yet (W8b+).** Inherent `impl` methods, `Type::assoc` resolution (still
-`associated_dropped`), method-call receiver typing. Types/Fns chips do real
-work on file cards; there is no type DAG in the dock yet.
+**Browser (W8a).** Self-map: 83→84 types / 16 files with types. Fns off dims
+6 function-only cards; Types off dims 2. smokeCheck ok. Favicon 404 ignored.
+Screenshots: `w8a-filters-*.png` (gitignored).
+
+### W8b — Inherent methods + one-hop receivers — DONE
+
+**Why.** Types alone do not close W8; the owner's interest includes methods,
+and `Type::assoc` was still a silent `associated_dropped` for local types.
+
+**Change.** Extract inherent `impl Type` methods as `Function` with
+`receiver_type`. Resolve `Type::method` and `.method` with one-hop hints
+(param/let annotation, constructor RHS). Untyped `.method` with ≥2 inherent
+candidates → `Conflict`; otherwise trait/untyped/external assoc →
+`associated_dropped` (not Unresolved flood, not a guessed resolve). Trait
+impls stay excluded. Fixture `inherent-methods`.
+
+**Policy note.** First cut that Unresolved every untyped `.clone`/`.len` blew
+the self-map to ~1900 unresolved. That was rejected: those sites are not
+missing free functions. Dropping them under `associated_dropped` keeps the
+Diagnostics worklist honest.
+
+**Measured.**
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | pass |
+| Fixture: Cache::new / .get one-hop | Resolved |
+| Fixture: untyped ambiguous .get | Conflict (Cache vs Registry) |
+| Self-map | **0 unresolved · 6 conflicts**; 84 types, 63 methods; associated_dropped 2484 |
+| 6 conflicts | untyped `.explicits_in` / `.find_type` / `.lookup_in_module` / `.as_str` name clashes — true positives |
+
+**Not done.** Trait impl methods; multi-hop / inference beyond one hop; type
+DAG in the dock; `Self` path forms beyond constructor drop.
 
 ---
 
@@ -196,4 +226,4 @@ work on file cards; there is no type DAG in the dock yet.
 | W7 | done |
 | W9 | done |
 | W10 | done |
-| W8 | in progress — W8a done; methods not started |
+| W8 | done (W8a types + W8b inherent methods; trait impls still out) |

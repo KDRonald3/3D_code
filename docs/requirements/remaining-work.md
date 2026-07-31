@@ -226,7 +226,7 @@ bind and Host guard. Long analyses must not appear as a hung page.
 and elapsed-time overlay on the import screen. Host guard still rejects
 non-loopback. Fixture `phase1-single-file` analysed end-to-end in the browser.
 
-### W8 — Extend the analyser to structs and impls — IN PROGRESS
+### W8 — Extend the analyser to structs and impls — DONE (coherent slice)
 
 **Problem.** The Fns and Types filter chips are permanently disabled because the
 contract carries only free functions. Methods and impls were deliberately
@@ -239,13 +239,21 @@ extension of the contract rather than a UI afterthought. Method receiver typing
 is the hard part: one-hop inference at most, and anything less than certain must
 be `Conflict` or `Unresolved` — never a guess.
 
-**Progress (W8a).** `File.types` emits `TypeItem` nodes (struct / enum / trait /
-type alias) with `TypeId`, byte ranges, docs, enum variants, and `type_refs` for
-field / alias paths (external and prelude paths omitted). Fixture
-`type-definitions`. Fns / Types filter chips are enabled: they dim file cards by
-content (`fnCount` / `typeCount`). **Not yet:** inherent methods, associated
-functions, or method-call receiver typing — those remain dropped /
-`associated_dropped` as before.
+**Resolved as:**
+
+- **W8a — types.** `File.types` emits `TypeItem` (struct / enum / trait /
+  type alias) with `TypeId`, docs, variants, and `type_refs` for field / alias
+  paths. Fns / Types chips dim file cards by `fnCount` / `typeCount`.
+- **W8b — inherent methods.** Inherent `impl Type { fn … }` methods are
+  `Function` nodes with `receiver_type`. `Type::method` and one-hop
+  `.method` (annotation / constructor RHS / typed params) resolve when
+  certain; untyped `.method` with several inherent candidates is `Conflict`;
+  trait / untyped / external assoc forms stay `associated_dropped` — never a
+  guessed resolve. Trait impl methods stay out of the map.
+
+Fixtures: `type-definitions`, `inherent-methods`. Self-map after W8b: **0
+unresolved · 6 conflicts** (honest untyped method-name clashes), 84 types, 63
+inherent methods.
 
 ### W9 — Slice 5: remaining shell chrome — DONE
 

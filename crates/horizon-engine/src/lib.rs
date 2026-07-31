@@ -59,10 +59,21 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
         let index = resolve_index_for(&extracted, i);
         let types_for_path = build_types_for_crate(&extracted[i], &index);
 
+        let type_id_by_path: HashMap<String, TypeId> = types_for_path
+            .values()
+            .flatten()
+            .map(|t| (t.module_path.clone(), t.id.clone()))
+            .collect();
+
         let mut built_files = Vec::new();
         for (path, module_path, facts) in &extracted[i].file_facts {
-            let (functions, file_calls) =
+            let (mut functions, file_calls) =
                 attach_resolved_calls(facts.clone(), &index, &mut summary)?;
+            for func in &mut functions {
+                if let Some(ty_path) = facts.method_receivers.get(&func.id) {
+                    func.receiver_type = type_id_by_path.get(ty_path).cloned();
+                }
+            }
             let types = types_for_path.get(path).cloned().unwrap_or_default();
             built_files.push(File {
                 path: path.clone(),

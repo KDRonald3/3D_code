@@ -64,6 +64,10 @@ pub struct FileFacts {
     /// them as unresolved free functions. Nested `fn` items are not listed —
     /// those remain real free-function definitions.
     pub local_bindings: HashMap<FunctionId, HashSet<String>>,
+    /// Provisional function id → absolutized self-type path for inherent
+    /// methods extracted from `impl Type { … }` (no trait). Remapped with
+    /// function ids; converted to [`Function::receiver_type`] at map build.
+    pub method_receivers: HashMap<FunctionId, String>,
 }
 
 /// Kind of type-level item collected during extraction.
@@ -205,12 +209,26 @@ pub enum CallOwnerKind {
     File,
 }
 
+/// One-hop hint for a method-call receiver (`x.method(...)`).
+///
+/// Anything less than certain stays [`MethodReceiverHint::Unknown`] — resolve
+/// may then emit Conflict (several inherent methods share the name) or
+/// Unresolved, never a guessed type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MethodReceiverHint {
+    /// No certain one-hop type (untyped local, parameter without annotation, …).
+    Unknown,
+    /// Absolutized type path from an annotation or constructor form.
+    TypePath(String),
+}
+
 /// A call expression awaiting resolution (pre-map form).
 ///
 /// Distinct from [`horizon_map::CallSite`], which is the post-resolution edge.
 #[derive(Debug, Clone)]
 pub struct PendingCall {
-    /// Path text at the call site (e.g. `shapes::get`, `get`).
+    /// Path text at the call site (e.g. `shapes::get`, `get`, or `.get` for
+    /// a method call).
     pub call_path: String,
     /// 1-based line of the start of the call expression.
     pub line: u32,
@@ -226,6 +244,8 @@ pub struct PendingCall {
     pub owner: CallOwnerKind,
     /// Recovered from a macro argument token tree (see module docs).
     pub from_macro: bool,
+    /// Set for `MethodCallExpr` sites; `None` for ordinary path-form calls.
+    pub method_receiver: Option<MethodReceiverHint>,
 }
 
 /// Std/core macros whose arguments are expression positions we are willing to
@@ -301,14 +321,25 @@ pub fn extract_facts(
         let Some(func) = ast::Fn::cast(node.clone()) else {
             continue;
         };
-        if is_method_or_trait_item(func.syntax()) {
+        // Trait items and trait-impl methods stay out of the map. Inherent
+        // `impl Type { fn … }` methods are in scope for W8.
+        if is_trait_or_trait_impl_item(func.syntax()) {
             continue;
         }
         let Some(name) = func.name() else {
             continue;
         };
         let name = name.text().to_string();
-        let module_path = function_module_path(func.syntax(), &name, file_module_path);
+        let receiver_type_path = inherent_impl_self_type_path(func.syntax(), file_module_path);
+        let module_path = if let Some(ref ty_path) = receiver_type_path {
+            if ty_path == "crate" {
+                format!("crate::{name}")
+            } else {
+                format!("{ty_path}::{name}")
+            }
+        } else {
+            function_module_path(func.syntax(), &name, file_module_path)
+        };
         let line = func
             .fn_token()
             .map(|t| lines.line_of(u32::from(t.text_range().start())))
@@ -329,17 +360,24 @@ pub fn extract_facts(
             visibility,
             doc_comments,
             syntax: func.syntax().clone(),
+            receiver_type_path,
         });
     }
 
     // Provisional ids (no collision suffix); remapped crate-wide later.
     let mut functions = Vec::with_capacity(raw_defs.len());
     let mut function_visibility = Vec::with_capacity(raw_defs.len());
+    let mut method_receivers: HashMap<FunctionId, String> = HashMap::new();
     for def in &raw_defs {
+        let id = FunctionId::from_parts(crate_key, &def.module_path, None);
+        if let Some(ref ty) = def.receiver_type_path {
+            method_receivers.insert(id.clone(), ty.clone());
+        }
         functions.push(Function {
-            id: FunctionId::from_parts(crate_key, &def.module_path, None),
+            id,
             name: def.name.clone(),
             module_path: def.module_path.clone(),
+            receiver_type: None,
             line: def.line,
             byte_start: def.byte_start,
             byte_end: def.byte_end,
@@ -366,6 +404,16 @@ pub fn extract_facts(
         }
     }
 
+    // One-hop receiver types for locals inside each function (annotation /
+    // constructor forms only — never guessed).
+    let mut local_types: HashMap<FunctionId, HashMap<String, String>> = HashMap::new();
+    for (raw, func) in raw_defs.iter().zip(functions.iter()) {
+        let typed = local_binding_types(&raw.syntax, file_module_path);
+        if !typed.is_empty() {
+            local_types.insert(func.id.clone(), typed);
+        }
+    }
+
     let mut call_sites = Vec::new();
     let mut seen_ranges: HashSet<(u32, u32)> = HashSet::new();
     for node in root.descendants() {
@@ -378,6 +426,23 @@ pub fn extract_facts(
             file_module_path,
             &id_by_syntax,
             false,
+        ) else {
+            continue;
+        };
+        seen_ranges.insert((pending.byte_start, pending.byte_end));
+        call_sites.push(pending);
+    }
+
+    for node in root.descendants() {
+        let Some(call) = ast::MethodCallExpr::cast(node.clone()) else {
+            continue;
+        };
+        let Some(pending) = pending_from_method_call(
+            &call,
+            &lines,
+            file_module_path,
+            &id_by_syntax,
+            &local_types,
         ) else {
             continue;
         };
@@ -410,6 +475,7 @@ pub fn extract_facts(
         call_sites,
         doc_comments: extract_inner_docs(root),
         local_bindings,
+        method_receivers,
     })
 }
 
@@ -473,8 +539,8 @@ fn pending_from_call_expr(
     let byte_end = u32::from(range.end());
 
     match classify_call_owner(call.syntax()) {
-        CallOwner::SkipImplOrTrait => None,
-        CallOwner::FreeFunction(fn_node) => {
+        CallOwner::SkipTraitItem => None,
+        CallOwner::Function(fn_node) => {
             let enclosing = id_by_syntax.get(&fn_node).cloned()?;
             Some(PendingCall {
                 call_path,
@@ -485,6 +551,7 @@ fn pending_from_call_expr(
                 module_path: call_module_path(call.syntax(), file_module_path),
                 owner: CallOwnerKind::Function,
                 from_macro,
+                method_receiver: None,
             })
         }
         CallOwner::ModuleLevel => Some(PendingCall {
@@ -496,6 +563,7 @@ fn pending_from_call_expr(
             module_path: call_module_path(call.syntax(), file_module_path),
             owner: CallOwnerKind::File,
             from_macro,
+            method_receiver: None,
         }),
     }
 }
@@ -555,8 +623,8 @@ fn macro_owner_context(
     id_by_syntax: &HashMap<SyntaxNode, FunctionId>,
 ) -> Option<MacroOwnerContext> {
     match classify_call_owner(owner_node) {
-        CallOwner::SkipImplOrTrait => None,
-        CallOwner::FreeFunction(fn_node) => {
+        CallOwner::SkipTraitItem => None,
+        CallOwner::Function(fn_node) => {
             let enclosing = id_by_syntax.get(&fn_node).cloned()?;
             Some(MacroOwnerContext {
                 enclosing_function: Some(enclosing),
@@ -676,6 +744,7 @@ fn recover_from_macro_content(
                 module_path: owner_ctx.module_path.clone(),
                 owner: owner_ctx.owner,
                 from_macro: true,
+                method_receiver: None,
             });
             continue;
         }
@@ -1410,25 +1479,38 @@ struct RawDef {
     visibility: ItemVisibility,
     doc_comments: Vec<DocComment>,
     syntax: SyntaxNode,
+    /// Absolutized self-type path when this is an inherent method.
+    receiver_type_path: Option<String>,
 }
 
 enum CallOwner {
-    FreeFunction(SyntaxNode),
+    /// Free function or inherent method (in the extract index).
+    Function(SyntaxNode),
     ModuleLevel,
-    SkipImplOrTrait,
+    /// Trait item or trait-impl method — still out of map scope.
+    SkipTraitItem,
 }
 
 fn classify_call_owner(node: &SyntaxNode) -> CallOwner {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
             SyntaxKind::FN => {
-                if is_method_or_trait_item(&ancestor) {
-                    return CallOwner::SkipImplOrTrait;
+                if is_trait_or_trait_impl_item(&ancestor) {
+                    return CallOwner::SkipTraitItem;
                 }
-                return CallOwner::FreeFunction(ancestor);
+                return CallOwner::Function(ancestor);
             }
-            SyntaxKind::IMPL | SyntaxKind::TRAIT => {
-                return CallOwner::SkipImplOrTrait;
+            SyntaxKind::TRAIT => {
+                return CallOwner::SkipTraitItem;
+            }
+            SyntaxKind::IMPL => {
+                // Inside an impl but outside any fn — module-level relative to
+                // the impl (const items). Trait impls stay skipped.
+                if let Some(impl_) = ast::Impl::cast(ancestor.clone()) {
+                    if impl_.trait_().is_some() {
+                        return CallOwner::SkipTraitItem;
+                    }
+                }
             }
             _ => {}
         }
@@ -1491,15 +1573,324 @@ fn join_path(file_module_path: &str, parts: &[String]) -> String {
     }
 }
 
-fn is_method_or_trait_item(fn_node: &SyntaxNode) -> bool {
+/// Trait items and `impl Trait for Type` methods — still out of the map.
+fn is_trait_or_trait_impl_item(fn_node: &SyntaxNode) -> bool {
     for ancestor in fn_node.ancestors().skip(1) {
         match ancestor.kind() {
-            SyntaxKind::IMPL | SyntaxKind::TRAIT => return true,
+            SyntaxKind::TRAIT => return true,
+            SyntaxKind::IMPL => {
+                if let Some(impl_) = ast::Impl::cast(ancestor) {
+                    return impl_.trait_().is_some();
+                }
+                return true;
+            }
             SyntaxKind::FN => return false,
             _ => {}
         }
     }
     false
+}
+
+/// Absolutized self-type path for an inherent `impl Type { … }` method.
+fn inherent_impl_self_type_path(fn_node: &SyntaxNode, file_module_path: &str) -> Option<String> {
+    for ancestor in fn_node.ancestors().skip(1) {
+        if ancestor.kind() == SyntaxKind::FN {
+            return None;
+        }
+        let Some(impl_) = ast::Impl::cast(ancestor) else {
+            continue;
+        };
+        if impl_.trait_().is_some() {
+            return None;
+        }
+        let ty = impl_.self_ty()?;
+        let path_ty = ast::PathType::cast(ty.syntax().clone())?;
+        let path = path_ty.path()?;
+        let segs = path_segments(&path);
+        if segs.is_empty() {
+            return None;
+        }
+        // Only simple path types (no dyn/impl Trait receivers as self type).
+        // Bare `Cache` is relative to the file module; `crate::…` / `super::…`
+        // go through the shared absolutizer. (That helper leaves unknown bare
+        // roots untouched for import paths like `serde` — not appropriate here.)
+        return Some(absolutize_local_type_path(&segs, file_module_path));
+    }
+    None
+}
+
+fn absolutize_local_type_path(segments: &[String], from_module: &str) -> String {
+    if segments.is_empty() {
+        return from_module.to_string();
+    }
+    if matches!(segments[0].as_str(), "crate" | "self" | "super") {
+        absolutize_path_segments(segments, from_module)
+    } else {
+        join_path(from_module, segments)
+    }
+}
+
+fn pending_from_method_call(
+    call: &ast::MethodCallExpr,
+    lines: &LineIndex,
+    file_module_path: &str,
+    id_by_syntax: &HashMap<SyntaxNode, FunctionId>,
+    local_types: &HashMap<FunctionId, HashMap<String, String>>,
+) -> Option<PendingCall> {
+    let name = call.name_ref()?.text().to_string();
+    if !is_ident(&name) {
+        return None;
+    }
+    let range = call.syntax().text_range();
+    let byte_start = u32::from(range.start());
+    let byte_end = u32::from(range.end());
+    let call_path = format!(".{name}");
+
+    let (owner, enclosing) = match classify_call_owner(call.syntax()) {
+        CallOwner::SkipTraitItem => return None,
+        CallOwner::Function(fn_node) => {
+            let enclosing = id_by_syntax.get(&fn_node).cloned()?;
+            (CallOwnerKind::Function, Some(enclosing))
+        }
+        CallOwner::ModuleLevel => (CallOwnerKind::File, None),
+    };
+
+    let hint = match enclosing.as_ref() {
+        Some(fid) => infer_receiver_hint(call, local_types.get(fid), file_module_path),
+        None => MethodReceiverHint::Unknown,
+    };
+
+    Some(PendingCall {
+        call_path,
+        line: lines.line_of(byte_start),
+        byte_start,
+        byte_end,
+        enclosing_function: enclosing,
+        module_path: call_module_path(call.syntax(), file_module_path),
+        owner,
+        from_macro: false,
+        method_receiver: Some(hint),
+    })
+}
+
+/// One-hop receiver type: typed `let` / parameter, or constructor / associated
+/// call form `Type { … }` / `Type(…)` / `Type::assoc(…)`.
+fn infer_receiver_hint(
+    call: &ast::MethodCallExpr,
+    local_types: Option<&HashMap<String, String>>,
+    file_module_path: &str,
+) -> MethodReceiverHint {
+    let Some(receiver) = call.receiver() else {
+        return MethodReceiverHint::Unknown;
+    };
+    // Strip a shallow layer of `&` / `*` / parens.
+    let mut expr = receiver;
+    for _ in 0..3 {
+        if let Some(ref_expr) = ast::RefExpr::cast(expr.syntax().clone()) {
+            if let Some(inner) = ref_expr.expr() {
+                expr = inner;
+                continue;
+            }
+        }
+        if let Some(prefix) = ast::PrefixExpr::cast(expr.syntax().clone()) {
+            if let Some(inner) = prefix.expr() {
+                expr = inner;
+                continue;
+            }
+        }
+        if let Some(paren) = ast::ParenExpr::cast(expr.syntax().clone()) {
+            if let Some(inner) = paren.expr() {
+                expr = inner;
+                continue;
+            }
+        }
+        break;
+    }
+
+    // Local name with a known one-hop type.
+    if let Some(path_expr) = ast::PathExpr::cast(expr.syntax().clone()) {
+        if let Some(path) = path_expr.path() {
+            let segs = path_segments(&path);
+            if segs.len() == 1 {
+                if let Some(types) = local_types {
+                    if let Some(ty) = types.get(&segs[0]) {
+                        return MethodReceiverHint::TypePath(ty.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // `Type::assoc(...)` as the receiver expression.
+    if let Some(call_expr) = ast::CallExpr::cast(expr.syntax().clone()) {
+        if let Some(callee) = call_expr.expr() {
+            if let Some(path_expr) = ast::PathExpr::cast(callee.syntax().clone()) {
+                if let Some(path) = path_expr.path() {
+                    let segs = path_segments(&path);
+                    if segs.len() >= 2 {
+                        let type_segs = &segs[..segs.len() - 1];
+                        if type_segs
+                            .iter()
+                            .all(|s| is_ident(s) || matches!(s.as_str(), "crate" | "self" | "super"))
+                        {
+                            let abs = absolutize_local_type_path(type_segs, file_module_path);
+                            return MethodReceiverHint::TypePath(abs);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // `Type { … }` record constructor as receiver.
+    if let Some(rec) = ast::RecordExpr::cast(expr.syntax().clone()) {
+        if let Some(path) = rec.path() {
+            let segs = path_segments(&path);
+            if !segs.is_empty() {
+                let abs = absolutize_local_type_path(&segs, file_module_path);
+                return MethodReceiverHint::TypePath(abs);
+            }
+        }
+    }
+
+    MethodReceiverHint::Unknown
+}
+
+/// Map local binding names → absolutized type paths from annotations or
+/// constructor RHS forms (one hop only).
+fn local_binding_types(fn_node: &SyntaxNode, file_module_path: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+
+    // Parameters with explicit types: `cache: Cache`, `cache: &Cache`.
+    if let Some(func) = ast::Fn::cast(fn_node.clone()) {
+        if let Some(params) = func.param_list() {
+            for param in params.params() {
+                let Some(pat) = param.pat() else {
+                    continue;
+                };
+                let Some(name) = single_ident_pat(&pat) else {
+                    continue;
+                };
+                if let Some(ty) = param.ty() {
+                    if let Some(path) = simple_type_path(&ty, file_module_path) {
+                        out.insert(name, path);
+                    }
+                }
+            }
+        }
+    }
+
+    // `let name: Type = …` and `let name = Type::…` / `Type { … }`.
+    for node in fn_node.descendants() {
+        // Skip nested free-function / trait-impl bodies.
+        if node.kind() == SyntaxKind::FN && &node != fn_node {
+            continue;
+        }
+        let Some(let_stmt) = ast::LetStmt::cast(node) else {
+            continue;
+        };
+        let Some(pat) = let_stmt.pat() else {
+            continue;
+        };
+        let Some(name) = single_ident_pat(&pat) else {
+            continue;
+        };
+        if let Some(ty) = let_stmt.ty() {
+            if let Some(path) = simple_type_path(&ty, file_module_path) {
+                out.insert(name, path);
+                continue;
+            }
+        }
+        if let Some(init) = let_stmt.initializer() {
+            if let Some(path) = constructor_type_path(&init, file_module_path) {
+                out.insert(name, path);
+            }
+        }
+    }
+    out
+}
+
+fn single_ident_pat(pat: &ast::Pat) -> Option<String> {
+    let ident = ast::IdentPat::cast(pat.syntax().clone())?;
+    let name = ident.name()?.text().to_string();
+    if name == "_" {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn simple_type_path(ty: &ast::Type, file_module_path: &str) -> Option<String> {
+    // Peel references: `&Cache`, `&mut Cache`.
+    let mut cur = ty.clone();
+    for _ in 0..3 {
+        if let Some(ref_ty) = ast::RefType::cast(cur.syntax().clone()) {
+            cur = ref_ty.ty()?;
+            continue;
+        }
+        if let Some(paren) = ast::ParenType::cast(cur.syntax().clone()) {
+            cur = paren.ty()?;
+            continue;
+        }
+        break;
+    }
+    let path_ty = ast::PathType::cast(cur.syntax().clone())?;
+    let path = path_ty.path()?;
+    let segs = path_segments(&path);
+    if segs.is_empty() {
+        return None;
+    }
+    if segs.len() == 1 && (is_primitive_type_name(&segs[0]) || is_prelude_type_name(&segs[0])) {
+        return None;
+    }
+    Some(absolutize_local_type_path(&segs, file_module_path))
+}
+
+fn constructor_type_path(expr: &ast::Expr, file_module_path: &str) -> Option<String> {
+    if let Some(call) = ast::CallExpr::cast(expr.syntax().clone()) {
+        let callee = call.expr()?;
+        let path_expr = ast::PathExpr::cast(callee.syntax().clone())?;
+        let path = path_expr.path()?;
+        let segs = path_segments(&path);
+        if segs.len() >= 2 {
+            let type_segs = &segs[..segs.len() - 1];
+            return Some(absolutize_local_type_path(type_segs, file_module_path));
+        }
+        // Tuple struct constructor `Tag(1)` — single capitalised segment.
+        if segs.len() == 1 && is_upper_camel_segment(&segs[0]) {
+            return Some(absolutize_local_type_path(&segs, file_module_path));
+        }
+    }
+    if let Some(rec) = ast::RecordExpr::cast(expr.syntax().clone()) {
+        let path = rec.path()?;
+        let segs = path_segments(&path);
+        if !segs.is_empty() {
+            return Some(absolutize_local_type_path(&segs, file_module_path));
+        }
+    }
+    None
+}
+
+fn is_upper_camel_segment(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() => {
+            chars.any(|c| c.is_ascii_lowercase()) && !name.contains('_')
+        }
+        _ => false,
+    }
+}
+
+/// Remap [`FileFacts::method_receivers`] keys after crate-wide id assignment.
+pub fn remap_method_receivers(
+    receivers: &mut HashMap<FunctionId, String>,
+    remap: &HashMap<FunctionId, FunctionId>,
+) {
+    let old = std::mem::take(receivers);
+    for (id, path) in old {
+        let new_id = remap.get(&id).cloned().unwrap_or(id);
+        receivers.insert(new_id, path);
+    }
 }
 
 fn is_path_like_callee(path: &str) -> bool {

@@ -97,7 +97,9 @@
 //! enclosing module and therefore treated as module-wide, even though rustc
 //! scopes them to the body. See `extract` module docs.
 
-use crate::extract::{Import, ItemVisibility, PendingCall, TypeDef, TypeKind};
+use crate::extract::{
+    Import, ItemVisibility, MethodReceiverHint, PendingCall, TypeDef, TypeKind,
+};
 use horizon_map::{
     CallTarget, Conflict, Function, FunctionId, TypeConflict, TypeId, TypeTarget, UnresolvedCall,
     UnresolvedType,
@@ -129,7 +131,8 @@ fn is_hop_limit_reason(reason: &str) -> bool {
 pub enum ExclusionKind {
     /// Enum variant or tuple-struct constructor — constructs a value, not a call.
     VariantOrConstructor,
-    /// Associated function on a type (`Type::name`) — `impl` item, out of scope.
+    /// Associated function on a type (`Type::name`) — `impl` item, out of scope,
+    /// or an untyped method call with no conflicting inherent candidates.
     AssociatedFunction,
     /// Call through a local binding (closure / `let` / parameter), not a free function.
     LocalBinding,
@@ -748,6 +751,7 @@ fn collect_type_full_paths(
             module_path: from_module.to_string(),
             owner: crate::extract::CallOwnerKind::File,
             from_macro: false,
+            method_receiver: None,
         };
         for binding in index.explicits_in(from_module, name) {
             match resolve_target_path(&binding.target, &site, index, 0) {
@@ -802,6 +806,7 @@ fn collect_type_full_paths(
         module_path: from_module.to_string(),
         owner: crate::extract::CallOwnerKind::File,
         from_macro: false,
+            method_receiver: None,
     };
     for binding in index.explicits_in(from_module, segments[0]) {
         match resolve_target_path(&binding.target, &site, index, 0) {
@@ -836,6 +841,10 @@ fn collect_type_full_paths(
 
 /// Resolve a single pending call against `index`.
 pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveResult> {
+    if let Some(hint) = site.method_receiver.as_ref() {
+        return Ok(resolve_method_call(site, hint, index));
+    }
+
     let path = site.call_path.as_str();
     let segments: Vec<&str> = path
         .split("::")
@@ -869,6 +878,79 @@ pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveR
     }
 
     Ok(resolve_qualified(&segments, site, index))
+}
+
+/// Resolve `receiver.method(...)` with at most one-hop receiver typing.
+fn resolve_method_call(
+    site: &PendingCall,
+    hint: &MethodReceiverHint,
+    index: &ResolveIndex,
+) -> ResolveResult {
+    let method = site
+        .call_path
+        .strip_prefix('.')
+        .unwrap_or(site.call_path.as_str());
+    if method.is_empty() {
+        return ResolveResult::Target(unresolved(format!(
+            "malformed method call `{}`",
+            site.call_path
+        )));
+    }
+
+    match hint {
+        MethodReceiverHint::TypePath(ty_path) => {
+            let full = if ty_path == "crate" {
+                format!("crate::{method}")
+            } else {
+                format!("{ty_path}::{method}")
+            };
+            let ids = index.lookup_full(&full);
+            if !ids.is_empty() {
+                return match unique_or_conflict(
+                    ids,
+                    format!("multiple inherent methods `{full}`"),
+                ) {
+                    Ok(r) => r,
+                    Err(r) => r,
+                };
+            }
+            // Known receiver type but no inherent method — trait methods
+            // (`.clone`, `.into_response`, …) and missing names share this drop.
+            ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
+        }
+        MethodReceiverHint::Unknown => {
+            // Honest ambiguity only: every inherent method of this name.
+            // A single candidate without a typed receiver would be a guess
+            // (the receiver might be an external / trait method) — drop it.
+            // Zero candidates (`.clone`, `.len`, …) are the same drop class as
+            // external associated functions, not Unresolved free-function misses.
+            let mut ids = Vec::new();
+            for func in &index.functions {
+                if func.name == method && func.module_path.contains("::") {
+                    // Inherent methods use `Type::method` paths; free functions
+                    // in modules also contain `::`. Prefer entries whose parent
+                    // segment is an indexed type.
+                    if let Some((parent, name)) = split_parent_name(&func.module_path) {
+                        if name == method && index.find_type_at_path(&parent).is_some() {
+                            if !ids.contains(&func.id) {
+                                ids.push(func.id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            match ids.as_slice() {
+                [] | [_] => ResolveResult::Excluded(ExclusionKind::AssociatedFunction),
+                _ => ResolveResult::Target(CallTarget::Conflict(Conflict {
+                    candidates: ids,
+                    reason: format!(
+                        "method call `.{method}` has no known receiver type; \
+                         several inherent methods share that name"
+                    ),
+                })),
+            }
+        }
+    }
 }
 
 fn is_external_root(first: &str, index: &ResolveIndex) -> bool {
@@ -991,6 +1073,10 @@ fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> 
     }
 
     // No free function — classify constructors / prelude variants.
+    // `Self(...)` in an inherent method is a constructor of the impl type.
+    if name == "Self" {
+        return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
+    }
     if is_prelude_variant(name) {
         return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
     }
@@ -1292,11 +1378,31 @@ fn classify_from_type_path(
             if index.enum_has_variant(ty, member) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
             }
+            // Inherent associated function / method: `Type::name(...)`.
+            let method_path = if ty_path == "crate" {
+                format!("crate::{member}")
+            } else {
+                format!("{ty_path}::{member}")
+            };
+            let ids = index.lookup_full(&method_path);
+            if !ids.is_empty() {
+                return match unique_or_conflict(
+                    ids,
+                    format!("multiple inherent items `{method_path}`"),
+                ) {
+                    Ok(r) => r,
+                    Err(r) => r,
+                };
+            }
+            // Indexed type but no inherent item — typically a trait / derive
+            // method (`Cli::parse`, `Type::default`). Same deliberate drop as
+            // other out-of-scope assoc forms, not a missing free function.
             return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
         }
         if is_prelude_variant(member) {
             return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
         }
+        // Type not indexed (external / prelude) — still a deliberate drop.
         return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
     }
     ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
@@ -2149,6 +2255,7 @@ fn collect_glob_function_candidates(
                 module_path: from_module.into(),
                 owner: crate::extract::CallOwnerKind::File,
                 from_macro: false,
+                method_receiver: None,
             };
             if let TargetResolve::Functions(ids) = resolve_target_path(&target, &site, index, 0) {
                 for id in ids {
@@ -2370,7 +2477,7 @@ fn classify_non_module_suffix(
             if index.enum_has_variant(ty, member) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
             }
-            return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
+            return classify_from_type_path(&ty.full_path(), after_type, full_path, index);
         }
         if looks_like_type_name(type_name) {
             if is_prelude_variant(member) {
@@ -2495,6 +2602,7 @@ mod tests {
             id: FunctionId::from_parts("demo", path, None),
             name: path.rsplit("::").next().unwrap().to_string(),
             module_path: path.to_string(),
+            receiver_type: None,
             line,
             byte_start: 0,
             byte_end: 0,
@@ -2513,6 +2621,7 @@ mod tests {
             module_path: module.into(),
             owner: CallOwnerKind::File,
             from_macro: false,
+                method_receiver: None,
         }
     }
 
@@ -2894,7 +3003,7 @@ mod tests {
     }
 
     #[test]
-    fn excludes_local_associated_function() {
+    fn indexed_type_missing_assoc_is_dropped_not_unresolved() {
         let types = vec![TypeDef {
             name: "FunctionId".into(),
             module_path: "crate::map".into(),
@@ -2990,6 +3099,7 @@ mod tests {
             id: FunctionId::from_parts("text_engine", "crate::format::upper", None),
             name: "upper".into(),
             module_path: "crate::format::upper".into(),
+            receiver_type: None,
             line: 1,
             byte_start: 0,
             byte_end: 0,
@@ -3000,6 +3110,7 @@ mod tests {
             id: FunctionId::from_parts("text_engine", "crate::version", None),
             name: "version".into(),
             module_path: "crate::version".into(),
+            receiver_type: None,
             line: 2,
             byte_start: 0,
             byte_end: 0,
