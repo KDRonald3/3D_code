@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Sync: copy or symlink ide/extensions/horizon-map into the Code-OSS extensions tree.
+# LEGACY — sync deprecated ide/extensions/horizon-map into Code-OSS extensions/.
 #
-# Usage:
-#   ./ide/scripts/sync-extension.sh          # copy (default)
-#   ./ide/scripts/sync-extension.sh copy
-#   ./ide/scripts/sync-extension.sh link     # symlink for live extension edits
+# The product surface is the workbench contrib:
+#   ./ide/scripts/sync-contrib.sh
+#
+# Usage (legacy only):
+#   ./ide/scripts/sync-extension.sh [copy|link]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 . "${SCRIPT_DIR}/lib.sh"
+
+horizon_warn "sync-extension.sh is legacy. Prefer ./ide/scripts/sync-contrib.sh (workbench contrib)."
 
 MODE="${1:-${HORIZON_EXTENSION_SYNC_MODE:-copy}}"
 case "${MODE}" in

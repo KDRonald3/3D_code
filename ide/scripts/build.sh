@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Build: install deps and compile Code-OSS enough to launch via scripts/code.sh.
-# On constrained VMs this can take a long time / OOM — use ./ide/scripts/dev-extension.sh
-# for extension UI iteration without a full compile.
+# Primary product path — Map lives in workbench contrib/horizon (synced here).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,12 +19,12 @@ if [[ "${HORIZON_OS}" == "linux" ]]; then
   horizon_require_linux_build_deps
 fi
 
-# Re-apply product overlay + extension sync so rebuilds stay branded.
+# Re-apply product overlay + contrib sync so rebuilds stay branded.
 if [[ -f "${HORIZON_CODE_OSS_DIR}/product.json.upstream" ]]; then
   cp "${HORIZON_CODE_OSS_DIR}/product.json.upstream" "${HORIZON_CODE_OSS_DIR}/product.json"
 fi
 horizon_apply_product_overlay
-horizon_sync_extension "${HORIZON_EXTENSION_SYNC_MODE:-copy}"
+horizon_sync_contrib "${HORIZON_CONTRIB_SYNC_MODE:-copy}"
 
 cd "${HORIZON_CODE_OSS_DIR}"
 
@@ -63,8 +62,8 @@ export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}"
 if ! npm run compile; then
   horizon_warn "full compile failed or was interrupted"
   echo
-  echo "You can still iterate on the map extension without a full Code-OSS build:"
-  echo "  ./ide/scripts/dev-extension.sh [workspace-path]"
+  echo "Fix compile errors, then re-run. Map UI lives in ide/contrib/horizon (synced into"
+  echo "src/vs/workbench/contrib/horizon). Do not use the deprecated extension EDH path as the product."
   exit 1
 fi
 

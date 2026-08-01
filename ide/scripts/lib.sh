@@ -12,6 +12,11 @@ HORIZON_VSCODE_REF_FILE="${HORIZON_IDE_ROOT}/product/vscode-ref.txt"
 HORIZON_CODE_OSS_DIR="${HORIZON_IDE_ROOT}/code-oss"
 # Back-compat alias used by earlier drafts.
 HORIZON_VENDOR_DIR="${HORIZON_CODE_OSS_DIR}"
+# Product surface: workbench contrib (synced into src/vs/workbench/contrib/horizon).
+HORIZON_CONTRIB_SRC="${HORIZON_IDE_ROOT}/contrib/horizon"
+HORIZON_CONTRIB_DST="${HORIZON_CODE_OSS_DIR}/src/vs/workbench/contrib/horizon"
+HORIZON_WORKBENCH_COMMON_MAIN="${HORIZON_CODE_OSS_DIR}/src/vs/workbench/workbench.common.main.ts"
+# Deprecated extension package (not the product surface).
 HORIZON_EXTENSION_SRC="${HORIZON_IDE_ROOT}/extensions/horizon-map"
 HORIZON_EXTENSION_DST="${HORIZON_CODE_OSS_DIR}/extensions/horizon-map"
 HORIZON_PREBUILT_DIR="${HORIZON_IDE_ROOT}/.cache/prebuilt"
@@ -144,12 +149,54 @@ horizon_sync_extension() {
   [[ -d "${HORIZON_CODE_OSS_DIR}/extensions" ]] || horizon_die "Code-OSS extensions/ missing"
 
   if [[ ! -d "${src}" ]]; then
-    horizon_warn "extension source missing: ${src} (other workstreams own it); skipping sync"
+    horizon_warn "deprecated extension source missing: ${src}; skipping extension sync"
     return 0
   fi
 
-  if [[ ! -f "${src}/package.json" ]]; then
-    horizon_warn "${src}/package.json not found yet — syncing tree anyway so media/src land in code-oss"
+  horizon_warn "horizon-map extension sync is legacy — product surface is ide/contrib/horizon (workbench contrib)"
+
+  mkdir -p "$(dirname "${dst}")"
+  if [[ -e "${dst}" || -L "${dst}" ]]; then
+    rm -rf "${dst}"
+  fi
+
+  case "${mode}" in
+    link)
+      ln -s "${src}" "${dst}"
+      horizon_info "linked ${src} -> ${dst} (legacy)"
+      ;;
+    copy|*)
+      if command -v rsync >/dev/null 2>&1; then
+        mkdir -p "${dst}"
+        rsync -a --delete \
+          --exclude node_modules \
+          --exclude .git \
+          "${src}/" "${dst}/"
+      else
+        mkdir -p "${dst}"
+        cp -a "${src}/." "${dst}/"
+        rm -rf "${dst}/node_modules" 2>/dev/null || true
+      fi
+      horizon_info "copied ${src} -> ${dst} (legacy)"
+      ;;
+  esac
+}
+
+# Sync ide/contrib/horizon into Code-OSS workbench contrib and register the import.
+horizon_sync_contrib() {
+  local mode="${1:-copy}" # copy | link
+  local src="${HORIZON_CONTRIB_SRC}"
+  local dst="${HORIZON_CONTRIB_DST}"
+  local main_ts="${HORIZON_WORKBENCH_COMMON_MAIN}"
+
+  [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS checkout missing at ${HORIZON_CODE_OSS_DIR} (run bootstrap first)"
+  [[ -d "${HORIZON_CODE_OSS_DIR}/src/vs/workbench/contrib" ]] || horizon_die "Code-OSS workbench contrib/ missing"
+
+  if [[ ! -d "${src}" ]]; then
+    horizon_die "contrib source missing: ${src}"
+  fi
+  if [[ ! -f "${src}/browser/horizon.contribution.ts" ]]; then
+    horizon_die "contrib entry missing: ${src}/browser/horizon.contribution.ts"
   fi
 
   mkdir -p "$(dirname "${dst}")"
@@ -166,18 +213,59 @@ horizon_sync_extension() {
       if command -v rsync >/dev/null 2>&1; then
         mkdir -p "${dst}"
         rsync -a --delete \
-          --exclude node_modules \
           --exclude .git \
+          --exclude node_modules \
           "${src}/" "${dst}/"
       else
         mkdir -p "${dst}"
         cp -a "${src}/." "${dst}/"
-        rm -rf "${dst}/node_modules" 2>/dev/null || true
       fi
       horizon_info "copied ${src} -> ${dst}"
       ;;
   esac
+
+  horizon_wire_contrib_import
 }
+
+# Ensure workbench.common.main.ts imports the Horizon Map contribution.
+horizon_wire_contrib_import() {
+  local main_ts="${HORIZON_WORKBENCH_COMMON_MAIN}"
+  local marker="contrib/horizon/browser/horizon.contribution"
+  local import_line="import './contrib/horizon/browser/horizon.contribution.js';"
+
+  [[ -f "${main_ts}" ]] || horizon_die "missing ${main_ts}"
+
+  if grep -qF "${marker}" "${main_ts}"; then
+    horizon_info "Horizon contrib already registered in workbench.common.main.ts"
+    return 0
+  fi
+
+  python3 - "${main_ts}" "${import_line}" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+import_line = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+block = (
+    "\n// Horizon Map (built-in workbench contrib — not an extension)\n"
+    f"{import_line}\n"
+)
+# Prefer inserting before the contributions endregion.
+needle = "//#endregion"
+idx = text.rfind(needle)
+# Find the contributions region end: last //#endregion after "workbench contributions"
+contrib_hdr = text.find("--- workbench contributions")
+if contrib_hdr != -1:
+    idx = text.find(needle, contrib_hdr)
+if idx == -1:
+    path.write_text(text.rstrip() + "\n" + block, encoding="utf-8")
+else:
+    text = text[:idx] + block + "\n" + text[idx:]
+    path.write_text(text, encoding="utf-8")
+print(f"wired Horizon contrib import -> {path}")
+PY
+}
+
 
 # Resolve a VS Code / VSCodium / code-oss CLI for Extension Development Host.
 horizon_find_editor_cli() {

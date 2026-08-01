@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bootstrap: shallow-clone microsoft/vscode into ide/code-oss/,
-# apply Horizon product.json overlay, sync horizon-map extension.
+# apply Horizon product.json overlay, sync workbench contrib/horizon.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,13 +65,15 @@ fi
 cp "${HORIZON_CODE_OSS_DIR}/product.json.upstream" "${HORIZON_CODE_OSS_DIR}/product.json"
 horizon_apply_product_overlay
 
-# Sync built-in map extension into the Code-OSS tree when present.
-SYNC_MODE="${HORIZON_EXTENSION_SYNC_MODE:-copy}"
-horizon_sync_extension "${SYNC_MODE}"
+# Sync first-class Map workbench contrib into the Code-OSS tree.
+SYNC_MODE="${HORIZON_CONTRIB_SYNC_MODE:-${HORIZON_EXTENSION_SYNC_MODE:-copy}}"
+horizon_sync_contrib "${SYNC_MODE}"
 
 horizon_info "bootstrap complete"
 echo
 echo "Next:"
-echo "  ./ide/scripts/build.sh                 # full Code-OSS compile (heavy)"
-echo "  ./ide/scripts/dev-extension.sh         # fast UI iteration via Extension Development Host"
-echo "  ./ide/scripts/run.sh [workspace]       # launch built app (or editor fallback)"
+echo "  ./ide/scripts/build.sh                 # full Code-OSS compile (required for product)"
+echo "  ./ide/scripts/run.sh [workspace]       # launch built Horizon IDE"
+echo "  ./ide/scripts/sync-contrib.sh          # re-sync contrib after editing"
+echo
+echo "Note: ./ide/scripts/dev-extension.sh is legacy (Extension Development Host) — not the product path."
