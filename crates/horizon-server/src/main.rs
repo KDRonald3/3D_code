@@ -35,6 +35,7 @@ struct Cli {
     no_open: bool,
 }
 
+/// Bind a loopback ephemeral port, serve the UI, and optionally open a browser.
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();

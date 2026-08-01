@@ -19,6 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Path to the cargo workspace root from this crate's manifest.
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -27,6 +28,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Default directory of fixture crates with hand-written oracles.
 fn default_fixtures_dir() -> PathBuf {
     workspace_root().join("tests/fixtures")
 }
@@ -97,6 +99,7 @@ enum Cmd {
     },
 }
 
+/// CLI entry: dispatch fixture, self-map, exclusion, or combined measurements.
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
@@ -189,6 +192,7 @@ struct SelfMapReport {
     lsif: LsifReport,
 }
 
+/// Build maps for each fixture and score them against hand-written oracles.
 fn run_fixtures(fixtures_dir: &Path) -> Result<Vec<OracleReport>> {
     let mut reports = Vec::new();
     let mut dirs: Vec<PathBuf> = fs::read_dir(fixtures_dir)
@@ -214,6 +218,7 @@ fn run_fixtures(fixtures_dir: &Path) -> Result<Vec<OracleReport>> {
     Ok(reports)
 }
 
+/// Map a repo and optionally compare resolved edges to an LSIF baseline.
 fn run_self_map(
     repo: &Path,
     lsif: Option<&Path>,
@@ -288,11 +293,13 @@ fn run_self_map(
     })
 }
 
+/// Collect resolve outcomes and audit deliberate exclusion categories.
 fn run_exclusions(repo: &Path, sample: usize) -> Result<ExclusionAudit> {
     let outcomes = collect_call_outcomes(repo)?;
     Ok(audit_exclusions(&outcomes, sample))
 }
 
+/// Print per-fixture oracle pass/fail against expected edges.
 fn print_fixture_summary(reports: &[OracleReport]) {
     println!("=== Fixture oracles ===");
     let mut checked = 0usize;
@@ -329,6 +336,7 @@ fn print_fixture_summary(reports: &[OracleReport]) {
     );
 }
 
+/// Print self-map edge counts and LSIF agreement rates.
 fn print_self_summary(report: &SelfMapReport) {
     println!("=== Self-map ===");
     println!(
@@ -367,6 +375,7 @@ fn print_self_summary(report: &SelfMapReport) {
     }
 }
 
+/// Print LSIF match stats for one provenance cohort (ordinary vs macro).
 fn print_lsif_cohort(label: &str, c: &horizon_correctness::LsifCohort) {
     if c.compared == 0 {
         println!("  LSIF {label}: (none)");
@@ -388,6 +397,7 @@ fn print_lsif_cohort(label: &str, c: &horizon_correctness::LsifCohort) {
     }
 }
 
+/// Print exclusion counts, samples, and heuristically suspicious drops.
 fn print_exclusion_summary(audit: &ExclusionAudit) {
     println!("=== Exclusion audit ===");
     println!(
@@ -429,6 +439,7 @@ fn print_exclusion_summary(audit: &ExclusionAudit) {
     }
 }
 
+/// Pretty-print a correctness report as JSON to disk.
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

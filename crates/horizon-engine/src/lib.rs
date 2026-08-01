@@ -93,6 +93,7 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
     })
 }
 
+/// Resolve pending call sites in `facts` and attach them to owners.
 fn attach_resolved_calls(
     facts: FileFacts,
     index: &resolve::ResolveIndex,
@@ -130,6 +131,7 @@ fn attach_resolved_calls(
     Ok((functions, file_calls))
 }
 
+/// Resolve one [`PendingCall`] into a [`CallSite`], updating `summary` counters.
 fn resolve_pending(
     pending: &PendingCall,
     index: &resolve::ResolveIndex,

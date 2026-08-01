@@ -43,6 +43,7 @@ pub fn extract_repository(repo_root: &Path) -> Result<Vec<ExtractedCrate>> {
     Ok(extracted)
 }
 
+/// Walk modules, extract facts, and assign crate-wide [`FunctionId`]s.
 pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
     let rustc_name = krate.rustc_name.clone();
     // FunctionIds use a compilation-unit key that may differ from the real
@@ -228,6 +229,7 @@ fn path_crates_for(
     out
 }
 
+/// Find the extracted library (or fallback) matching a path [`Dependency`].
 fn find_path_dep_library<'a>(
     dep: &Dependency,
     all: &'a [ExtractedCrate],
@@ -250,6 +252,7 @@ fn find_path_dep_library<'a>(
         })
 }
 
+/// Import rustc names of `krate`'s external (non-path) dependencies.
 fn external_crate_names(krate: &Crate) -> HashSet<String> {
     krate
         .dependencies

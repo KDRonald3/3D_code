@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Convert an engine [`horizon_engine::extract::ItemVisibility`] into this crate's enum.
 fn convert_item_visibility(v: horizon_engine::extract::ItemVisibility) -> ItemVisibility {
     match v {
         horizon_engine::extract::ItemVisibility::Public => ItemVisibility::Public,
@@ -56,6 +57,7 @@ pub fn extract_repository(repo_root: &Path) -> Result<Vec<ExtractedCrate>> {
     Ok(extracted)
 }
 
+/// Walk `krate`'s modules, extract facts per file, and assign crate-wide [`FunctionId`]s.
 pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
     let rustc_name = krate.rustc_name.clone();
     // FunctionIds use a compilation-unit key that may differ from the real
@@ -242,6 +244,7 @@ fn path_crates_for(
     out
 }
 
+/// Find the extracted library (preferring `is_library`) that matches a path dependency.
 fn find_path_dep_library<'a>(
     dep: &Dependency,
     all: &'a [ExtractedCrate],
@@ -264,6 +267,7 @@ fn find_path_dep_library<'a>(
         })
 }
 
+/// Import rustc names of registry / external dependencies declared by `krate`.
 fn external_crate_names(krate: &Crate) -> HashSet<String> {
     krate
         .dependencies

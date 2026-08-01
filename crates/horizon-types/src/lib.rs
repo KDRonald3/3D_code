@@ -110,6 +110,7 @@ pub fn build_type_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
     })
 }
 
+/// Assign type ids, resolve field/alias type mentions, and group [`TypeItem`]s by file.
 fn build_types_for_crate(
     extracted: &pipeline::ExtractedCrate,
     index: &resolve::ResolveIndex,
@@ -163,6 +164,8 @@ fn build_types_for_crate(
     types_for_path
 }
 
+/// Resolve pending calls in `facts`, attach them to owning functions or the file,
+/// and update `summary` drop / conflict counters.
 fn attach_resolved_calls(
     facts: FileFacts,
     index: &resolve::ResolveIndex,
@@ -200,6 +203,10 @@ fn attach_resolved_calls(
     Ok((functions, file_calls))
 }
 
+/// Resolve one pending call into a map [`CallSite`], or `None` when dropped.
+///
+/// External / constructor / associated / local-binding exclusions update `summary`
+/// and produce no edge.
 fn resolve_pending(
     pending: &PendingCall,
     index: &resolve::ResolveIndex,
@@ -241,6 +248,7 @@ fn resolve_pending(
     }))
 }
 
+/// Partition `files` under `src_root` into nested [`Folder`]s and root-level files.
 fn build_folder_tree(src_root: &Path, files: Vec<File>) -> (Vec<Folder>, Vec<File>) {
     let src_root = discover::normalize_path(src_root);
     let mut root_files = Vec::new();

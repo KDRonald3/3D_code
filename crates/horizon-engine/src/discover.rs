@@ -177,6 +177,7 @@ pub fn rustc_crate_name(package_name: &str) -> String {
     package_name.replace('-', "_")
 }
 
+/// Stable identity key for deduplicating a discovered [`Crate`].
 fn crate_key(krate: &Crate) -> String {
     let root = krate
         .roots
@@ -186,6 +187,7 @@ fn crate_key(krate: &Crate) -> String {
     format!("{}|{}|{root}", krate.name, krate.rustc_name)
 }
 
+/// Resolve a path dependency to its `Cargo.toml`, if that file exists.
 fn path_dep_manifest(dep_path: &Path) -> Option<PathBuf> {
     let manifest = if dep_path.is_file() {
         dep_path.to_path_buf()
@@ -215,6 +217,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Walk `repo_root` and collect every `Cargo.toml`, skipping ignored dirs.
 fn find_manifests(repo_root: &Path) -> Vec<PathBuf> {
     let mut manifests = Vec::new();
     let root_manifest = repo_root.join("Cargo.toml");
@@ -248,6 +251,7 @@ fn find_manifests(repo_root: &Path) -> Vec<PathBuf> {
     manifests
 }
 
+/// True when directory walk should not descend into `path`.
 fn is_skipped_dir(path: &Path, repo_root: &Path) -> bool {
     if is_nested_fixture_manifest(path, repo_root) {
         return true;
@@ -271,6 +275,7 @@ fn is_nested_fixture_manifest(path: &Path, repo_root: &Path) -> bool {
         && matches!(comps.next(), Some(Component::Normal(b)) if b == "fixtures")
 }
 
+/// Run `cargo metadata --no-deps` for `manifest` and parse the JSON.
 fn run_cargo_metadata(manifest: &Path) -> Result<Metadata> {
     let output = Command::new("cargo")
         .args([
@@ -332,14 +337,17 @@ const LIBRARY_KINDS: &[&str] = &[
     "proc-macro",
 ];
 
+/// True when any of `kinds` is a library target (see [`LIBRARY_KINDS`]).
 fn is_library_kind(kinds: &[String]) -> bool {
     kinds.iter().any(|k| LIBRARY_KINDS.contains(&k.as_str()))
 }
 
+/// True when any of `kinds` is a `bin` target.
 fn is_bin_kind(kinds: &[String]) -> bool {
     kinds.iter().any(|k| k == "bin")
 }
 
+/// Map one cargo package to zero or more [`Crate`]s (library plus binaries).
 fn crates_from_package(package: MetaPackage, package_dir: &Path) -> Result<Vec<Crate>> {
     let mut lib: Option<MetaTarget> = None;
     let mut bins = Vec::new();

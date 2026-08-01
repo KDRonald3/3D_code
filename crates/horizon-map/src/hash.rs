@@ -25,6 +25,7 @@ pub fn content_hash(bytes: &[u8]) -> String {
     to_hex(&digest)
 }
 
+/// Encode `bytes` as lowercase hex with no separators or algorithm prefix.
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);

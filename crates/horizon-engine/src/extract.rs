@@ -381,6 +381,7 @@ fn local_binding_names(fn_node: &SyntaxNode) -> HashSet<String> {
     names
 }
 
+/// Recursively collect ident bindings under `node`, skipping nested `fn` bodies.
 fn collect_local_bindings(node: &SyntaxNode, names: &mut HashSet<String>, is_root_fn: bool) {
     if !is_root_fn && node.kind() == SyntaxKind::FN {
         // Nested free function — its params/locals belong to that function.
@@ -410,6 +411,7 @@ struct MacroRecoveryCtx<'a> {
     seen_ranges: &'a mut HashSet<(u32, u32)>,
 }
 
+/// Build a [`PendingCall`] from a path-form [`CallExpr`], if it should be kept.
 fn pending_from_call_expr(
     call: &ast::CallExpr,
     lines: &LineIndex,
@@ -507,6 +509,7 @@ struct MacroOwnerContext {
     owner: CallOwnerKind,
 }
 
+/// Ownership (function vs file) for calls recovered inside a macro invocation.
 fn macro_owner_context(
     owner_node: &SyntaxNode,
     file_module_path: &str,
@@ -530,12 +533,14 @@ fn macro_owner_context(
     }
 }
 
+/// Last path segment of a macro call (`println`, `cfg_if`, …).
 pub(crate) fn macro_call_name(mac: &ast::MacroCall) -> Option<String> {
     let path = mac.path()?;
     let segs = path_segments(&path);
     segs.last().cloned()
 }
 
+/// True when `node` sits inside a `macro_rules!` or `macro` definition body.
 pub(crate) fn is_inside_macro_definition(node: &SyntaxNode) -> bool {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -690,6 +695,7 @@ fn recover_from_macro_content(
     }
 }
 
+/// Map a byte offset from a re-parsed macro wrapper back into the source file.
 fn map_wrapped_offset(
     wrapped_offset: u32,
     wrapped_content_start: u32,
@@ -717,6 +723,7 @@ fn extract_inner_docs(node: &SyntaxNode) -> Vec<DocComment> {
     join_doc_pieces(DocCommentKind::Inner, pieces)
 }
 
+/// Join consecutive doc pieces of `kind` into a single [`DocComment`], if any.
 fn join_doc_pieces(kind: DocCommentKind, pieces: Vec<String>) -> Vec<DocComment> {
     if pieces.is_empty() {
         return Vec::new();
@@ -1011,6 +1018,7 @@ fn flatten_use_tree(
     });
 }
 
+/// Named / keyword segments of an AST path (`crate`, `self`, `foo`, …).
 fn path_segments(path: &ast::Path) -> Vec<String> {
     path.segments()
         .filter_map(|seg| match seg.kind()? {
@@ -1024,6 +1032,7 @@ fn path_segments(path: &ast::Path) -> Vec<String> {
         .collect()
 }
 
+/// Split a `crate::…` module path string into segments.
 fn module_path_segments(module_path: &str) -> Vec<String> {
     module_path.split("::").map(str::to_string).collect()
 }
@@ -1068,6 +1077,7 @@ fn absolutize_path_segments(segments: &[String], from_module: &str) -> String {
     segments.join("::")
 }
 
+/// Parent of `module` (`crate::a::b` → `crate::a`), or `None` at the crate root.
 fn parent_module_path(module: &str) -> Option<String> {
     if module == "crate" {
         None
@@ -1076,6 +1086,7 @@ fn parent_module_path(module: &str) -> Option<String> {
     }
 }
 
+/// Visibility of an item as written (`pub`, `pub(crate)`, …).
 fn visibility_of(node: &impl HasVisibility) -> ItemVisibility {
     match node.visibility() {
         None => ItemVisibility::Private,
@@ -1092,6 +1103,7 @@ fn visibility_of(node: &impl HasVisibility) -> ItemVisibility {
     }
 }
 
+/// True when `node` has an `impl` or `trait` ancestor.
 fn is_inside_impl_or_trait(node: &SyntaxNode) -> bool {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -1176,6 +1188,7 @@ enum CallOwner {
     SkipImplOrTrait,
 }
 
+/// Classify whether a call attaches to a free function, the file, or is skipped.
 fn classify_call_owner(node: &SyntaxNode) -> CallOwner {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -1238,6 +1251,7 @@ fn call_module_path(node: &SyntaxNode, file_module_path: &str) -> String {
     }
 }
 
+/// Join `parts` onto `file_module_path` with `::` separators.
 fn join_path(file_module_path: &str, parts: &[String]) -> String {
     if parts.is_empty() {
         return file_module_path.to_string();
@@ -1249,6 +1263,7 @@ fn join_path(file_module_path: &str, parts: &[String]) -> String {
     }
 }
 
+/// True when `fn_node` is an associated item inside an `impl` or `trait`.
 fn is_method_or_trait_item(fn_node: &SyntaxNode) -> bool {
     for ancestor in fn_node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -1260,6 +1275,7 @@ fn is_method_or_trait_item(fn_node: &SyntaxNode) -> bool {
     false
 }
 
+/// True when `path` looks like a path-form callee (idents / `crate` / `self` / `super`).
 fn is_path_like_callee(path: &str) -> bool {
     if path.is_empty() {
         return false;
@@ -1270,6 +1286,7 @@ fn is_path_like_callee(path: &str) -> bool {
     })
 }
 
+/// True when `s` is a Rust identifier (ASCII letters, digits, `_`).
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
@@ -1280,6 +1297,7 @@ fn is_ident(s: &str) -> bool {
     }
 }
 
+/// Collapse whitespace in `s` (used to normalize callee path text).
 fn squish(s: &str) -> String {
     s.split_whitespace().collect()
 }

@@ -128,6 +128,7 @@ pub async fn post_analyse(
         .into_response()
 }
 
+/// Resolve `path` to an absolute directory, or return a UI-facing error string.
 fn canonicalize_repo(path: &Path) -> Result<PathBuf, String> {
     if !path.exists() {
         return Err(format!("path does not exist: {}", path.display()));
@@ -141,6 +142,7 @@ fn canonicalize_repo(path: &Path) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+/// Serialize an [`AnalyseStatus`] snapshot for the progress-poll JSON body.
 fn status_to_json(status: &AnalyseStatus) -> Value {
     match status {
         AnalyseStatus::Idle => json!({ "status": "idle" }),

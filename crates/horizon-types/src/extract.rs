@@ -504,6 +504,10 @@ fn local_binding_names(fn_node: &SyntaxNode) -> HashSet<String> {
     names
 }
 
+/// Recursively collect ident bindings under `node`, skipping nested `fn` bodies.
+///
+/// When `is_root_fn` is true the current `FN` node is the function being scanned;
+/// nested free functions return immediately so their locals stay out of the parent set.
 fn collect_local_bindings(node: &SyntaxNode, names: &mut HashSet<String>, is_root_fn: bool) {
     if !is_root_fn && node.kind() == SyntaxKind::FN {
         // Nested free function — its params/locals belong to that function.
@@ -533,6 +537,10 @@ struct MacroRecoveryCtx<'a> {
     seen_ranges: &'a mut HashSet<(u32, u32)>,
 }
 
+/// Build a [`PendingCall`] from a path-form [`CallExpr`], or `None` if out of scope.
+///
+/// Rewrites `Self::…` to the enclosing impl type when certain. Trait items and
+/// non-path callees are skipped. `from_macro` marks recovery from an allowlisted macro.
 fn pending_from_call_expr(
     call: &ast::CallExpr,
     lines: &LineIndex,
@@ -642,6 +650,10 @@ struct MacroOwnerContext {
     owner: CallOwnerKind,
 }
 
+/// Owner context for calls recovered inside a macro at `owner_node`.
+///
+/// Mirrors [`classify_call_owner`]: trait items yield `None`; free functions and
+/// module-level sites produce the enclosing id / module path for attachment.
 fn macro_owner_context(
     owner_node: &SyntaxNode,
     file_module_path: &str,
@@ -665,12 +677,16 @@ fn macro_owner_context(
     }
 }
 
+/// Final path segment of a macro call (`println`, `format`, …).
 pub(crate) fn macro_call_name(mac: &ast::MacroCall) -> Option<String> {
     let path = mac.path()?;
     let segs = path_segments(&path);
     segs.last().cloned()
 }
 
+/// True when `node` sits inside a `macro_rules!` or `macro` definition body.
+///
+/// Those token trees are not expression positions we open for call recovery.
 pub(crate) fn is_inside_macro_definition(node: &SyntaxNode) -> bool {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -826,6 +842,9 @@ fn recover_from_macro_content(
     }
 }
 
+/// Map a byte offset from a re-parsed wrapper back into the original file.
+///
+/// Offsets before the wrapped content start are rejected (`None`).
 fn map_wrapped_offset(
     wrapped_offset: u32,
     wrapped_content_start: u32,
@@ -853,6 +872,7 @@ fn extract_inner_docs(node: &SyntaxNode) -> Vec<DocComment> {
     join_doc_pieces(DocCommentKind::Inner, pieces)
 }
 
+/// Join consecutive doc pieces into a single [`DocComment`], or an empty vec.
 fn join_doc_pieces(kind: DocCommentKind, pieces: Vec<String>) -> Vec<DocComment> {
     if pieces.is_empty() {
         return Vec::new();
@@ -1060,6 +1080,7 @@ fn extract_types(root: &SyntaxNode, file_module_path: &str, lines: &LineIndex) -
     types
 }
 
+/// Collect path-form type mentions from record or tuple field types into `out`.
 fn collect_field_type_refs(
     fields: Option<ast::FieldList>,
     lines: &LineIndex,
@@ -1179,6 +1200,7 @@ fn collect_type_path_refs(ty: &ast::Type, lines: &LineIndex, out: &mut Vec<Pendi
     }
 }
 
+/// True for Rust primitive scalar / `str` type names.
 fn is_primitive_type_name(name: &str) -> bool {
     matches!(
         name,
@@ -1202,6 +1224,7 @@ fn is_primitive_type_name(name: &str) -> bool {
     )
 }
 
+/// True for common prelude / std type names omitted from the type map.
 fn is_prelude_type_name(name: &str) -> bool {
     matches!(
         name,
@@ -1370,6 +1393,9 @@ fn flatten_use_tree(
     });
 }
 
+/// Named / keyword segments of a syntax path (`crate`, `self`, `Self`, …).
+///
+/// Type-parameter segments are dropped.
 fn path_segments(path: &ast::Path) -> Vec<String> {
     path.segments()
         .filter_map(|seg| match seg.kind()? {
@@ -1383,6 +1409,7 @@ fn path_segments(path: &ast::Path) -> Vec<String> {
         .collect()
 }
 
+/// Split a `::`-joined module path into owned segments.
 fn module_path_segments(module_path: &str) -> Vec<String> {
     module_path.split("::").map(str::to_string).collect()
 }
@@ -1397,6 +1424,10 @@ pub fn absolutize_type_path(segments: &[&str], from_module: &str) -> String {
     absolutize_path_segments(&owned, from_module)
 }
 
+/// Absolutize `crate` / `self` / `super` path segments relative to `from_module`.
+///
+/// Paths that start with any other segment (e.g. `std`, `serde`) are kept as
+/// written — they name an external crate or an as-yet-unresolved root.
 fn absolutize_path_segments(segments: &[String], from_module: &str) -> String {
     if segments.is_empty() {
         return from_module.to_string();
@@ -1433,6 +1464,7 @@ fn absolutize_path_segments(segments: &[String], from_module: &str) -> String {
     segments.join("::")
 }
 
+/// Parent of `module`, or `None` at the crate root.
 fn parent_module_path(module: &str) -> Option<String> {
     if module == "crate" {
         None
@@ -1441,6 +1473,7 @@ fn parent_module_path(module: &str) -> Option<String> {
     }
 }
 
+/// Map a syntax visibility node to [`ItemVisibility`] (default private).
 fn visibility_of(node: &impl HasVisibility) -> ItemVisibility {
     match node.visibility() {
         None => ItemVisibility::Private,
@@ -1457,6 +1490,7 @@ fn visibility_of(node: &impl HasVisibility) -> ItemVisibility {
     }
 }
 
+/// True when `node` has an `impl` or `trait` ancestor.
 fn is_inside_impl_or_trait(node: &SyntaxNode) -> bool {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -1580,6 +1614,10 @@ enum CallOwner {
     SkipTraitItem,
 }
 
+/// Classify where a call / macro should attach: free fn, file, or skip.
+///
+/// Trait items and trait-impl methods are [`CallOwner::SkipTraitItem`].
+/// Const items inside inherent impls fall through to module-level ownership.
 fn classify_call_owner(node: &SyntaxNode) -> CallOwner {
     for ancestor in node.ancestors().skip(1) {
         match ancestor.kind() {
@@ -1651,6 +1689,7 @@ fn call_module_path(node: &SyntaxNode, file_module_path: &str) -> String {
     }
 }
 
+/// Join `file_module_path` with additional path `parts` (`crate` root special-cased).
 fn join_path(file_module_path: &str, parts: &[String]) -> String {
     if parts.is_empty() {
         return file_module_path.to_string();
@@ -1712,6 +1751,7 @@ fn enclosing_impl_self_type_path(node: &SyntaxNode, file_module_path: &str) -> O
     None
 }
 
+/// Absolutized path of an `impl`'s self type when it is a simple path type.
 fn impl_self_type_path(impl_: &ast::Impl, file_module_path: &str) -> Option<String> {
     let ty = impl_.self_ty()?;
     let path_ty = ast::PathType::cast(ty.syntax().clone())?;
@@ -1727,6 +1767,8 @@ fn impl_self_type_path(impl_: &ast::Impl, file_module_path: &str) -> Option<Stri
     Some(absolutize_local_type_path(&segs, file_module_path))
 }
 
+/// Absolutize a local type path: keywords via [`absolutize_path_segments`], else
+/// rooted under `from_module` (unlike import paths that leave bare roots alone).
 fn absolutize_local_type_path(segments: &[String], from_module: &str) -> String {
     if segments.is_empty() {
         return from_module.to_string();
@@ -1738,6 +1780,10 @@ fn absolutize_local_type_path(segments: &[String], from_module: &str) -> String 
     }
 }
 
+/// Build a [`PendingCall`] for `receiver.method(...)` with a one-hop receiver hint.
+///
+/// Trait items are skipped. The call path is stored as `.method`; resolve uses
+/// [`PendingCall::method_receiver`] rather than treating it as a free-function path.
 fn pending_from_method_call(
     call: &ast::MethodCallExpr,
     lines: &LineIndex,
@@ -2004,6 +2050,7 @@ fn local_binding_types(
     out
 }
 
+/// Ident bound by a single-field `Some(x)` / `Ok(x)` tuple-struct pattern.
 fn option_or_result_binding(pat: &ast::Pat) -> Option<String> {
     let tsp = ast::TupleStructPat::cast(pat.syntax().clone())?;
     let path = tsp.path()?;
@@ -2020,6 +2067,7 @@ fn option_or_result_binding(pat: &ast::Pat) -> Option<String> {
     Some(name)
 }
 
+/// Declared return-type path of an unqualified local call, if known in `return_types`.
 fn call_return_type_path(
     expr: &ast::Expr,
     return_types: &HashMap<String, String>,
@@ -2069,6 +2117,7 @@ fn peel_return_type_path(ty: &ast::Type, file_module_path: &str) -> Option<Strin
     None
 }
 
+/// First type argument of a path's trailing generic arg list, if any.
 fn first_generic_type_arg(path: &ast::Path) -> Option<ast::Type> {
     let seg = path.segment()?;
     let args = seg.generic_arg_list()?;
@@ -2080,6 +2129,7 @@ fn first_generic_type_arg(path: &ast::Path) -> Option<ast::Type> {
     None
 }
 
+/// Ident text of a simple `IdentPat`, or `None` for `_` / non-idents.
 fn single_ident_pat(pat: &ast::Pat) -> Option<String> {
     let ident = ast::IdentPat::cast(pat.syntax().clone())?;
     let name = ident.name()?.text().to_string();
@@ -2090,6 +2140,7 @@ fn single_ident_pat(pat: &ast::Pat) -> Option<String> {
     }
 }
 
+/// Absolutized path behind `&` / parentheses, skipping primitives and prelude names.
 fn simple_type_path(ty: &ast::Type, file_module_path: &str) -> Option<String> {
     // Peel references: `&Cache`, `&mut Cache`.
     let mut cur = ty.clone();
@@ -2116,6 +2167,7 @@ fn simple_type_path(ty: &ast::Type, file_module_path: &str) -> Option<String> {
     Some(absolutize_local_type_path(&segs, file_module_path))
 }
 
+/// Type path implied by a constructor / record expr (`Type { … }`, `Type(…)`, `Type::assoc(…)`).
 fn constructor_type_path(expr: &ast::Expr, file_module_path: &str) -> Option<String> {
     if let Some(call) = ast::CallExpr::cast(expr.syntax().clone()) {
         let callee = call.expr()?;
@@ -2141,6 +2193,7 @@ fn constructor_type_path(expr: &ast::Expr, file_module_path: &str) -> Option<Str
     None
 }
 
+/// True when `name` looks like UpperCamelCase (leading capital, has a lowercase, no `_`).
 fn is_upper_camel_segment(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -2163,6 +2216,9 @@ pub fn remap_method_receivers(
     }
 }
 
+/// True when every `::` segment is an ident or `crate` / `self` / `super`.
+///
+/// Generic suffixes after `<` are ignored for the segment check.
 fn is_path_like_callee(path: &str) -> bool {
     if path.is_empty() {
         return false;
@@ -2173,6 +2229,7 @@ fn is_path_like_callee(path: &str) -> bool {
     })
 }
 
+/// True for a Rust-style ASCII identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
@@ -2183,6 +2240,7 @@ fn is_ident(s: &str) -> bool {
     }
 }
 
+/// Collapse whitespace in `s` (used to normalise callee text from the syntax tree).
 fn squish(s: &str) -> String {
     s.split_whitespace().collect()
 }
