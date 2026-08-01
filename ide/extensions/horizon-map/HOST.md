@@ -55,18 +55,29 @@ tabs are not closed. Keybinding: `Ctrl/Cmd+Shift+M`.
 
 ## Sidecar lifecycle
 
-`HorizonSidecar` (`src/sidecar.ts`):
+`HorizonSidecar` (`src/sidecar.ts`, W4):
 
 | Phase | Behaviour |
 |---|---|
 | Attach | If `HORIZON_SIDECAR_URL` / `horizon.map.sidecarUrl` is set, health-check and use it (do not spawn/kill) |
-| Start | Else prefer `horizon.map.serverPath` / `HORIZON_SERVER_PATH`, else a built `target/{release,debug}/horizon-server`, else `cargo run -p horizon-server -- --no-open` |
-| Discover | Parse `http://127.0.0.1:PORT/` from stdout; refuse non-loopback URLs |
+| Start | Else prefer `horizon.map.serverPath` / `HORIZON_SERVER_PATH`, else `target/release/horizon-server` (then debug), else `horizon-server` on PATH, else `cargo run -p horizon-server -- --no-open` |
+| Discover | Parse `http://127.0.0.1:PORT/` from stdout **or** stderr; refuse non-loopback URLs |
 | Health | `GET /api/health` → `{ ok: true }` |
-| Analyse | `POST /api/analyse` `{ path }`, poll `GET /api/analyse`, then `GET /api/map` |
-| Stop | `SIGTERM` on deactivate / dispose (skipped when attached externally) |
+| Analyse | `POST /api/analyse` `{ path }` (path must stay under workspace when known), poll `GET /api/analyse`, then `GET /api/map` |
+| Stop | Process-group `SIGTERM`/`SIGKILL` on deactivate / dispose (skipped when attached externally) |
+| Logs | VS Code output channel **Horizon** |
 
 Localhost + server `host_guard` already restrict the HTTP surface.
+
+Manual test without the IDE:
+
+```bash
+./ide/scripts/run-sidecar.sh
+# note http://127.0.0.1:PORT/
+curl -s http://127.0.0.1:PORT/api/health
+# {"ok":true}
+export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT
+```
 
 ## Commands
 
@@ -102,13 +113,15 @@ View id: `horizon.map.view` (activity-bar container `horizon`).
 Prefer an already-running server:
 
 ```bash
+./ide/scripts/run-sidecar.sh
+# then:
 export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT
 # or setting horizon.map.sidecarUrl
 ```
 
 When set, `HorizonSidecar` attaches (health-checks `/api/health`) and does **not**
-spawn or kill the process. Otherwise it spawns via `serverPath` / built binary /
-`cargo run -p horizon-server`.
+spawn or kill the process. Otherwise it spawns via `serverPath` / release binary /
+PATH / `cargo run -p horizon-server`.
 
 ## rust-analyzer recommendation
 
@@ -149,9 +162,9 @@ is missing, a minimal analyse stub HTML is served instead.
 | Setting | Purpose |
 |---|---|
 | `horizon.map.sidecarUrl` | Attach to running server (`http://127.0.0.1:PORT`); env `HORIZON_SIDECAR_URL` |
-| `horizon.map.serverPath` | Absolute path to `horizon-server` binary |
-| `horizon.map.cargoWorkspace` | Horizon repo root for `cargo run -p horizon-server` |
-| `horizon.map.autoStartSidecar` | Warm-start / attach sidecar on activate (default `true`) |
+| `horizon.map.serverPath` | Absolute path to `horizon-server` binary; env `HORIZON_SERVER_PATH` |
+| `horizon.map.cargoWorkspace` | Horizon repo root for `target/release` lookup / `cargo run -p horizon-server` |
+| `horizon.map.autoStartSidecar` | Warm-start / attach sidecar on activate (default `true`); else start on first Analyse |
 
 ## Security notes
 

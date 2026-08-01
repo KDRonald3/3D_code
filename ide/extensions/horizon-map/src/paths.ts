@@ -100,15 +100,60 @@ function isHorizonWorkspace(dir: string): boolean {
   }
 }
 
-/** Prefer release, then debug, built binaries under a cargo workspace. */
+/**
+ * Prefer release, then debug, built binaries under a cargo workspace.
+ * W4 prefers `target/release/horizon-server` when present.
+ */
 export function findBuiltServerBinary(cargoWorkspace: string): string | undefined {
   const candidates = [
     path.join(cargoWorkspace, "target", "release", "horizon-server"),
     path.join(cargoWorkspace, "target", "debug", "horizon-server"),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      return c;
+    try {
+      if (fs.existsSync(c) && fs.statSync(c).isFile()) {
+        return c;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return undefined;
+}
+
+/** Absolute path to an executable on PATH, or `undefined`. */
+export function findOnPath(binary: string): string | undefined {
+  if (!binary || binary.includes("/") || binary.includes("\\")) {
+    return undefined;
+  }
+  const pathEnv = process.env.PATH || "";
+  const sep = process.platform === "win32" ? ";" : ":";
+  const exts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";").filter(Boolean)
+      : [""];
+
+  for (const dir of pathEnv.split(sep)) {
+    if (!dir) {
+      continue;
+    }
+    for (const ext of exts) {
+      const candidate = path.join(dir, binary + ext);
+      try {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          if (process.platform === "win32") {
+            return candidate;
+          }
+          try {
+            fs.accessSync(candidate, fs.constants.X_OK);
+            return candidate;
+          } catch {
+            /* not executable */
+          }
+        }
+      } catch {
+        /* ignore */
+      }
     }
   }
   return undefined;

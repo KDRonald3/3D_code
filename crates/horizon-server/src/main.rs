@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use horizon_map::map_from_slice;
 use horizon_server::{app, AppState};
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
@@ -65,7 +66,10 @@ async fn main() -> Result<()> {
         .context("failed to read bound address")?;
 
     let url = format!("http://{addr}/");
+    // Flush so IDE sidecars / pipes see the listen URL immediately (stdout is
+    // block-buffered when not a TTY).
     println!("{url}");
+    let _ = io::stdout().flush();
     if !cli.no_open {
         open_browser(&url);
     }

@@ -95,12 +95,22 @@ Built-in `horizon-map` is synced into `code-oss/extensions/horizon-map` (not a m
 | `HORIZON_FORCE_EXT_COMPILE=1` | Force `tsc` for horizon-map in `dev-extension.sh` |
 | `HORIZON_CODE_CLI` | Path/name of editor CLI for EDH fallback |
 | `HORIZON_VSCODIUM_VERSION` | VSCodium release tag for prebuilt download |
+| `HORIZON_SERVER_PATH` | Absolute path to `horizon-server` for the IDE sidecar / `run-sidecar.sh` |
+| `HORIZON_SIDECAR_URL` | Attach IDE/preview to a running server (`http://127.0.0.1:PORT`) |
 | `VSCODE_SKIP_NODE_VERSION_CHECK=1` | Bypass upstream Node version gate (not recommended) |
 | `NODE_OPTIONS` | Defaults to `--max-old-space-size=8192` during compile |
+
+## Sidecar (map analyse)
+
+```bash
+./ide/scripts/run-sidecar.sh          # prefer target/release/horizon-server
+curl -s http://127.0.0.1:PORT/api/health
+export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT   # optional attach mode for the IDE
+```
 
 ## Build notes
 
 - First `build.sh` downloads Electron and compiles the workbench; expect **tens of minutes**.
 - Prefer `./ide/scripts/dev-extension.sh` for map/webview UI work on constrained VMs.
 - Headless agents: use `xvfb-run ./ide/scripts/run.sh` or `xvfb-run ./ide/scripts/dev-extension.sh` for a smoke launch.
-- Map toggle / inspection / sidecar wiring are owned by other workstreams under `ide/extensions/**`.
+- Map toggle / inspection / sidecar wiring live under `ide/extensions/horizon-map`.

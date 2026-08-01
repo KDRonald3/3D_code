@@ -1,11 +1,14 @@
 "use strict";
 /**
- * Local `horizon-server` sidecar client (W2 stub; W4 fleshes out lifecycle).
+ * Local `horizon-server` sidecar client (W4).
  *
- * Prefer attaching to an already-running server via `HORIZON_SIDECAR_URL` /
- * `horizon.map.sidecarUrl` (e.g. `http://127.0.0.1:PORT`). Otherwise spawn
- * the Axum binary on loopback. Health-checks `/api/health` and drives
- * `/api/analyse`, `/api/map`, `/api/source`. Never accepts non-localhost URLs.
+ * Prefer attaching via `HORIZON_SIDECAR_URL` / `horizon.map.sidecarUrl`
+ * (`http://127.0.0.1:PORT`). Otherwise spawn the Axum binary on loopback:
+ * configured path → `target/release/horizon-server` → PATH →
+ * `cargo run -p horizon-server -- --no-open`.
+ *
+ * Health-checks `/api/health` and drives `/api/analyse`, `/api/map`,
+ * `/api/source`. Never accepts non-localhost URLs.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -48,8 +51,11 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const paths_1 = require("./paths");
 const LOCAL_HOST_RE = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/i;
+/** Match a loopback HTTP URL printed by horizon-server (stdout or stderr). */
+const LISTEN_URL_RE = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\/?/i;
 const HEALTH_TIMEOUT_MS = 120_000;
 const ANALYSE_POLL_MS = 400;
+const STOP_GRACE_MS = 3_000;
 class HorizonSidecar {
     extensionPath;
     process;
@@ -58,34 +64,41 @@ class HorizonSidecar {
     attachedExternal = false;
     starting;
     output;
+    /** When true, dispose() owns and disposes the output channel. */
+    ownsOutput;
     disposed = false;
     constructor(extensionPath, output) {
         this.extensionPath = extensionPath;
-        this.output = output ?? vscode.window.createOutputChannel("Horizon Sidecar");
+        this.ownsOutput = !output;
+        this.output =
+            output ?? vscode.window.createOutputChannel("Horizon");
     }
     /** Loopback base URL (`http://127.0.0.1:PORT`), attaching or starting as needed. */
     async ensureRunning() {
         if (this.disposed) {
-            throw new Error("sidecar disposed");
+            throw new Error("Horizon sidecar is disposed");
         }
         // Prefer an explicit URL (env / setting) — attach without spawning.
         const configured = this.resolveConfiguredUrl();
         if (configured) {
             assertLocalhostUrl(configured);
             if (await this.healthOk(configured)) {
-                this.baseUrl = configured.replace(/\/?$/, "");
+                this.baseUrl = stripTrailingSlash(configured);
                 this.attachedExternal = true;
                 this.log(`attached to ${this.baseUrl}`);
                 return this.baseUrl;
             }
-            throw new Error(`HORIZON_SIDECAR_URL / horizon.map.sidecarUrl is set (${configured}) but /api/health failed`);
+            throw new Error(`horizon.map.sidecarUrl / HORIZON_SIDECAR_URL is set (${configured}) ` +
+                `but GET /api/health failed. Start the server (./ide/scripts/run-sidecar.sh) ` +
+                `or clear the setting to let the extension spawn one.`);
         }
         if (this.baseUrl) {
             if (await this.healthOk(this.baseUrl)) {
                 return this.baseUrl;
             }
             if (this.attachedExternal) {
-                throw new Error(`attached sidecar at ${this.baseUrl} is no longer healthy`);
+                throw new Error(`Attached sidecar at ${this.baseUrl} is no longer healthy. ` +
+                    `Restart it or clear horizon.map.sidecarUrl.`);
             }
             this.log("health check failed; restarting sidecar");
             await this.stop();
@@ -114,16 +127,17 @@ class HorizonSidecar {
             return `${u.protocol}//${u.host}`;
         }
         catch {
-            throw new Error(`invalid HORIZON_SIDECAR_URL / sidecarUrl: ${raw}`);
+            throw new Error(`Invalid horizon.map.sidecarUrl / HORIZON_SIDECAR_URL: ${raw}`);
         }
     }
-    /** POST `/api/analyse` and poll until done/failed; then GET `/api/map`. */
-    async analyse(repoPath, onProgress) {
-        const root = path.resolve(repoPath);
-        if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
-            throw new Error(`analyse path is not a directory: ${root}`);
-        }
+    /**
+     * POST `/api/analyse` and poll until done/failed; then GET `/api/map`.
+     * When `workspaceRoot` is set, `repoPath` must resolve under that root.
+     */
+    async analyse(repoPath, onProgress, workspaceRoot) {
+        const root = this.validateAnalysePath(repoPath, workspaceRoot);
         const base = await this.ensureRunning();
+        this.log(`POST /api/analyse path=${root}`);
         const post = await this.fetchJson(`${base}/api/analyse`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -136,7 +150,7 @@ class HorizonSidecar {
         else if (post.status !== 202 && post.status !== 200) {
             const err = typeof post.body?.error === "string"
                 ? post.body.error
-                : `analyse rejected (${post.status})`;
+                : `analyse rejected (HTTP ${post.status})`;
             throw new Error(err);
         }
         const terminal = await this.pollAnalyse(base, onProgress);
@@ -155,6 +169,37 @@ class HorizonSidecar {
                 : "map not available after analyse");
         }
         return { map: mapRes.body, path: terminal.path || root };
+    }
+    /** Resolve and sanity-check an analyse target directory. */
+    validateAnalysePath(repoPath, workspaceRoot) {
+        const trimmed = (repoPath || "").trim();
+        if (!trimmed) {
+            throw new Error("analyse path is empty");
+        }
+        let root;
+        if (workspaceRoot) {
+            const ws = path.resolve(workspaceRoot);
+            const candidate = path.isAbsolute(trimmed)
+                ? path.resolve(trimmed)
+                : undefined;
+            if (candidate && (candidate === ws || candidate.startsWith(ws + path.sep))) {
+                root = candidate;
+            }
+            else {
+                const under = (0, paths_1.resolveUnderRoot)(ws, trimmed);
+                if (!under) {
+                    throw new Error(`Analyse path must stay under the workspace folder (${ws}): ${trimmed}`);
+                }
+                root = under;
+            }
+        }
+        else {
+            root = path.resolve(trimmed);
+        }
+        if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+            throw new Error(`analyse path is not a directory: ${root}`);
+        }
+        return root;
     }
     /** GET `/api/map` when a map is already loaded in the sidecar. */
     async getMap() {
@@ -216,49 +261,42 @@ class HorizonSidecar {
         if (wasExternal || !proc || proc.killed) {
             return;
         }
-        await new Promise((resolve) => {
-            const done = () => resolve();
-            proc.once("exit", done);
-            proc.kill("SIGTERM");
-            setTimeout(() => {
-                if (!proc.killed) {
-                    try {
-                        proc.kill("SIGKILL");
-                    }
-                    catch {
-                        /* ignore */
-                    }
-                }
-                done();
-            }, 3000).unref?.();
-        });
+        this.log("stopping sidecar process");
+        await killSidecarProcess(proc);
     }
     dispose() {
         this.disposed = true;
         void this.stop();
-        this.output.dispose();
+        if (this.ownsOutput) {
+            this.output.dispose();
+        }
     }
     async spawnServer() {
-        const { command, args, cwd } = this.resolveLaunch();
-        this.log(`starting: ${command} ${args.join(" ")} (cwd=${cwd ?? "default"})`);
+        const { command, args, cwd, label } = this.resolveLaunch();
+        this.log(`starting (${label}): ${command} ${args.join(" ")} (cwd=${cwd ?? "default"})`);
         this.attachedExternal = false;
         const child = (0, child_process_1.spawn)(command, args, {
             cwd,
-            env: { ...process.env },
+            env: {
+                ...process.env,
+                // Quiet cargo progress noise when falling back to `cargo run`.
+                CARGO_TERM_PROGRESS_WHEN: "never",
+            },
             stdio: ["ignore", "pipe", "pipe"],
+            // Own process group on Unix so SIGTERM reaches `cargo run` children.
+            detached: process.platform !== "win32",
         });
         this.process = child;
-        let stdoutBuf = "";
-        let stderrBuf = "";
-        child.stdout?.on("data", (chunk) => {
+        let combined = "";
+        const onChunk = (chunk) => {
             const text = chunk.toString("utf8");
-            stdoutBuf += text;
+            combined += text;
             this.output.append(text);
-        });
-        child.stderr?.on("data", (chunk) => {
-            const text = chunk.toString("utf8");
-            stderrBuf += text;
-            this.output.append(text);
+        };
+        child.stdout?.on("data", onChunk);
+        child.stderr?.on("data", onChunk);
+        child.on("error", (err) => {
+            this.log(`spawn error: ${err.message}`);
         });
         child.on("exit", (code, signal) => {
             this.log(`sidecar exited code=${code} signal=${signal}`);
@@ -267,10 +305,31 @@ class HorizonSidecar {
                 this.baseUrl = undefined;
             }
         });
-        const url = await this.waitForUrl(() => stdoutBuf, child, stderrBuf);
+        let url;
+        try {
+            url = await this.waitForUrl(() => combined, child);
+        }
+        catch (err) {
+            await killSidecarProcess(child);
+            if (this.process === child) {
+                this.process = undefined;
+            }
+            const hint = formatSpawnFailure(command, args, cwd, combined);
+            const message = err instanceof Error ? err.message : String(err);
+            throw new Error(`${message}. ${hint}`);
+        }
         assertLocalhostUrl(url);
-        await this.waitForHealth(url);
-        this.baseUrl = url.replace(/\/?$/, "");
+        try {
+            await this.waitForHealth(url);
+        }
+        catch (err) {
+            await killSidecarProcess(child);
+            if (this.process === child) {
+                this.process = undefined;
+            }
+            throw err;
+        }
+        this.baseUrl = stripTrailingSlash(url);
         this.log(`ready at ${this.baseUrl}`);
         return this.baseUrl;
     }
@@ -279,25 +338,56 @@ class HorizonSidecar {
         const configuredBinary = (config.get("serverPath") || "").trim();
         const envBinary = (process.env.HORIZON_SERVER_PATH || "").trim();
         for (const bin of [configuredBinary, envBinary]) {
-            if (bin && fs.existsSync(bin)) {
-                return { command: bin, args: ["--no-open"] };
+            if (!bin) {
+                continue;
+            }
+            if (fs.existsSync(bin) && isExecutableFile(bin)) {
+                return {
+                    command: bin,
+                    args: ["--no-open"],
+                    label: "serverPath",
+                };
+            }
+            if (bin) {
+                this.log(`configured serverPath not found or not executable: ${bin}`);
             }
         }
         const cargoWs = (0, paths_1.findHorizonCargoWorkspace)(this.extensionPath, config.get("cargoWorkspace") || "");
         if (cargoWs) {
+            // Prefer release; fall back to debug if already built.
             const built = (0, paths_1.findBuiltServerBinary)(cargoWs);
             if (built) {
-                return { command: built, args: ["--no-open"], cwd: cargoWs };
+                return {
+                    command: built,
+                    args: ["--no-open"],
+                    cwd: cargoWs,
+                    label: built.includes(`${path.sep}release${path.sep}`)
+                        ? "target/release"
+                        : "target/debug",
+                };
             }
+        }
+        const onPath = (0, paths_1.findOnPath)("horizon-server");
+        if (onPath) {
+            return {
+                command: onPath,
+                args: ["--no-open"],
+                label: "PATH",
+            };
+        }
+        if (cargoWs) {
             return {
                 command: "cargo",
                 args: ["run", "-p", "horizon-server", "--", "--no-open"],
                 cwd: cargoWs,
+                label: "cargo run",
             };
         }
-        throw new Error("Could not locate horizon-server. Set horizon.map.serverPath or horizon.map.cargoWorkspace.");
+        throw new Error("Could not locate horizon-server. Build it (`cargo build -p horizon-server --release`), " +
+            "put it on PATH, or set horizon.map.serverPath / horizon.map.cargoWorkspace. " +
+            "For manual testing: ./ide/scripts/run-sidecar.sh");
     }
-    waitForUrl(getStdout, child, _stderr) {
+    waitForUrl(getCombined, child) {
         return new Promise((resolve, reject) => {
             const started = Date.now();
             const timer = setInterval(() => {
@@ -308,10 +398,10 @@ class HorizonSidecar {
                 }
                 if (child.exitCode !== null) {
                     clearInterval(timer);
-                    reject(new Error(`horizon-server exited before printing URL (code ${child.exitCode})`));
+                    reject(new Error(`horizon-server exited before printing a listen URL (code ${child.exitCode})`));
                     return;
                 }
-                const match = getStdout().match(/https?:\/\/[^\s]+/);
+                const match = getCombined().match(LISTEN_URL_RE);
                 if (match) {
                     clearInterval(timer);
                     resolve(match[0].trim());
@@ -319,7 +409,7 @@ class HorizonSidecar {
                 }
                 if (Date.now() - started > HEALTH_TIMEOUT_MS) {
                     clearInterval(timer);
-                    reject(new Error("timed out waiting for horizon-server URL on stdout"));
+                    reject(new Error("timed out waiting for horizon-server listen URL on stdout/stderr"));
                 }
             }, 100);
         });
@@ -327,24 +417,35 @@ class HorizonSidecar {
     async waitForHealth(baseUrl) {
         const started = Date.now();
         while (Date.now() - started < HEALTH_TIMEOUT_MS) {
+            if (this.disposed) {
+                throw new Error("sidecar disposed while waiting for /api/health");
+            }
             if (await this.healthOk(baseUrl)) {
                 return;
             }
             await delay(200);
         }
-        throw new Error("timed out waiting for /api/health");
+        throw new Error(`timed out waiting for GET /api/health at ${stripTrailingSlash(baseUrl)}`);
     }
     async healthOk(baseUrl) {
         try {
             assertLocalhostUrl(baseUrl);
-            const res = await fetch(joinUrl(baseUrl, "/api/health"), {
-                headers: { Accept: "application/json" },
-            });
-            if (!res.ok) {
-                return false;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 2_000);
+            try {
+                const res = await fetch(joinUrl(baseUrl, "/api/health"), {
+                    headers: { Accept: "application/json" },
+                    signal: controller.signal,
+                });
+                if (!res.ok) {
+                    return false;
+                }
+                const body = (await res.json());
+                return body.ok === true;
             }
-            const body = (await res.json());
-            return body.ok === true;
+            finally {
+                clearTimeout(timer);
+            }
         }
         catch {
             return false;
@@ -352,6 +453,9 @@ class HorizonSidecar {
     }
     async pollAnalyse(base, onProgress) {
         for (;;) {
+            if (this.disposed) {
+                throw new Error("sidecar disposed during analyse");
+            }
             const res = await this.fetchJson(`${base}/api/analyse`, {
                 headers: { Accept: "application/json" },
             });
@@ -392,6 +496,95 @@ class HorizonSidecar {
     }
 }
 exports.HorizonSidecar = HorizonSidecar;
+/** Kill a spawned sidecar, including the process group when detached. */
+function killSidecarProcess(proc) {
+    return new Promise((resolve) => {
+        if (proc.exitCode !== null || proc.killed) {
+            resolve();
+            return;
+        }
+        const done = () => resolve();
+        proc.once("exit", done);
+        const pid = proc.pid;
+        try {
+            if (pid && process.platform !== "win32") {
+                // Negative PID → process group (spawned with detached: true).
+                try {
+                    process.kill(-pid, "SIGTERM");
+                }
+                catch {
+                    proc.kill("SIGTERM");
+                }
+            }
+            else {
+                proc.kill("SIGTERM");
+            }
+        }
+        catch {
+            done();
+            return;
+        }
+        setTimeout(() => {
+            if (proc.exitCode !== null) {
+                done();
+                return;
+            }
+            try {
+                if (pid && process.platform !== "win32") {
+                    try {
+                        process.kill(-pid, "SIGKILL");
+                    }
+                    catch {
+                        proc.kill("SIGKILL");
+                    }
+                }
+                else if (!proc.killed) {
+                    proc.kill("SIGKILL");
+                }
+            }
+            catch {
+                /* ignore */
+            }
+            done();
+        }, STOP_GRACE_MS).unref?.();
+    });
+}
+function formatSpawnFailure(command, args, cwd, combined) {
+    const tail = combined.trim().split(/\r?\n/).slice(-8).join(" | ");
+    const parts = [
+        `Launch was: ${command} ${args.join(" ")}`,
+        cwd ? `cwd=${cwd}` : undefined,
+        tail ? `last output: ${tail}` : "no output captured",
+        "See the Horizon output channel for full logs.",
+    ];
+    return parts.filter(Boolean).join("; ");
+}
+function isExecutableFile(filePath) {
+    try {
+        const st = fs.statSync(filePath);
+        if (!st.isFile()) {
+            return false;
+        }
+        if (process.platform === "win32") {
+            return true;
+        }
+        // Probe execute bit; fall back to spawnSync --help if needed.
+        try {
+            fs.accessSync(filePath, fs.constants.X_OK);
+            return true;
+        }
+        catch {
+            const probe = (0, child_process_1.spawnSync)(filePath, ["--help"], {
+                encoding: "utf8",
+                timeout: 3_000,
+            });
+            return probe.status === 0 || probe.status === null;
+        }
+    }
+    catch {
+        return false;
+    }
+}
 function assertLocalhostUrl(url) {
     // Allow path/query after origin for API calls.
     let origin;
@@ -403,14 +596,17 @@ function assertLocalhostUrl(url) {
         throw new Error(`invalid sidecar URL: ${url}`);
     }
     if (!LOCAL_HOST_RE.test(origin) && !LOCAL_HOST_RE.test(origin + "/")) {
-        throw new Error(`refusing non-localhost sidecar URL: ${origin}`);
+        throw new Error(`refusing non-localhost sidecar URL: ${origin} (Horizon only talks to 127.0.0.1 / localhost / ::1)`);
     }
-    if (origin.startsWith("https://") === false && !origin.startsWith("http://")) {
+    if (!origin.startsWith("http://") && !origin.startsWith("https://")) {
         throw new Error(`refusing non-http sidecar URL: ${origin}`);
     }
 }
+function stripTrailingSlash(url) {
+    return url.replace(/\/?$/, "");
+}
 function joinUrl(base, route) {
-    return `${base.replace(/\/?$/, "")}${route.startsWith("/") ? route : `/${route}`}`;
+    return `${stripTrailingSlash(base)}${route.startsWith("/") ? route : `/${route}`}`;
 }
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
