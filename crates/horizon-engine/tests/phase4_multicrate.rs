@@ -334,3 +334,21 @@ fn workspace_dep_gate_blocks_undeclared_sibling() {
         }
     }
 }
+
+/// Pointing at a workspace *member* must analyse only that folder.
+///
+/// `cargo metadata` on a member still returns the whole workspace; discovery
+/// must keep packages under the chosen root and must not follow path deps that
+/// live outside it (sibling crates, even declared ones).
+#[test]
+fn analysing_a_workspace_member_stays_inside_that_folder() {
+    let engine_dir = workspace_root().join("crates/horizon-engine");
+    let map = build_function_map(&engine_dir).expect("build map of horizon-engine alone");
+
+    let names: HashSet<&str> = map.crates.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        HashSet::from(["horizon-engine"]),
+        "expected only horizon-engine under crates/horizon-engine, got {names:?}"
+    );
+}
