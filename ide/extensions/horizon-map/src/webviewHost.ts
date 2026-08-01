@@ -2,10 +2,10 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 
 /**
- * Thin HTML / URI helpers for the Map webview.
- * Keep protocol types here so W3 can import without digging into media/*.
+ * Thin HTML / URI helpers + canonical webview message types (W2).
  *
- * Aligned with `media/bridge.js` and README.md (W2).
+ * Keep unions aligned with `media/bridge.js` and README.md.
+ * W3 imports these from here (via `protocol.ts` / `mapView.ts`).
  */
 
 /** Messages the webview posts to the extension host. */
@@ -57,17 +57,19 @@ export type HostToWebviewMessage =
   | {
       type: "sourceResult";
       requestId: string;
-      tokens?: [string, string][];
+      tokens?: [string, string][] | unknown;
       error?: string;
+      errorKind?: string;
       message?: string;
-    };
+    }
+  | { type: "error"; message: string };
 
-/** Loose inbound type used by message switches. */
+/** Loose inbound type used by host message switches. */
 export type MapWebviewMessage = WebviewToHostMessage & Record<string, unknown>;
 
 /**
  * Build webview HTML from media/index.html with CSP + asWebviewUri rewrites.
- * Expects `{{cspSource}}` and `{{media}}` placeholders (W2 media contract).
+ * Supports `{{cspSource}}` / `{{media}}` placeholders and `/static/*` paths.
  */
 export function getMapWebviewHtml(
   webview: vscode.Webview,
@@ -75,14 +77,34 @@ export function getMapWebviewHtml(
 ): string {
   const mediaRoot = vscode.Uri.joinPath(extensionUri, "media");
   const mediaUri = webview.asWebviewUri(mediaRoot);
-  const indexPath = vscode.Uri.joinPath(mediaRoot, "index.html");
-
-  const htmlPath = indexPath.fsPath;
+  const htmlPath = vscode.Uri.joinPath(mediaRoot, "index.html").fsPath;
   let html = fs.readFileSync(htmlPath, "utf8");
 
-  html = html
-    .replace(/\{\{cspSource\}\}/g, webview.cspSource)
-    .replace(/\{\{media\}\}/g, mediaUri.toString());
+  const csp = [
+    `default-src 'none'`,
+    `img-src ${webview.cspSource} data:`,
+    `style-src ${webview.cspSource} 'unsafe-inline' https://fonts.googleapis.com`,
+    `font-src ${webview.cspSource} https://fonts.gstatic.com data:`,
+    `script-src ${webview.cspSource}`,
+  ].join("; ");
+
+  if (!/Content-Security-Policy/i.test(html)) {
+    html = html.replace(
+      /<head([^>]*)>/i,
+      `<head$1>\n  <meta http-equiv="Content-Security-Policy" content="${csp}" />`
+    );
+  } else {
+    html = html.replace(/\{\{cspSource\}\}/g, webview.cspSource);
+  }
+
+  html = html.replace(/\{\{media\}\}/g, mediaUri.toString());
+  html = html.replace(
+    /(?:src|href)="\/static\/([^"]+)"/g,
+    (match, file: string) => {
+      const attr = match.startsWith("href") ? "href" : "src";
+      return `${attr}="${mediaUri.toString()}/${file}"`;
+    }
+  );
 
   return html;
 }
