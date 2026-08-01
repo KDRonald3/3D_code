@@ -2617,12 +2617,25 @@ select {
   display: none !important;
 }
 
-/* IDE webview host */
+/* IDE webview / static-preview host.
+ *
+ * `.app` uses height:100vh, but `body.horizon-ide #app` overrides that with
+ * height:100%. Without an explicit height on `html`, the percentage collapses
+ * to the topbar (~44px), main-view flexes to 0px, and the canvas looks blank
+ * while frame-stats still report a loaded map. Pin html→body→#app to 100%.
+ * Also drop the desktop min-height:700px so side webviews can shrink.
+ */
+html:has(body.horizon-ide) {
+  height: 100%;
+}
 body.horizon-ide {
   height: 100%;
+  max-height: 100%;
   overflow: hidden;
 }
 body.horizon-ide #app {
   height: 100%;
-  min-height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
