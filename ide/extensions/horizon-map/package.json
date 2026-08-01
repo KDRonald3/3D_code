@@ -19,6 +19,7 @@
     "onCommand:horizon.map.show",
     "onCommand:horizon.map.hide",
     "onCommand:horizon.map.analyseWorkspace",
+    "onCommand:horizon.inspection.triggerSuggest",
     "onView:horizon.map.view"
   ],
   "main": "./out/extension.js",
@@ -59,6 +60,11 @@
         "command": "horizon.map.analyseWorkspace",
         "title": "Horizon: Analyse Workspace (alias)",
         "category": "Horizon"
+      },
+      {
+        "command": "horizon.inspection.triggerSuggest",
+        "title": "Horizon: Trigger Inspection Completions",
+        "category": "Horizon"
       }
     ],
     "keybindings": [
@@ -80,22 +86,22 @@
         "horizon.map.sidecarUrl": {
           "type": "string",
           "default": "",
-          "description": "Attach to an already-running horizon-server (e.g. http://127.0.0.1:PORT). Overrides spawn when set. Env HORIZON_SIDECAR_URL also works."
+          "description": "Attach to an already-running horizon-server (e.g. http://127.0.0.1:PORT). Overrides spawn when set. Env HORIZON_SIDECAR_URL also works. Must be loopback only."
         },
         "horizon.map.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to the horizon-server binary (W4 sidecar spawn)."
+          "description": "Absolute path to the horizon-server binary. Env HORIZON_SERVER_PATH also works. Prefer target/release/horizon-server when building from this repo."
         },
         "horizon.map.cargoWorkspace": {
           "type": "string",
           "default": "",
-          "description": "Horizon Cargo workspace root for `cargo run -p horizon-server`."
+          "description": "Horizon Cargo workspace root (contains crates/horizon-server). Used to find target/release/horizon-server or run `cargo run -p horizon-server`."
         },
         "horizon.map.autoStartSidecar": {
           "type": "boolean",
           "default": true,
-          "description": "Warm-start or attach the horizon-server sidecar on extension activate."
+          "description": "Warm-start or attach the horizon-server sidecar on extension activate. If false, the sidecar starts on first Analyse."
         }
       }
     },
@@ -151,6 +157,10 @@
         {
           "command": "horizon.map.analyseWorkspace",
           "when": "false"
+        },
+        {
+          "command": "horizon.inspection.triggerSuggest",
+          "when": "horizon.inspection.active"
         }
       ]
     }

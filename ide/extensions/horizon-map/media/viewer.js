@@ -1713,6 +1713,7 @@
         functionId: String(fnId),
         fileId: entry.fileId,
         filePath: file.path || null,
+        functionName: fn.name || null,
         line: fn.line ?? null,
         byteStart: fn.byte_start ?? null,
         byteEnd: fn.byte_end ?? null,

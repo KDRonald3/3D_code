@@ -129,6 +129,8 @@
         functionId: detail.functionId != null ? String(detail.functionId) : null,
         fileId: detail.fileId != null ? String(detail.fileId) : null,
         filePath: detail.filePath != null ? String(detail.filePath) : null,
+        functionName:
+          detail.functionName != null ? String(detail.functionName) : null,
         line: detail.line ?? null,
         byteStart: detail.byteStart ?? null,
         byteEnd: detail.byteEnd ?? null,

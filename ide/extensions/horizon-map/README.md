@@ -44,16 +44,22 @@ HORIZON_SIDECAR_URL=http://127.0.0.1:PORT npm run preview
 In preview mode the page talks HTTP to the sidecar (desktop path). Inside the
 real webview it uses `postMessage` only — never hardcodes a sidecar URL.
 
-## Sidecar attach (IDE)
+## Sidecar (IDE)
+
+The extension host spawns or attaches to `horizon-server` on loopback only.
 
 ```bash
+# Manual (attach mode)
+./ide/scripts/run-sidecar.sh
 export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT
 # or setting: horizon.map.sidecarUrl
 ```
 
-When set, the extension host attaches to that loopback server for
-`/api/analyse`, `/api/map`, `/api/source` instead of spawning one. W4 owns
-richer lifecycle; this client is enough for local analyse.
+When `HORIZON_SIDECAR_URL` / `horizon.map.sidecarUrl` is set, the host attaches for
+`/api/analyse`, `/api/map`, `/api/source` and does not spawn or kill the process.
+Otherwise it prefers `horizon.map.serverPath` → `target/release/horizon-server` →
+PATH → `cargo run -p horizon-server -- --no-open`. Logs go to the **Horizon**
+output channel.
 
 ---
 
@@ -67,7 +73,7 @@ All traffic uses `acquireVsCodeApi().postMessage` / `webview.onDidReceiveMessage
 |---|---|---|
 | `ready` | _(none)_ | Webview DOM + scripts booted; host may push `workspaceInfo` / cached `mapData`. |
 | `analyse` | `path?: string` | Request analysis. Omit `path` to use the workspace folder root. |
-| `selectFunction` | `functionId`, `fileId?`, `filePath?`, `line?`, `byteStart?`, `byteEnd?`, `contentHash?` | User selected a free function. Host opens the read-only Inspection canvas. |
+| `selectFunction` | `functionId`, `fileId?`, `filePath?`, `functionName?`, `line?`, `byteStart?`, `byteEnd?`, `contentHash?` | User selected a free function. Host opens the read-only Inspection canvas. |
 | `selectFile` | `fileId`, `filePath?` | User selected a file card / layer row. |
 | `openMapJson` | _(none)_ | Ask host to pick a Horizon Repository `.json` and send `mapData`. |
 | `sourceRequest` | `requestId`, `path`, `byteStart`, `byteEnd`, `expectedHash` | Optional Inspector token preview. |

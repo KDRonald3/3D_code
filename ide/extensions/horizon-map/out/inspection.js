@@ -1,10 +1,15 @@
 "use strict";
 /**
- * Read-only inspection canvas.
+ * Read-only inspection canvas (W3).
  *
  * Opens the real workspace file in a VS Code text editor (not webview Monaco)
  * so rust-analyzer attaches: hover, go-to-def, diagnostics, completions.
  * The editor session is marked read-only — no edits on the canvas.
+ *
+ * Tab chrome still shows the real filename (required: real `file:` URI for RA).
+ * The clear title is `Inspect: <fn>` on the status bar. Completions may open via
+ * `editor.action.triggerSuggest`; accepting them cannot mutate a readonly buffer,
+ * and a change-guard reverts any leftover edits.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -40,90 +45,243 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.openInspection = openInspection;
-exports.openFileReadonly = openFileReadonly;
+exports.InspectionController = exports.TRIGGER_INSPECT_SUGGEST = exports.INSPECTION_ACTIVE_CONTEXT = void 0;
 exports.resolveFunctionRange = resolveFunctionRange;
+exports.resolveFunctionName = resolveFunctionName;
 exports.byteOffsetToPosition = byteOffsetToPosition;
 exports.isWorkspaceEditor = isWorkspaceEditor;
 const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const paths_1 = require("./paths");
-/** View column used for inspection (beside the active group). */
+/** View column used for inspection (beside the active / map group). */
 const INSPECTION_COLUMN = vscode.ViewColumn.Beside;
+/** Context key: an inspection editor is the active text editor. */
+exports.INSPECTION_ACTIVE_CONTEXT = "horizon.inspection.active";
+/** Command: trigger suggest in the inspection editor (informational only). */
+exports.TRIGGER_INSPECT_SUGGEST = "horizon.inspection.triggerSuggest";
 /**
- * Open / reveal a free function in a read-only editor on the real file URI.
+ * Owns the inspection editor lifecycle: open, title, readonly, edit guard.
  */
-async function openInspection(payload) {
-    const root = (0, paths_1.workspaceRootFsPath)();
-    if (!root) {
-        void vscode.window.showErrorMessage("Horizon: open a workspace folder before inspecting a function.");
-        return;
+class InspectionController {
+    session;
+    status;
+    disposables = [];
+    /** Document versions we last observed — used to undo sneaky edits. */
+    lockedVersions = new Map();
+    undoing = false;
+    constructor() {
+        this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+        this.status.command = exports.TRIGGER_INSPECT_SUGGEST;
+        this.status.tooltip =
+            "Horizon Inspection (read-only). Click to trigger completions (informational).";
+        this.disposables.push(this.status);
+        this.disposables.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+            void this.syncActiveContext(editor);
+        }), vscode.workspace.onDidChangeTextDocument((e) => {
+            void this.onDocumentChanged(e);
+        }), vscode.commands.registerCommand(exports.TRIGGER_INSPECT_SUGGEST, () => this.triggerSuggest()));
+        void this.syncActiveContext(vscode.window.activeTextEditor);
     }
-    const filePath = payload.filePath;
-    if (!filePath) {
-        void vscode.window.showWarningMessage("Horizon: selectFunction payload has no filePath.");
-        return;
+    /** Current inspection session, if any. */
+    get current() {
+        return this.session;
     }
-    const resolved = (0, paths_1.resolveUnderRoot)(root, filePath);
-    if (!resolved) {
-        void vscode.window.showErrorMessage(`Horizon: refusing path outside workspace: ${filePath}`);
-        return;
+    /**
+     * Open / reveal a free function in a read-only editor on the real file URI.
+     */
+    async openInspection(payload) {
+        const root = (0, paths_1.workspaceRootFsPath)();
+        if (!root) {
+            void vscode.window.showErrorMessage("Horizon: open a workspace folder before inspecting a function.");
+            return;
+        }
+        const filePath = payload.filePath;
+        if (!filePath) {
+            void vscode.window.showWarningMessage("Horizon: selectFunction payload has no filePath.");
+            return;
+        }
+        const resolved = (0, paths_1.resolveUnderRoot)(root, filePath);
+        if (!resolved) {
+            void vscode.window.showErrorMessage(`Horizon: refusing path outside workspace: ${filePath}`);
+            return;
+        }
+        if (!(0, paths_1.isExistingFile)(resolved)) {
+            void vscode.window.showErrorMessage(`Horizon: file not found: ${resolved}`);
+            return;
+        }
+        if (payload.contentHash) {
+            const stale = await contentHashMismatch(resolved, payload.contentHash);
+            if (stale) {
+                void vscode.window.showWarningMessage("Horizon: file changed since analysis — offsets may be wrong. Re-analyse the workspace.");
+            }
+        }
+        const uri = vscode.Uri.file(resolved);
+        const document = await vscode.workspace.openTextDocument(uri);
+        // Ensure Rust language so rust-analyzer binds (*.rs is usually enough;
+        // force the id when the file has no extension / wrong association).
+        if (document.languageId !== "rust" && resolved.endsWith(".rs")) {
+            await vscode.languages.setTextDocumentLanguage(document, "rust");
+        }
+        const range = resolveFunctionRange(document, resolved, payload);
+        const functionName = resolveFunctionName(payload);
+        const viewColumn = this.pickInspectionColumn();
+        const editor = await vscode.window.showTextDocument(document, {
+            viewColumn,
+            preview: false,
+            preserveFocus: false,
+            selection: range,
+        });
+        if (range) {
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+            // Cursor at fn start so hover / suggest / go-to-def target the item;
+            // full range stays revealed for orientation.
+            editor.selection = new vscode.Selection(range.start, range.start);
+        }
+        await setEditorReadonlyInSession();
+        this.lockDocument(document);
+        this.session = {
+            uri,
+            functionId: payload.functionId,
+            functionName,
+            range,
+            viewColumn: editor.viewColumn,
+        };
+        this.updateStatus(functionName);
+        await this.syncActiveContext(editor);
     }
-    if (!(0, paths_1.isExistingFile)(resolved)) {
-        void vscode.window.showErrorMessage(`Horizon: file not found: ${resolved}`);
-        return;
+    /**
+     * Open a file read-only without a function range (file-card selection).
+     */
+    async openFileReadonly(filePath) {
+        const root = (0, paths_1.workspaceRootFsPath)();
+        if (!root) {
+            return;
+        }
+        const resolved = (0, paths_1.resolveUnderRoot)(root, filePath);
+        if (!resolved || !(0, paths_1.isExistingFile)(resolved)) {
+            void vscode.window.showErrorMessage(`Horizon: cannot open file: ${filePath}`);
+            return;
+        }
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.file(resolved));
+        if (document.languageId !== "rust" && resolved.endsWith(".rs")) {
+            await vscode.languages.setTextDocumentLanguage(document, "rust");
+        }
+        const editor = await vscode.window.showTextDocument(document, {
+            viewColumn: this.pickInspectionColumn(),
+            preview: true,
+        });
+        await setEditorReadonlyInSession();
+        this.lockDocument(document);
+        const label = path.basename(resolved);
+        this.session = {
+            uri: document.uri,
+            functionId: null,
+            functionName: label,
+            range: undefined,
+            viewColumn: editor.viewColumn,
+        };
+        this.updateStatus(label);
+        await this.syncActiveContext(editor);
     }
-    if (payload.contentHash) {
-        const stale = await contentHashMismatch(resolved, payload.contentHash);
-        if (stale) {
-            void vscode.window.showWarningMessage("Horizon: file changed since analysis — offsets may be wrong. Re-analyse the workspace.");
+    /**
+     * Trigger the suggest widget in the active inspection editor.
+     * Read-only buffers still allow the widget; accepting a completion cannot
+     * write when the session is readonly (and the edit guard rejects leftovers).
+     */
+    async triggerSuggest() {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || !this.isInspectionUri(editor.document.uri)) {
+            void vscode.window.showInformationMessage("Horizon: focus an Inspection editor first, then trigger completions.");
+            return;
+        }
+        // Re-assert readonly before suggest so accept cannot apply.
+        await setEditorReadonlyInSession();
+        await vscode.commands.executeCommand("editor.action.triggerSuggest");
+    }
+    /** True when `uri` is the current inspection document. */
+    isInspectionUri(uri) {
+        return !!this.session && uri.toString() === this.session.uri.toString();
+    }
+    dispose() {
+        for (const d of this.disposables) {
+            d.dispose();
+        }
+        this.status.dispose();
+        this.session = undefined;
+        this.lockedVersions.clear();
+    }
+    pickInspectionColumn() {
+        if (this.session?.viewColumn) {
+            return this.session.viewColumn;
+        }
+        const existing = vscode.window.visibleTextEditors.find((e) => this.session && e.document.uri.toString() === this.session.uri.toString());
+        if (existing?.viewColumn) {
+            return existing.viewColumn;
+        }
+        return INSPECTION_COLUMN;
+    }
+    lockDocument(document) {
+        this.lockedVersions.set(document.uri.toString(), document.version);
+    }
+    updateStatus(functionName) {
+        this.status.text = `$(lock) Inspect: ${functionName}`;
+        this.status.show();
+    }
+    async syncActiveContext(editor) {
+        const active = !!(editor && this.isInspectionUri(editor.document.uri));
+        await vscode.commands.executeCommand("setContext", exports.INSPECTION_ACTIVE_CONTEXT, active);
+        if (active && this.session) {
+            this.updateStatus(this.session.functionName);
+            // Re-assert session readonly whenever inspection regains focus.
+            await setEditorReadonlyInSession();
+        }
+        else if (!this.session) {
+            this.status.hide();
         }
     }
-    const uri = vscode.Uri.file(resolved);
-    const document = await vscode.workspace.openTextDocument(uri);
-    // Ensure Rust language so rust-analyzer binds (*.rs is usually enough;
-    // force the id when the file has no extension / wrong association).
-    if (document.languageId !== "rust" && resolved.endsWith(".rs")) {
-        await vscode.languages.setTextDocumentLanguage(document, "rust");
+    /**
+     * If the inspection buffer somehow receives an edit (readonly failed),
+     * revert it so completions / typing cannot mutate the canvas.
+     */
+    async onDocumentChanged(e) {
+        if (this.undoing || e.contentChanges.length === 0) {
+            return;
+        }
+        if (!this.isInspectionUri(e.document.uri)) {
+            return;
+        }
+        const key = e.document.uri.toString();
+        const locked = this.lockedVersions.get(key);
+        if (locked === undefined) {
+            return;
+        }
+        if (e.document.version <= locked) {
+            return;
+        }
+        this.undoing = true;
+        try {
+            await vscode.commands.executeCommand("undo");
+            if (e.document.isDirty) {
+                await vscode.commands.executeCommand("workbench.action.files.revert");
+            }
+            this.lockDocument(e.document);
+            void vscode.window.showWarningMessage("Horizon Inspection is read-only — edits were discarded.");
+        }
+        catch (err) {
+            console.warn("[Horizon] failed to revert inspection edit", err);
+        }
+        finally {
+            this.undoing = false;
+            if (vscode.window.activeTextEditor?.document.uri.toString() === key) {
+                await setEditorReadonlyInSession();
+            }
+        }
     }
-    const range = resolveFunctionRange(document, resolved, payload);
-    const editor = await vscode.window.showTextDocument(document, {
-        viewColumn: INSPECTION_COLUMN,
-        preview: false,
-        preserveFocus: false,
-        selection: range,
-    });
-    if (range) {
-        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-        editor.selection = new vscode.Selection(range.start, range.end);
-    }
-    await setActiveEditorReadonly();
 }
-/**
- * Open a file read-only without a function range (file-card selection).
- */
-async function openFileReadonly(filePath) {
-    const root = (0, paths_1.workspaceRootFsPath)();
-    if (!root) {
-        return;
-    }
-    const resolved = (0, paths_1.resolveUnderRoot)(root, filePath);
-    if (!resolved || !(0, paths_1.isExistingFile)(resolved)) {
-        void vscode.window.showErrorMessage(`Horizon: cannot open file: ${filePath}`);
-        return;
-    }
-    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(resolved));
-    if (document.languageId !== "rust" && resolved.endsWith(".rs")) {
-        await vscode.languages.setTextDocumentLanguage(document, "rust");
-    }
-    await vscode.window.showTextDocument(document, {
-        viewColumn: INSPECTION_COLUMN,
-        preview: true,
-    });
-    await setActiveEditorReadonly();
-}
-async function setActiveEditorReadonly() {
+exports.InspectionController = InspectionController;
+async function setEditorReadonlyInSession() {
     try {
         await vscode.commands.executeCommand("workbench.action.files.setActiveEditorReadonlyInSession");
     }
@@ -163,6 +321,25 @@ function resolveFunctionRange(document, filePath, payload) {
         return line.range;
     }
     return undefined;
+}
+/** Display name for status / tab label from payload or FunctionId. */
+function resolveFunctionName(payload) {
+    const named = payload.functionName?.trim();
+    if (named) {
+        return named;
+    }
+    const id = payload.functionId?.trim();
+    if (id) {
+        const parts = id.split("::").filter(Boolean);
+        const last = parts[parts.length - 1];
+        if (last) {
+            return last;
+        }
+    }
+    if (payload.filePath) {
+        return path.basename(payload.filePath);
+    }
+    return "function";
 }
 /**
  * Convert a UTF-8 byte offset into a (line, UTF-16 character) position using

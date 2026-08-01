@@ -2,8 +2,8 @@
 /**
  * Map ↔ Classic editor toggle.
  *
- * Shows / focuses the Horizon Map webview view, or leaves the map and focuses
- * a classic (non-webview) text editor group.
+ * Shows / focuses the Horizon Map webview view, or leaves the map and restores
+ * the last classic (non-webview) text editor without closing the workspace.
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -47,9 +47,28 @@ const FOCUS_EDITOR = "workbench.action.focusActiveEditorGroup";
 exports.MAP_VISIBLE_CONTEXT = "horizon.map.visible";
 class MapToggle {
     mapVisible = false;
+    classicFocus;
     disposables = [];
     constructor() {
         void vscode.commands.executeCommand("setContext", exports.MAP_VISIBLE_CONTEXT, false);
+        this.disposables.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+            // Remember classic focus only while map is not the active mode target.
+            if (!this.mapVisible && editor && editor.document.uri.scheme === "file") {
+                this.classicFocus = {
+                    uri: editor.document.uri,
+                    viewColumn: editor.viewColumn,
+                    selection: editor.selection,
+                };
+            }
+        }));
+        const active = vscode.window.activeTextEditor;
+        if (active && active.document.uri.scheme === "file") {
+            this.classicFocus = {
+                uri: active.document.uri,
+                viewColumn: active.viewColumn,
+                selection: active.selection,
+            };
+        }
     }
     /** Whether the map side is considered active after the last toggle/show. */
     get isMapVisible() {
@@ -57,6 +76,15 @@ class MapToggle {
     }
     /** Show and focus the Horizon Map view. */
     async showMap() {
+        // Snapshot classic focus before leaving the editor group.
+        const active = vscode.window.activeTextEditor;
+        if (active && active.document.uri.scheme === "file") {
+            this.classicFocus = {
+                uri: active.document.uri,
+                viewColumn: active.viewColumn,
+                selection: active.selection,
+            };
+        }
         try {
             await vscode.commands.executeCommand(MAP_VIEW_FOCUS);
         }
@@ -69,11 +97,27 @@ class MapToggle {
     }
     /**
      * Leave the map and focus the classic editor.
-     * Prefers an existing text editor tab over the map webview.
+     * Restores the remembered text editor when possible; does not close tabs
+     * or change the workspace folder.
      */
     async showClassic() {
         this.mapVisible = false;
         await vscode.commands.executeCommand("setContext", exports.MAP_VISIBLE_CONTEXT, false);
+        if (this.classicFocus) {
+            try {
+                const doc = await vscode.workspace.openTextDocument(this.classicFocus.uri);
+                await vscode.window.showTextDocument(doc, {
+                    viewColumn: this.classicFocus.viewColumn ?? vscode.ViewColumn.One,
+                    preview: false,
+                    preserveFocus: false,
+                    selection: this.classicFocus.selection,
+                });
+                return;
+            }
+            catch (err) {
+                console.debug("[Horizon] classic focus restore failed", err);
+            }
+        }
         const classic = vscode.window.visibleTextEditors.find((e) => e.document.uri.scheme === "file");
         if (classic) {
             await vscode.window.showTextDocument(classic.document, {

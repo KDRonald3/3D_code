@@ -8,7 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { openFileReadonly, openInspection } from "./inspection";
+import type { InspectionController } from "./inspection";
 import { resolveUnderRoot, workspaceRootFsPath } from "./paths";
 import type { HorizonSidecar } from "./sidecar";
 import type { MapToggle } from "./toggle";
@@ -27,7 +27,8 @@ export class HorizonMapViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly sidecar: HorizonSidecar,
-    private readonly toggle: MapToggle
+    private readonly toggle: MapToggle,
+    private readonly inspection: InspectionController
   ) {}
 
   resolveWebviewView(
@@ -86,11 +87,12 @@ export class HorizonMapViewProvider implements vscode.WebviewViewProvider {
         await this.runAnalyse(msg.path);
         break;
       case "selectFunction":
-        await openInspection({
+        await this.inspection.openInspection({
           type: "selectFunction",
           functionId: msg.functionId ?? null,
           fileId: msg.fileId ?? null,
           filePath: msg.filePath ?? null,
+          functionName: msg.functionName ?? null,
           line: msg.line ?? null,
           byteStart: msg.byteStart ?? null,
           byteEnd: msg.byteEnd ?? null,
@@ -99,7 +101,7 @@ export class HorizonMapViewProvider implements vscode.WebviewViewProvider {
         break;
       case "selectFile":
         if (msg.filePath) {
-          await openFileReadonly(msg.filePath);
+          await this.inspection.openFileReadonly(msg.filePath);
         }
         break;
       case "openMapJson":
@@ -201,7 +203,8 @@ export class HorizonMapViewProvider implements vscode.WebviewViewProvider {
             elapsed_ms: p.elapsed_ms,
             error: p.error,
           });
-        }
+        },
+        root
       );
       this.post({ type: "mapData", map, label: analysed });
       this.post({

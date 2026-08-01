@@ -18,6 +18,11 @@ export interface SelectFunctionPayload {
   functionId: string | null;
   fileId: string | null;
   filePath: string | null;
+  /**
+   * Free-function display name when the webview sends it. Optional — host
+   * derives from `functionId` (`…::name` → `name`) when absent.
+   */
+  functionName: string | null;
   /** 1-based line of the `fn` keyword when known. */
   line: number | null;
   /** UTF-8 byte offset of the function item start (inclusive). */

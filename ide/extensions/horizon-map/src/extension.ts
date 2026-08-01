@@ -6,6 +6,7 @@
  */
 
 import * as vscode from "vscode";
+import { InspectionController } from "./inspection";
 import { HorizonMapViewProvider } from "./mapView";
 import { HorizonSidecar } from "./sidecar";
 import { MapToggle } from "./toggle";
@@ -13,19 +14,23 @@ import { MapToggle } from "./toggle";
 let sidecar: HorizonSidecar | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel("Horizon Map");
+  // Shared "Horizon" channel for sidecar + host diagnostics (W4).
+  const output = vscode.window.createOutputChannel("Horizon");
   sidecar = new HorizonSidecar(context.extensionPath, output);
   const toggle = new MapToggle();
+  const inspection = new InspectionController();
   const provider = new HorizonMapViewProvider(
     context.extensionUri,
     sidecar,
-    toggle
+    toggle,
+    inspection
   );
 
   context.subscriptions.push(
     output,
     sidecar,
     toggle,
+    inspection,
     vscode.window.registerWebviewViewProvider(
       HorizonMapViewProvider.viewType,
       provider,
@@ -52,11 +57,19 @@ export function activate(context: vscode.ExtensionContext): void {
     .get<boolean>("autoStartSidecar", true);
   if (autoStart) {
     void sidecar.ensureRunning().catch((err) => {
-      output.appendLine(
-        `[activate] sidecar warm-start deferred: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      output.appendLine(`[activate] sidecar warm-start failed: ${message}`);
+      // Soft failure — first analyse will retry. Surface once in the UI.
+      void vscode.window
+        .showWarningMessage(
+          `Horizon sidecar did not start: ${message}`,
+          "Show Horizon output"
+        )
+        .then((choice) => {
+          if (choice === "Show Horizon output") {
+            output.show(true);
+          }
+        });
     });
   }
 }

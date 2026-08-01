@@ -42,16 +42,19 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
+const inspection_1 = require("./inspection");
 const mapView_1 = require("./mapView");
 const sidecar_1 = require("./sidecar");
 const toggle_1 = require("./toggle");
 let sidecar;
 function activate(context) {
-    const output = vscode.window.createOutputChannel("Horizon Map");
+    // Shared "Horizon" channel for sidecar + host diagnostics (W4).
+    const output = vscode.window.createOutputChannel("Horizon");
     sidecar = new sidecar_1.HorizonSidecar(context.extensionPath, output);
     const toggle = new toggle_1.MapToggle();
-    const provider = new mapView_1.HorizonMapViewProvider(context.extensionUri, sidecar, toggle);
-    context.subscriptions.push(output, sidecar, toggle, vscode.window.registerWebviewViewProvider(mapView_1.HorizonMapViewProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }), 
+    const inspection = new inspection_1.InspectionController();
+    const provider = new mapView_1.HorizonMapViewProvider(context.extensionUri, sidecar, toggle, inspection);
+    context.subscriptions.push(output, sidecar, toggle, inspection, vscode.window.registerWebviewViewProvider(mapView_1.HorizonMapViewProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }), 
     // Canonical W2 commands
     vscode.commands.registerCommand("horizon.map.open", () => toggle.showMap()), vscode.commands.registerCommand("horizon.map.toggle", () => toggle.toggle()), vscode.commands.registerCommand("horizon.map.analyse", () => provider.analyseWorkspace()), 
     // Aliases kept for docs / earlier host wiring
@@ -61,7 +64,16 @@ function activate(context) {
         .get("autoStartSidecar", true);
     if (autoStart) {
         void sidecar.ensureRunning().catch((err) => {
-            output.appendLine(`[activate] sidecar warm-start deferred: ${err instanceof Error ? err.message : String(err)}`);
+            const message = err instanceof Error ? err.message : String(err);
+            output.appendLine(`[activate] sidecar warm-start failed: ${message}`);
+            // Soft failure — first analyse will retry. Surface once in the UI.
+            void vscode.window
+                .showWarningMessage(`Horizon sidecar did not start: ${message}`, "Show Horizon output")
+                .then((choice) => {
+                if (choice === "Show Horizon output") {
+                    output.show(true);
+                }
+            });
         });
     }
 }

@@ -17,6 +17,8 @@ export type WebviewToHostMessage =
       functionId: string | null;
       fileId?: string | null;
       filePath?: string | null;
+      /** Optional free-function name; host falls back to FunctionId tail. */
+      functionName?: string | null;
       line?: number | null;
       byteStart?: number | null;
       byteEnd?: number | null;

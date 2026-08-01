@@ -43,20 +43,21 @@ exports.HorizonMapViewProvider = void 0;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
-const inspection_1 = require("./inspection");
 const paths_1 = require("./paths");
 const webviewHost_1 = require("./webviewHost");
 class HorizonMapViewProvider {
     extensionUri;
     sidecar;
     toggle;
+    inspection;
     static viewType = "horizon.map.view";
     view;
     analysing = false;
-    constructor(extensionUri, sidecar, toggle) {
+    constructor(extensionUri, sidecar, toggle, inspection) {
         this.extensionUri = extensionUri;
         this.sidecar = sidecar;
         this.toggle = toggle;
+        this.inspection = inspection;
     }
     resolveWebviewView(webviewView, _context, _token) {
         this.view = webviewView;
@@ -103,11 +104,12 @@ class HorizonMapViewProvider {
                 await this.runAnalyse(msg.path);
                 break;
             case "selectFunction":
-                await (0, inspection_1.openInspection)({
+                await this.inspection.openInspection({
                     type: "selectFunction",
                     functionId: msg.functionId ?? null,
                     fileId: msg.fileId ?? null,
                     filePath: msg.filePath ?? null,
+                    functionName: msg.functionName ?? null,
                     line: msg.line ?? null,
                     byteStart: msg.byteStart ?? null,
                     byteEnd: msg.byteEnd ?? null,
@@ -116,7 +118,7 @@ class HorizonMapViewProvider {
                 break;
             case "selectFile":
                 if (msg.filePath) {
-                    await (0, inspection_1.openFileReadonly)(msg.filePath);
+                    await this.inspection.openFileReadonly(msg.filePath);
                 }
                 break;
             case "openMapJson":
@@ -208,7 +210,7 @@ class HorizonMapViewProvider {
                     elapsed_ms: p.elapsed_ms,
                     error: p.error,
                 });
-            });
+            }, root);
             this.post({ type: "mapData", map, label: analysed });
             this.post({
                 type: "analyseResult",
