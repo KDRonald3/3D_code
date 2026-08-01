@@ -1,0 +1,53 @@
+{
+  "nameShort": "Horizon IDE",
+  "nameLong": "Horizon IDE",
+  "applicationName": "horizon-ide",
+  "dataFolderName": ".horizon-ide",
+  "win32MutexName": "horizonide",
+  "win32DirName": "Horizon IDE",
+  "win32NameVersion": "Horizon IDE",
+  "win32RegValueName": "HorizonIDE",
+  "win32AppUserModelId": "Horizon.IDE",
+  "win32ShellNameShort": "H&orizon IDE",
+  "win32TunnelMutex": "horizon-ide-tunnel",
+  "win32TunnelServiceMutex": "horizon-ide-tunnelservice",
+  "darwinBundleIdentifier": "dev.horizon.ide",
+  "linuxIconName": "horizon-ide",
+  "urlProtocol": "horizon-ide",
+  "serverApplicationName": "horizon-ide-server",
+  "serverDataFolderName": ".horizon-ide-server",
+  "tunnelApplicationName": "horizon-ide-tunnel",
+  "licenseName": "MIT",
+  "licenseUrl": "https://github.com/KDRonald3/Horizon/blob/main/LICENSE",
+  "reportIssueUrl": "https://github.com/KDRonald3/Horizon/issues/new",
+  "nodejsRepository": "https://nodejs.org",
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "itemUrl": "https://open-vsx.org/vscode/item",
+    "latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+    "controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json"
+  },
+  "linkProtectionTrustedDomains": [
+    "https://open-vsx.org"
+  ],
+  "extensionAllowedBadgeProviders": [
+    "api.travis-ci.com",
+    "api.travis-ci.org",
+    "badge.buildkite.com",
+    "badge.fury.io",
+    "badgen.net",
+    "cdn.travis-ci.com",
+    "cdn.travis-ci.org",
+    "ci.appveyor.com",
+    "circleci.com",
+    "codecov.io",
+    "coveralls.io",
+    "img.shields.io",
+    "opencollective.com",
+    "travis-ci.com",
+    "travis-ci.org"
+  ],
+  "extensionAllowedBadgeProvidersRegex": [
+    "^https:\\/\\/github\\.com\\/[^/]+\\/[^/]+\\/(actions\\/)?workflows\\/.*badge\\.svg"
+  ]
+}
