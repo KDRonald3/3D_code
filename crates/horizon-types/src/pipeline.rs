@@ -1,21 +1,35 @@
-//! Shared extract → resolve-index construction used by [`crate::build_function_map`]
-//! and the correctness harness.
+//! Extract → resolve-index construction for [`crate::build_type_map`].
 //!
-//! Keeping a single implementation here is what makes the harness measure the
-//! same pipeline the CLI runs, rather than a hand-maintained twin.
+//! Reuses [`horizon_engine::discover`], [`horizon_engine::modules`], and
+//! [`horizon_engine::parse`] so crate discovery and the `mod` walk are not
+//! duplicated. Type/method fact extraction and indexing stay in this crate.
 
-use crate::discover::{self, rustc_crate_name};
+use horizon_engine::discover::{self, rustc_crate_name};
 use crate::extract::{
     FileFacts, Import, ItemVisibility, TypeDef, assign_function_ids, extract_facts,
-    remap_local_bindings, remap_pending_calls,
+    remap_local_bindings, remap_method_receivers, remap_pending_calls,
 };
-use horizon_map::{Crate, Dependency, DependencyKind, Function, FunctionId};
-use crate::modules::walk_modules;
-use crate::parse::parse_source;
+use crate::map::{Function, FunctionId};
+use horizon_map::{Crate, Dependency, DependencyKind};
+use horizon_engine::modules::walk_modules;
+use horizon_engine::parse::parse_source;
 use crate::resolve::{PathCrateIndex, ResolveIndex};
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Convert an engine [`horizon_engine::extract::ItemVisibility`] into this crate's enum.
+fn convert_item_visibility(v: horizon_engine::extract::ItemVisibility) -> ItemVisibility {
+    match v {
+        horizon_engine::extract::ItemVisibility::Public => ItemVisibility::Public,
+        horizon_engine::extract::ItemVisibility::Crate => ItemVisibility::Crate,
+        horizon_engine::extract::ItemVisibility::Super => ItemVisibility::Super,
+        horizon_engine::extract::ItemVisibility::SelfMod => ItemVisibility::SelfMod,
+        horizon_engine::extract::ItemVisibility::InPath(p) => ItemVisibility::InPath(p),
+        horizon_engine::extract::ItemVisibility::Private => ItemVisibility::Private,
+    }
+}
+
 
 /// Per-crate facts after extraction and FunctionId assignment, before resolve.
 pub struct ExtractedCrate {
@@ -43,7 +57,7 @@ pub fn extract_repository(repo_root: &Path) -> Result<Vec<ExtractedCrate>> {
     Ok(extracted)
 }
 
-/// Walk modules, extract facts, and assign crate-wide [`FunctionId`]s.
+/// Walk `krate`'s modules, extract facts per file, and assign crate-wide [`FunctionId`]s.
 pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
     let rustc_name = krate.rustc_name.clone();
     // FunctionIds use a compilation-unit key that may differ from the real
@@ -108,6 +122,7 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
         func_offset += n;
         remap_pending_calls(&mut facts.call_sites, &remap);
         remap_local_bindings(&mut facts.local_bindings, &remap);
+        remap_method_receivers(&mut facts.method_receivers, &remap);
         for (id, names) in &facts.local_bindings {
             local_bindings
                 .entry(id.clone())
@@ -132,7 +147,7 @@ pub fn extract_crate(krate: Crate) -> Result<ExtractedCrate> {
         functions: all_functions,
         function_visibility,
         module_paths: walk.module_paths,
-        module_visibility: walk.module_visibility,
+        module_visibility: walk.module_visibility.into_iter().map(|(k, v)| (k, convert_item_visibility(v))).collect(),
         types,
         imports,
         local_bindings,
@@ -229,7 +244,7 @@ fn path_crates_for(
     out
 }
 
-/// Find the extracted library (or fallback) matching a path [`Dependency`].
+/// Find the extracted library (preferring `is_library`) that matches a path dependency.
 fn find_path_dep_library<'a>(
     dep: &Dependency,
     all: &'a [ExtractedCrate],
@@ -252,7 +267,7 @@ fn find_path_dep_library<'a>(
         })
 }
 
-/// Import rustc names of `krate`'s external (non-path) dependencies.
+/// Import rustc names of registry / external dependencies declared by `krate`.
 fn external_crate_names(krate: &Crate) -> HashSet<String> {
     krate
         .dependencies

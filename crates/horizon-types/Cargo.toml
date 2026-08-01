@@ -1,0 +1,21 @@
+[package]
+name = "horizon-types"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Type definitions and inherent-method analysis, separate from the free-function map."
+
+# Deliberately outside the workspace (`exclude` in the root manifest), so it
+# neither builds nor tests as part of the project. Versions are spelled out
+# rather than inherited because a non-member cannot read `workspace = true`.
+# Build it on demand with `--manifest-path crates/horizon-types/Cargo.toml`.
+[dependencies]
+anyhow = "1.0.104"
+horizon-engine = { path = "../horizon-engine" }
+horizon-map = { path = "../horizon-map" }
+ra_ap_syntax = "0.0.343"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[dev-dependencies]
+serde_json = "1.0.151"

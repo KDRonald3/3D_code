@@ -260,19 +260,10 @@ fn excludes_constructors_and_associated_functions() {
         "local enum variant must be absent, got {paths:?}"
     );
 
-    // Group 2 — inherent assoc on a local type resolves; external stays dropped.
-    let local_assoc = run
-        .call_sites
-        .iter()
-        .find(|c| c.call_path.contains("LocalId::make"))
-        .expect("LocalId::make should resolve as an inherent method");
+    // Group 2 — impl / associated functions.
     assert!(
-        matches!(
-            &local_assoc.target,
-            CallTarget::Resolved(id) if id.as_str().ends_with("LocalId::make")
-        ),
-        "LocalId::make should resolve, got {:?}",
-        local_assoc.target
+        !paths.iter().any(|p| p.contains("LocalId::make")),
+        "local associated function must be absent, got {paths:?}"
     );
     assert!(
         !paths.iter().any(|p| p.contains("Vec::new") || *p == "Vec::new"),
@@ -310,8 +301,7 @@ fn excludes_constructors_and_associated_functions() {
     assert!(matches!(helper.target, CallTarget::Resolved(_)));
 
     assert!(map.summary.constructor_dropped >= 2);
-    // Vec::new (and similar external assoc forms) remain dropped.
-    assert!(map.summary.associated_dropped >= 1);
+    assert!(map.summary.associated_dropped >= 2);
     assert_eq!(map.summary.unresolved, 1);
 }
 

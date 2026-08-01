@@ -1,53 +1,37 @@
-//! Horizon engine — build a navigable function map of a Rust repository.
+//! Type definitions and inherent-method analysis for Horizon.
 //!
-//! Pipeline (each step in its own module; unnumbered so renames cannot drift):
+//! This crate owns everything that was temporarily mixed into the free-function
+//! map algorithm: struct/enum/trait/alias extraction, field/alias `type_refs`,
+//! inherent `impl Type` methods, and one-hop method-call resolution.
 //!
-//! - [`discover`] — `cargo metadata` → crates, roots, dependencies
-//! - [`modules`] — `mod` walk → files in the crate and their module paths
-//! - [`parse`] — thin wrapper over `ra_ap_syntax`
-//! - [`extract`] — per-file facts (definitions, calls, imports, docs)
-//! - [`resolve`] — call site → [`horizon_map::CallTarget`] (resolved, conflict, or unresolved)
-//! - [`horizon_map`] — node types and JSON emission (separate crate)
-//!
-//! [`pipeline`] shares extract → resolve-index construction between
-//! [`build_function_map`] and the correctness harness so they cannot drift.
-//!
-//! # Phase 4
-//!
-//! Multi-crate end-to-end: every workspace member and path-dependency
-//! library-like target (including `proc-macro`) plus each binary is walked.
-//! Cross-crate edges resolve only along the declared dependency graph, and
-//! only to `pub` items behind an all-`pub` module chain. Registry / git
-//! dependencies stay dropped.
+//! Discovery, module walking, and parsing are reused from [`horizon_engine`].
+//! The free-function map (`horizon_engine::build_function_map`) stays free of
+//! types and methods — see the crate README for why that boundary exists.
 
-pub mod discover;
 pub mod extract;
-pub mod modules;
-pub mod parse;
+pub mod map;
 pub mod pipeline;
 pub mod resolve;
 
-pub use horizon_map::{
-    content_hash, map_from_slice, map_to_string, write_map, write_map_compact,
-    write_map_compact_to_file, write_map_to_file,
-};
-pub use horizon_map::{
+pub use map::{
     CallSite, CallTarget, Conflict, Crate, Dependency, DependencyKind, DocComment, DocCommentKind,
-    File, Folder, Function, FunctionId, MapSummary, Repository, UnresolvedCall,
+    File, Folder, Function, FunctionId, MapSummary, Repository, TypeConflict, TypeId, TypeItem,
+    TypeKind, TypeRef, TypeTarget, UnresolvedCall, UnresolvedType,
 };
 
 use anyhow::Result;
-use extract::{CallOwnerKind, FileFacts, PendingCall};
+use extract::{CallOwnerKind, FileFacts, PendingCall, assign_type_ids};
+use horizon_engine::discover;
 use pipeline::{extract_repository, resolve_index_for};
-use resolve::{ExclusionKind, ResolveResult, resolve_call};
+use resolve::{ExclusionKind, ResolveResult, resolve_call, resolve_type_mention};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Analyse `repo_root` and return its function map.
+/// Analyse `repo_root` for type definitions, inherent methods, and method calls.
 ///
-/// Never refuses to produce output: a codebase mid-edit still yields a map
-/// (conflicts mark what could not be resolved).
-pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
+/// Reuses crate discovery and the `mod` walk from [`horizon_engine`], then runs
+/// the type/method extract→resolve pipeline owned by this crate.
+pub fn build_type_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
     let root = discover::normalize_path(repo_root.as_ref());
     let extracted = extract_repository(&root)?;
 
@@ -56,16 +40,30 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
 
     for i in 0..extracted.len() {
         let index = resolve_index_for(&extracted, i);
+        let types_for_path = build_types_for_crate(&extracted[i], &index);
+
+        let type_id_by_path: HashMap<String, TypeId> = types_for_path
+            .values()
+            .flatten()
+            .map(|t| (t.module_path.clone(), t.id.clone()))
+            .collect();
 
         let mut built_files = Vec::new();
         for (path, module_path, facts) in &extracted[i].file_facts {
-            let (functions, file_calls) =
+            let (mut functions, file_calls) =
                 attach_resolved_calls(facts.clone(), &index, &mut summary)?;
+            for func in &mut functions {
+                if let Some(ty_path) = facts.method_receivers.get(&func.id) {
+                    func.receiver_type = type_id_by_path.get(ty_path).cloned();
+                }
+            }
+            let types = types_for_path.get(path).cloned().unwrap_or_default();
             built_files.push(File {
                 path: path.clone(),
                 module_path: module_path.clone(),
                 content_hash: facts.content_hash.clone(),
                 functions,
+                types,
                 call_sites: file_calls,
                 doc_comments: facts.doc_comments.clone(),
             });
@@ -80,10 +78,29 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
             .unwrap_or_else(|| root.clone());
         let (folders, root_files) = build_folder_tree(&src_root, built_files);
 
-        let mut krate = extracted[i].krate.clone();
-        krate.folders = folders;
-        krate.files = root_files;
-        crates.push(krate);
+        let src = &extracted[i].krate;
+        crates.push(Crate {
+            name: src.name.clone(),
+            rustc_name: src.rustc_name.clone(),
+            is_library: src.is_library,
+            edition: src.edition.clone(),
+            roots: src.roots.clone(),
+            dependencies: src
+                .dependencies
+                .iter()
+                .map(|d| Dependency {
+                    name: d.name.clone(),
+                    rename: d.rename.clone(),
+                    kind: match d.kind {
+                        horizon_map::DependencyKind::Path => DependencyKind::Path,
+                        horizon_map::DependencyKind::External => DependencyKind::External,
+                    },
+                    path: d.path.clone(),
+                })
+                .collect(),
+            folders,
+            files: root_files,
+        });
     }
 
     Ok(Repository {
@@ -93,7 +110,62 @@ pub fn build_function_map(repo_root: impl AsRef<Path>) -> Result<Repository> {
     })
 }
 
-/// Resolve pending call sites in `facts` and attach them to owners.
+/// Assign type ids, resolve field/alias type mentions, and group [`TypeItem`]s by file.
+fn build_types_for_crate(
+    extracted: &pipeline::ExtractedCrate,
+    index: &resolve::ResolveIndex,
+) -> HashMap<PathBuf, Vec<TypeItem>> {
+    let id_prefix = extracted.krate.function_id_prefix();
+    let mut type_items = assign_type_ids(&id_prefix, &extracted.types);
+    let id_by_full_path: HashMap<String, TypeId> = type_items
+        .iter()
+        .map(|t| (t.module_path.clone(), t.id.clone()))
+        .collect();
+
+    for (item, src) in type_items.iter_mut().zip(extracted.types.iter()) {
+        let mut refs = Vec::new();
+        for pending in &src.pending_refs {
+            let Some(target) = resolve_type_mention(
+                &pending.type_path,
+                &src.module_path,
+                index,
+                &id_by_full_path,
+            ) else {
+                continue;
+            };
+            refs.push(TypeRef {
+                type_path: pending.type_path.clone(),
+                line: pending.line,
+                byte_start: pending.byte_start,
+                byte_end: pending.byte_end,
+                target,
+            });
+        }
+        item.type_refs = refs;
+    }
+
+    let mut by_key: HashMap<String, Vec<TypeItem>> = HashMap::new();
+    for (item, src) in type_items.into_iter().zip(extracted.types.iter()) {
+        let key = format!("{}@@{}@@{}", src.module_path, src.name, src.line);
+        by_key.entry(key).or_default().push(item);
+    }
+
+    let mut types_for_path: HashMap<PathBuf, Vec<TypeItem>> = HashMap::new();
+    for (path, _module_path, facts) in &extracted.file_facts {
+        let mut file_types = Vec::new();
+        for ty in &facts.types {
+            let key = format!("{}@@{}@@{}", ty.module_path, ty.name, ty.line);
+            if let Some(mut items) = by_key.remove(&key) {
+                file_types.append(&mut items);
+            }
+        }
+        types_for_path.insert(path.clone(), file_types);
+    }
+    types_for_path
+}
+
+/// Resolve pending calls in `facts`, attach them to owning functions or the file,
+/// and update `summary` drop / conflict counters.
 fn attach_resolved_calls(
     facts: FileFacts,
     index: &resolve::ResolveIndex,
@@ -131,7 +203,10 @@ fn attach_resolved_calls(
     Ok((functions, file_calls))
 }
 
-/// Resolve one [`PendingCall`] into a [`CallSite`], updating `summary` counters.
+/// Resolve one pending call into a map [`CallSite`], or `None` when dropped.
+///
+/// External / constructor / associated / local-binding exclusions update `summary`
+/// and produce no edge.
 fn resolve_pending(
     pending: &PendingCall,
     index: &resolve::ResolveIndex,
@@ -173,9 +248,7 @@ fn resolve_pending(
     }))
 }
 
-/// Place discovered files into `Crate.files` / `Folder` nodes from their paths
-/// relative to the crate source root. Only files the module walk found — never
-/// a filesystem directory listing.
+/// Partition `files` under `src_root` into nested [`Folder`]s and root-level files.
 fn build_folder_tree(src_root: &Path, files: Vec<File>) -> (Vec<Folder>, Vec<File>) {
     let src_root = discover::normalize_path(src_root);
     let mut root_files = Vec::new();
@@ -203,7 +276,6 @@ fn build_folder_tree(src_root: &Path, files: Vec<File>) -> (Vec<Folder>, Vec<Fil
     (folders, root_files)
 }
 
-/// Nested directory → files, built only from module-walk paths.
 #[derive(Debug, Default)]
 struct FolderTree {
     files: Vec<File>,
@@ -231,7 +303,6 @@ impl FolderTree {
             let path = abs_dir.join(&name);
             let mut files = child_tree.files;
             files.sort_by(|a, b| a.path.cmp(&b.path));
-            // Recurse into grandchildren via a fresh tree holding only children.
             let nested = FolderTree {
                 files: Vec::new(),
                 children: child_tree.children,

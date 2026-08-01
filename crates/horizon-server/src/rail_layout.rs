@@ -227,6 +227,7 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    /// Assert two floats are equal within `1e-9`.
     fn approx(a: f64, b: f64) {
         assert!(
             (a - b).abs() < 1e-9,
@@ -344,6 +345,7 @@ mod tests {
         approx(s.left_home, 236.0);
     }
 
+    /// Symmetric worked example: left aggressor squeeze and restore.
     #[test]
     fn worked_example_left_aggressor_symmetric() {
         let mut s = RailState::desktop(1600.0);
@@ -375,6 +377,7 @@ mod tests {
         approx(s.canvas(), 1.0);
     }
 
+    /// A second conquest without a manual resize still restores the original home.
     #[test]
     fn second_squeeze_without_manual_resize_keeps_original_home() {
         let mut s = RailState::desktop(1600.0);
@@ -398,6 +401,7 @@ mod tests {
         approx(s.left_home, 236.0);
     }
 
+    /// Manually resizing a squeezed rail replaces its remembered home.
     #[test]
     fn manual_resize_of_squeezed_rail_invalidates_home() {
         let mut s = RailState::desktop(1600.0);
@@ -423,6 +427,7 @@ mod tests {
         approx(s.canvas(), 1084.0);
     }
 
+    /// Aggressor apply steps must not mutate either rail's home.
     #[test]
     fn apply_aggressor_never_writes_homes() {
         let mut s = RailState::desktop(1600.0);
@@ -436,6 +441,7 @@ mod tests {
         approx(s.right_home, 400.0);
     }
 
+    /// Manual set commits only the resized rail's home.
     #[test]
     fn manual_set_commits_only_that_rail_home() {
         let mut s = RailState::desktop(1600.0);
@@ -449,6 +455,7 @@ mod tests {
         approx(s.right_home, 500.0);
     }
 
+    /// Zero-canvas aggressor results are finite and sum to the workspace.
     #[test]
     fn canvas_zero_widths_are_finite() {
         let (l, r) = compute_right_aggressor(1600.0, 1420.0, true, 236.0, 180.0, 240.0);
@@ -459,6 +466,7 @@ mod tests {
         assert!(l.is_finite() && r.is_finite());
     }
 
+    /// Partial restore while still at zero canvas grows the squeezed rail monotonically.
     #[test]
     fn mid_squeeze_partial_restore_is_monotonic() {
         let mut s = RailState::desktop(1600.0);
@@ -497,6 +505,7 @@ mod tests {
         approx(l.1, r.0);
     }
 
+    /// Right-aggressor hard stop keeps inset hit strips fully separable.
     #[test]
     fn zero_canvas_hits_separable_right_aggressor() {
         let w = 1600.0;
@@ -510,6 +519,7 @@ mod tests {
         assert!(r.1 - r.0 >= RAIL_HIT_PX);
     }
 
+    /// Left-aggressor hard stop keeps inset hit strips fully separable.
     #[test]
     fn zero_canvas_hits_separable_left_aggressor() {
         let w = 1600.0;
@@ -523,6 +533,7 @@ mod tests {
         assert!(l.1 - l.0 >= RAIL_HIT_PX);
     }
 
+    /// Narrow-window zero-canvas geometry keeps inset hits separable both ways.
     #[test]
     fn zero_canvas_hits_separable_narrow_window() {
         // Matches the owner's measured innerWidth ≈ 937 geometry.
@@ -535,6 +546,7 @@ mod tests {
         assert_zero_canvas_hits_separable(w, s.left, s.right);
     }
 
+    /// At zero canvas, either rail drag must still change width.
     #[test]
     fn zero_canvas_each_rail_can_still_change_width() {
         let mut s = RailState::desktop(1600.0);
@@ -630,6 +642,7 @@ mod tests {
         approx(screen_x(canvas_left, pan, zoom, world_x), origin);
     }
 
+    /// Collapsing/expanding the left rail keeps a world point's screen X fixed.
     #[test]
     fn left_toggle_occupied_change_keeps_screen_x_invariant() {
         let zoom = 1.0;
@@ -679,6 +692,7 @@ mod tests {
         assert!(travel(10.0, 0.0) > DRAG_MOVE);
     }
 
+    /// Collapsed rails report occupied 0 while keeping their stored width.
     #[test]
     fn stored_width_distinct_from_occupied_when_collapsed() {
         let stored = 236.0;

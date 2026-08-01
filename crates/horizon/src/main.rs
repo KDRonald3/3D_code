@@ -44,6 +44,11 @@ struct Cli {
     quiet: bool,
 }
 
+/// Analyse the given repository and emit its function map as JSON.
+///
+/// Writes pretty or compact JSON to `--output` or stdout, and (unless
+/// `--quiet`) a one-line summary of crates, functions, and call outcomes to
+/// stderr.
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -90,6 +95,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Write the one-line stderr summary of map size and call-site outcomes.
 fn write_summary_line(map: &Repository, mut err: impl Write) -> Result<()> {
     let stats = count_map(map);
     writeln!(
@@ -119,6 +125,7 @@ struct TreeStats {
     resolved: usize,
 }
 
+/// Count free functions and resolved call sites across the whole repository map.
 fn count_map(map: &Repository) -> TreeStats {
     let mut stats = TreeStats {
         functions: 0,
@@ -130,6 +137,7 @@ fn count_map(map: &Repository) -> TreeStats {
     stats
 }
 
+/// Accumulate function and resolved-call counts for one crate's files and folders.
 fn count_crate(krate: &Crate, stats: &mut TreeStats) {
     for file in &krate.files {
         count_file(file, stats);
@@ -139,6 +147,7 @@ fn count_crate(krate: &Crate, stats: &mut TreeStats) {
     }
 }
 
+/// Accumulate function and resolved-call counts for a folder subtree.
 fn count_folder(folder: &Folder, stats: &mut TreeStats) {
     for file in &folder.files {
         count_file(file, stats);
@@ -148,6 +157,7 @@ fn count_folder(folder: &Folder, stats: &mut TreeStats) {
     }
 }
 
+/// Add this file's free-function count and its resolved call sites to `stats`.
 fn count_file(file: &File, stats: &mut TreeStats) {
     stats.functions += file.functions.len();
     for site in &file.call_sites {
@@ -164,6 +174,7 @@ fn count_file(file: &File, stats: &mut TreeStats) {
     }
 }
 
+/// Return `"s"` for plural counts, or `""` when `n` is exactly one.
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""

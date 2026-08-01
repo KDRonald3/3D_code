@@ -118,6 +118,7 @@ impl IntoResponse for SourceError {
     }
 }
 
+/// Build a structured `{ error, message }` JSON error response.
 fn err(status: StatusCode, kind: &'static str, message: impl Into<String>) -> Response {
     SourceError::new(status, kind, message).into_response()
 }
@@ -246,6 +247,7 @@ pub fn find_file_in_map<'a>(repo: &'a Repository, path: &Path) -> Option<&'a Fil
     None
 }
 
+/// Recursively search `folder` (and nested folders) for an exact path match.
 fn find_file_in_folder<'a>(folder: &'a Folder, path: &Path) -> Option<&'a File> {
     for file in &folder.files {
         if file.path == path {
@@ -289,6 +291,7 @@ pub fn highlight_tokens(source: &str) -> Vec<TokenPair> {
     out
 }
 
+/// Map one syntax token to a wire highlight class (`kw` / `fn` / `ty` / …).
 fn classify_token(
     kind: SyntaxKind,
     text: &str,
@@ -349,6 +352,7 @@ fn classify_token(
     ""
 }
 
+/// Kind of the nearest non-trivia token before `index`, if any.
 fn prev_non_trivia(tokens: &[(SyntaxKind, String)], index: usize) -> Option<SyntaxKind> {
     let mut i = index;
     while i > 0 {
@@ -360,6 +364,7 @@ fn prev_non_trivia(tokens: &[(SyntaxKind, String)], index: usize) -> Option<Synt
     None
 }
 
+/// Kind of the nearest non-trivia token after `index`, if any.
 fn next_non_trivia(tokens: &[(SyntaxKind, String)], index: usize) -> Option<SyntaxKind> {
     let mut i = index + 1;
     while i < tokens.len() {
@@ -371,6 +376,7 @@ fn next_non_trivia(tokens: &[(SyntaxKind, String)], index: usize) -> Option<Synt
     None
 }
 
+/// True when `name` is a Rust primitive type (`u32`, `str`, `bool`, …).
 fn is_primitive_ty(name: &str) -> bool {
     matches!(
         name,

@@ -24,13 +24,19 @@
 //! the target repository — forbidden, because we analyse trees we do not own.
 //! `--no-deps` is read-only. It lists workspace members only, so path
 //! dependencies that are not workspace members are followed by recursing into
-//! each dependency's `path` directory and running metadata there. Registry and
-//! git dependencies are never walked.
+//! each dependency's `path` directory — but only when that path lies under the
+//! chosen analysis root. Pointing at a single workspace member therefore maps
+//! that folder alone; sibling members and path deps outside the folder stay
+//! out. Registry and git dependencies are never walked.
 //!
 //! # Phase 4 — multi-crate
 //!
-//! - **Workspace members** — every member package contributes its lib/bin targets.
-//! - **Path dependencies** — local source, walked via the recursion above.
+//! - **Workspace members under the root** — when the root is a workspace, every
+//!   member package under it contributes its lib/bin targets. When the root is
+//!   one member's directory, only that package is kept (metadata still returns
+//!   the whole workspace; we filter).
+//! - **Path dependencies under the root** — local source nested inside the
+//!   chosen folder, walked via the recursion above.
 //! - **Multiple targets** — a package's library-like target (including
 //!   `proc-macro`) and each binary become separate [`Crate`] nodes (each with
 //!   one root). A binary gets an implicit path dependency on its package's
@@ -89,13 +95,22 @@ pub fn discover_crates(repo_root: &Path) -> Result<Vec<Crate>> {
 
         let workspace_key = meta.workspace_root.clone();
         let already_seen_ws = !seen_workspaces.insert(workspace_key);
+        let root_norm = normalize_path(repo_root);
 
         let member_ids: HashSet<&str> = meta.workspace_members.iter().map(String::as_str).collect();
         for package in meta.packages {
             let is_member = member_ids.contains(package.id.as_str());
             // When we were asked to open a path-dep manifest that Cargo folds
             // into an already-seen workspace, still accept that one package.
-            let is_requested_path_pkg = Path::new(&package.manifest_path) == manifest;
+            let pkg_manifest = normalize_path(Path::new(&package.manifest_path));
+            let is_requested_path_pkg = pkg_manifest == normalize_path(&manifest);
+            // `cargo metadata` on a workspace *member* still returns every
+            // member. Keep only packages whose manifest lies under the path the
+            // user asked to analyse — never the rest of the workspace.
+            let under_root = pkg_manifest.starts_with(&root_norm);
+            if !under_root {
+                continue;
+            }
             if already_seen_ws && !is_requested_path_pkg {
                 continue;
             }
@@ -118,6 +133,9 @@ pub fn discover_crates(repo_root: &Path) -> Result<Vec<Crate>> {
                         if !seen_targets.insert(key) {
                             continue;
                         }
+                        // Follow path deps only when they live *inside* the
+                        // chosen root (e.g. fixture `engine/` under freecrate).
+                        // Sibling workspace crates and external path deps stay out.
                         for dep in &krate.dependencies {
                             if dep.kind != DependencyKind::Path {
                                 continue;
@@ -126,7 +144,10 @@ pub fn discover_crates(repo_root: &Path) -> Result<Vec<Crate>> {
                                 continue;
                             };
                             if let Some(dep_manifest) = path_dep_manifest(dep_path) {
-                                if !is_nested_fixture_manifest(&dep_manifest, repo_root) {
+                                let dep_norm = normalize_path(&dep_manifest);
+                                if dep_norm.starts_with(&root_norm)
+                                    && !is_nested_fixture_manifest(&dep_manifest, repo_root)
+                                {
                                     pending_path_manifests.push_back(dep_manifest);
                                 }
                             }
@@ -156,6 +177,7 @@ pub fn rustc_crate_name(package_name: &str) -> String {
     package_name.replace('-', "_")
 }
 
+/// Stable identity key for deduplicating a discovered [`Crate`].
 fn crate_key(krate: &Crate) -> String {
     let root = krate
         .roots
@@ -165,6 +187,7 @@ fn crate_key(krate: &Crate) -> String {
     format!("{}|{}|{root}", krate.name, krate.rustc_name)
 }
 
+/// Resolve a path dependency to its `Cargo.toml`, if that file exists.
 fn path_dep_manifest(dep_path: &Path) -> Option<PathBuf> {
     let manifest = if dep_path.is_file() {
         dep_path.to_path_buf()
@@ -194,6 +217,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Walk `repo_root` and collect every `Cargo.toml`, skipping ignored dirs.
 fn find_manifests(repo_root: &Path) -> Vec<PathBuf> {
     let mut manifests = Vec::new();
     let root_manifest = repo_root.join("Cargo.toml");
@@ -227,6 +251,7 @@ fn find_manifests(repo_root: &Path) -> Vec<PathBuf> {
     manifests
 }
 
+/// True when directory walk should not descend into `path`.
 fn is_skipped_dir(path: &Path, repo_root: &Path) -> bool {
     if is_nested_fixture_manifest(path, repo_root) {
         return true;
@@ -250,6 +275,7 @@ fn is_nested_fixture_manifest(path: &Path, repo_root: &Path) -> bool {
         && matches!(comps.next(), Some(Component::Normal(b)) if b == "fixtures")
 }
 
+/// Run `cargo metadata --no-deps` for `manifest` and parse the JSON.
 fn run_cargo_metadata(manifest: &Path) -> Result<Metadata> {
     let output = Command::new("cargo")
         .args([
@@ -311,14 +337,17 @@ const LIBRARY_KINDS: &[&str] = &[
     "proc-macro",
 ];
 
+/// True when any of `kinds` is a library target (see [`LIBRARY_KINDS`]).
 fn is_library_kind(kinds: &[String]) -> bool {
     kinds.iter().any(|k| LIBRARY_KINDS.contains(&k.as_str()))
 }
 
+/// True when any of `kinds` is a `bin` target.
 fn is_bin_kind(kinds: &[String]) -> bool {
     kinds.iter().any(|k| k == "bin")
 }
 
+/// Map one cargo package to zero or more [`Crate`]s (library plus binaries).
 fn crates_from_package(package: MetaPackage, package_dir: &Path) -> Result<Vec<Crate>> {
     let mut lib: Option<MetaTarget> = None;
     let mut bins = Vec::new();

@@ -55,6 +55,7 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    /// Build a small repository map covering resolved, conflict, and unresolved calls.
     fn sample_map() -> Repository {
         let get_shapes = FunctionId::from_parts("text_engine", "crate::shapes::get", None);
         let get_text = FunctionId::from_parts("text_engine", "crate::text::get", None);
@@ -91,7 +92,6 @@ mod tests {
                                 id: get_shapes.clone(),
                                 name: "get".into(),
                                 module_path: "crate::shapes::get".into(),
-                                receiver_type: None,
                                 line: 12,
                                 byte_start: 0,
                                 byte_end: 16,
@@ -101,7 +101,6 @@ mod tests {
                                     text: "Fetch a shape by id.".into(),
                                 }],
                             }],
-                            types: vec![],
                             call_sites: vec![],
                             doc_comments: vec![],
                         },
@@ -113,14 +112,12 @@ mod tests {
                                 id: get_text.clone(),
                                 name: "get".into(),
                                 module_path: "crate::text::get".into(),
-                                receiver_type: None,
                                 line: 8,
                                 byte_start: 0,
                                 byte_end: 16,
                                 call_sites: vec![],
                                 doc_comments: vec![],
                             }],
-                            types: vec![],
                             call_sites: vec![],
                             doc_comments: vec![],
                         },
@@ -134,7 +131,6 @@ mod tests {
                         id: main_id,
                         name: "run".into(),
                         module_path: "crate::run".into(),
-                        receiver_type: None,
                         line: 3,
                         byte_start: 0,
                         byte_end: 12,
@@ -171,7 +167,6 @@ mod tests {
                         ],
                         doc_comments: vec![],
                     }],
-                    types: vec![],
                     call_sites: vec![],
                     doc_comments: vec![],
                 }],
@@ -179,6 +174,7 @@ mod tests {
         }
     }
 
+    /// Serialize [`sample_map`] and deserialize it back with equal structure.
     #[test]
     fn sample_map_json_round_trips() {
         let original = sample_map();
@@ -199,6 +195,7 @@ mod tests {
         assert!(json.contains("\"byte_end\": 12"));
     }
 
+    /// Pin [`FunctionId::from_parts`] output for unique, root, binary, and line-suffix ids.
     #[test]
     fn function_id_from_parts_matches_format() {
         let unique = FunctionId::from_parts("text_engine", "crate::shapes::get", None);
@@ -277,6 +274,7 @@ mod tests {
         );
     }
 
+    /// Pin the adjacent-tagged JSON shape of each [`CallTarget`] variant.
     #[test]
     fn each_call_target_variant_has_stable_json_shape() {
         let resolved = serde_json::to_value(CallTarget::Resolved(FunctionId::from_parts(

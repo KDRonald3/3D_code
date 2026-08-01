@@ -8,7 +8,11 @@ members = [
     "crates/horizon-correctness",
 ]
 default-members = ["crates/horizon"]
-exclude = ["tests/fixtures"]
+# `horizon-types` is parked: the type / inherent-method analysis is kept for a
+# future design pass but takes no part in building, testing, or running the
+# project. It duplicates the free-function resolve calculus, so keeping it in
+# the build would demand fixing every resolution change twice.
+exclude = ["tests/fixtures", "crates/horizon-types"]
 
 [workspace.package]
 version = "0.1.0"

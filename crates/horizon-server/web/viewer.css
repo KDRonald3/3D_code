@@ -1557,6 +1557,10 @@ select {
   color: var(--text3);
 }
 
+.source-frame {
+  position: relative;
+}
+
 .source-well {
   margin: 0;
   background: var(--code);
@@ -1564,13 +1568,54 @@ select {
   border-radius: 8px;
   padding: 11px 12px;
   overflow-x: auto;
-  max-height: 320px;
+  /*
+   * Collapsed, the pane scrolls in place at --source-clamp so a long body is
+   * readable without expanding. Expanded releases the cap and hands vertical
+   * scrolling to the Inspector rail, which is then the only scroller.
+   */
   overflow-y: auto;
+  max-height: var(--source-clamp, 320px);
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
   line-height: 1.6;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.source-frame.expanded .source-well {
+  max-height: none;
+  /* Nothing left to scroll here — `visible` would be coerced back to `auto`
+     by the horizontal scroller and re-add a phantom vertical bar. */
+  overflow-y: hidden;
+}
+
+.source-expand {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel2);
+  color: var(--text2);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.7;
+  cursor: pointer;
+}
+
+.source-expand:hover {
+  color: var(--text);
+  border-color: var(--sel);
+}
+
+/* Author `display` beats the UA `[hidden]` rule — restate it. */
+.source-expand[hidden] {
+  display: none;
 }
 
 .source-well code {
@@ -2146,12 +2191,18 @@ select {
   background: var(--warnbg);
 }
 
+/*
+ * No standing `will-change` promotion here. Pinning the world to its own
+ * composited layer rasterises the node text once and then lets the GPU scale
+ * that bitmap, so every non-integer dock zoom rendered blurry glyphs. The map
+ * world is unpromoted for the same reason — its text re-rasterises at each new
+ * scale, which is why the file cards read sharp.
+ */
 .fns-world {
   position: absolute;
   left: 0;
   top: 0;
   transform-origin: 0 0;
-  will-change: transform;
 }
 
 .fns-edges-svg {
@@ -2231,6 +2282,10 @@ select {
 
 .fns-node:hover {
   border-color: var(--sel);
+}
+
+.fns-node.dragging {
+  box-shadow: 0 6px 18px var(--shadow);
 }
 
 .fns-node.selected {

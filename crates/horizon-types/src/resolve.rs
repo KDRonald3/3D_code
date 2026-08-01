@@ -1,10 +1,14 @@
-//! Path resolution within one crate, plus gated cross-crate edges.
+//! Path resolution within one crate, plus gated cross-crate edges, type-path
+//! mentions, and one-hop method calls.
 //!
 //! Resolve each pending call to a [`CallTarget`]: exactly one definition,
 //! a [`Conflict`] (several candidates), or unresolved (none). Refuse anything
 //! rooted in an external crate (those calls are identified and dropped, not
-//! drawn). Also drop forms that are not free-function calls: enum-variant /
-//! tuple-struct constructors, and associated functions on types (`Type::f`).
+//! drawn). Enum-variant / tuple-struct constructors stay dropped. Inherent
+//! `Type::method` and `.method` forms resolve when a certain one-hop receiver
+//! hint is present; otherwise they are `associated_dropped` — never a
+//! Conflict invented from same-named methods on unrelated types. Field and
+//! alias type paths resolve via [`resolve_type_mention`].
 //!
 //! # Phase 3 — import table
 //!
@@ -97,8 +101,13 @@
 //! enclosing module and therefore treated as module-wide, even though rustc
 //! scopes them to the body. See `extract` module docs.
 
-use crate::extract::{Import, ItemVisibility, PendingCall, TypeDef, TypeKind};
-use horizon_map::{CallTarget, Conflict, Function, FunctionId, UnresolvedCall};
+use crate::extract::{
+    Import, ItemVisibility, MethodReceiverHint, PendingCall, TypeDef, TypeKind,
+};
+use crate::map::{
+    CallTarget, Conflict, Function, FunctionId, TypeConflict, TypeId, TypeTarget, UnresolvedCall,
+    UnresolvedType,
+};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
@@ -109,17 +118,17 @@ use std::collections::{HashMap, HashSet};
 /// names the limit — both within-crate and cross-crate following.
 pub const REEXPORT_HOP_LIMIT: usize = 32;
 
-/// Build the unresolved reason string used when [`REEXPORT_HOP_LIMIT`] is hit.
+/// Diagnostic reason string when a re-export chain exceeds [`REEXPORT_HOP_LIMIT`].
 fn hop_limit_reason(path: &str) -> String {
     format!("re-export chain exceeded {REEXPORT_HOP_LIMIT} hops resolving `{path}`")
 }
 
-/// Unresolved [`CallTarget`] naming the hop limit for `path`.
+/// [`CallTarget::Unresolved`] carrying a hop-limit reason for `path`.
 fn hop_limit_unresolved(path: &str) -> CallTarget {
     unresolved(hop_limit_reason(path))
 }
 
-/// True when `reason` is a hop-limit message from [`hop_limit_reason`].
+/// True when `reason` was produced by [`hop_limit_reason`].
 fn is_hop_limit_reason(reason: &str) -> bool {
     reason.starts_with("re-export chain exceeded ")
 }
@@ -129,7 +138,8 @@ fn is_hop_limit_reason(reason: &str) -> bool {
 pub enum ExclusionKind {
     /// Enum variant or tuple-struct constructor — constructs a value, not a call.
     VariantOrConstructor,
-    /// Associated function on a type (`Type::name`) — `impl` item, out of scope.
+    /// Associated function on a type (`Type::name`) — `impl` item, out of scope,
+    /// or an untyped method call with no conflicting inherent candidates.
     AssociatedFunction,
     /// Call through a local binding (closure / `let` / parameter), not a free function.
     LocalBinding,
@@ -641,8 +651,211 @@ fn normalize_bare_import_path(
     local_full
 }
 
+/// Resolve a type-path mention (field type, alias RHS) against `index`.
+///
+/// Returns `None` when the path names an external / language crate — those
+/// mentions are omitted from the map (same honesty rule as dropped external
+/// calls). Indexed types become [`TypeTarget`]; unknown local-looking names
+/// stay [`TypeTarget::Unresolved`] with a reason.
+pub fn resolve_type_mention(
+    type_path: &str,
+    from_module: &str,
+    index: &ResolveIndex,
+    id_by_full_path: &HashMap<String, TypeId>,
+) -> Option<TypeTarget> {
+    let segments: Vec<&str> = type_path
+        .split("::")
+        .map(strip_segment_generics)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Some(TypeTarget::Unresolved(UnresolvedType {
+            reason: format!("malformed type path `{type_path}`"),
+        }));
+    }
+
+    if index.path_crates.contains_key(segments[0]) {
+        // Type defs in path deps are indexed under the dependency's own map
+        // nodes; cross-crate type edges are out of scope for this pass.
+        return None;
+    }
+    if is_external_root(segments[0], index) {
+        return None;
+    }
+
+    let mut full_paths = collect_type_full_paths(type_path, &segments, from_module, index);
+    full_paths.sort();
+    full_paths.dedup();
+
+    match full_paths.as_slice() {
+        [] => Some(TypeTarget::Unresolved(UnresolvedType {
+            reason: format!(
+                "no indexed type `{type_path}` visible from module `{from_module}`"
+            ),
+        })),
+        [only] => match id_by_full_path.get(only) {
+            Some(id) => Some(TypeTarget::Resolved(id.clone())),
+            None => Some(TypeTarget::Unresolved(UnresolvedType {
+                reason: format!("indexed type `{only}` has no TypeId"),
+            })),
+        },
+        many => {
+            let mut candidates = Vec::new();
+            for p in many {
+                if let Some(id) = id_by_full_path.get(p) {
+                    candidates.push(id.clone());
+                }
+            }
+            if candidates.is_empty() {
+                return Some(TypeTarget::Unresolved(UnresolvedType {
+                    reason: format!(
+                        "no indexed type `{type_path}` visible from module `{from_module}`"
+                    ),
+                }));
+            }
+            if candidates.len() == 1 {
+                return Some(TypeTarget::Resolved(candidates.remove(0)));
+            }
+            Some(TypeTarget::Conflict(TypeConflict {
+                candidates,
+                reason: format!(
+                    "type path `{type_path}` is ambiguous from module `{from_module}`"
+                ),
+            }))
+        }
+    }
+}
+
+/// Candidate full type paths for `type_path` / `segments` relative to `from_module`.
+///
+/// Used when resolving type mentions: absolute paths, local lookups, imports, and
+/// crate-wide unique names. Empty means no indexed candidate.
+fn collect_type_full_paths(
+    type_path: &str,
+    segments: &[&str],
+    from_module: &str,
+    index: &ResolveIndex,
+) -> Vec<String> {
+    let mut out = Vec::new();
+
+    // Absolute / already-rooted paths.
+    if matches!(segments[0], "crate" | "self" | "super") {
+        let abs = crate::extract::absolutize_type_path(segments, from_module);
+        if index.find_type_at_path(&abs).is_some() {
+            out.push(abs);
+        }
+        return out;
+    }
+
+    if segments.len() == 1 {
+        let name = segments[0];
+        if let Some(ty) = index.find_type(from_module, name) {
+            out.push(ty.full_path());
+        }
+        // Explicit imports of this name that bind a type.
+        let site = PendingCall {
+            call_path: name.to_string(),
+            line: 1,
+            byte_start: 0,
+            byte_end: 0,
+            enclosing_function: None,
+            module_path: from_module.to_string(),
+            owner: crate::extract::CallOwnerKind::File,
+            from_macro: false,
+            method_receiver: None,
+        };
+        for binding in index.explicits_in(from_module, name) {
+            match resolve_target_path(&binding.target, &site, index, 0) {
+                TargetResolve::Type(p) => {
+                    if !out.contains(&p) {
+                        out.push(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Glob-imported types (same ambiguity rule as calls — list every hit).
+        for globbed in index.globs_in(from_module) {
+            if let Some(ty) = index.find_type(globbed, name) {
+                let p = ty.full_path();
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        return out;
+    }
+
+    // Qualified: prefer crate-local under the importing module, then absolute
+    // under `crate::`, then import of the leading segment as a module/type.
+    let local = if from_module == "crate" {
+        format!("crate::{}", segments.join("::"))
+    } else {
+        format!("{from_module}::{}", segments.join("::"))
+    };
+    if index.find_type_at_path(&local).is_some() {
+        out.push(local);
+        return out;
+    }
+    let under_crate = format!("crate::{}", segments.join("::"));
+    if under_crate != type_path && index.find_type_at_path(&under_crate).is_some() {
+        out.push(under_crate);
+        return out;
+    }
+    if index.find_type_at_path(type_path).is_some() {
+        out.push(type_path.to_string());
+        return out;
+    }
+
+    // Leading segment may be an imported module: `map::Shape`.
+    let site = PendingCall {
+        call_path: type_path.to_string(),
+        line: 1,
+        byte_start: 0,
+        byte_end: 0,
+        enclosing_function: None,
+        module_path: from_module.to_string(),
+        owner: crate::extract::CallOwnerKind::File,
+        from_macro: false,
+            method_receiver: None,
+    };
+    for binding in index.explicits_in(from_module, segments[0]) {
+        match resolve_target_path(&binding.target, &site, index, 0) {
+            TargetResolve::Module(module) => {
+                let rest = segments[1..].join("::");
+                let full = extend_module_path(&module, &rest);
+                // rest may be `Foo` or `inner::Foo`
+                if index.find_type_at_path(&full).is_some() {
+                    if !out.contains(&full) {
+                        out.push(full);
+                    }
+                } else if segments.len() == 2 {
+                    if let Some(ty) = index.find_type(&module, segments[1]) {
+                        let p = ty.full_path();
+                        if !out.contains(&p) {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+            TargetResolve::Type(p) if segments.len() == 1 => {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+
 /// Resolve a single pending call against `index`.
 pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveResult> {
+    if let Some(hint) = site.method_receiver.as_ref() {
+        return Ok(resolve_method_call(site, hint, index));
+    }
+
     let path = site.call_path.as_str();
     let segments: Vec<&str> = path
         .split("::")
@@ -678,11 +891,77 @@ pub fn resolve_call(site: &PendingCall, index: &ResolveIndex) -> Result<ResolveR
     Ok(resolve_qualified(&segments, site, index))
 }
 
-/// Whether the first path segment names an external crate (`std`, registry dep, …).
+/// Resolve `receiver.method(...)` with at most one-hop receiver typing.
+fn resolve_method_call(
+    site: &PendingCall,
+    hint: &MethodReceiverHint,
+    index: &ResolveIndex,
+) -> ResolveResult {
+    let method = site
+        .call_path
+        .strip_prefix('.')
+        .unwrap_or(site.call_path.as_str());
+    if method.is_empty() {
+        return ResolveResult::Target(unresolved(format!(
+            "malformed method call `{}`",
+            site.call_path
+        )));
+    }
+
+    let ty_path = match hint {
+        MethodReceiverHint::TypePath(ty_path) => Some(ty_path.clone()),
+        MethodReceiverHint::SelfField(field) => self_field_type(site, field, index),
+        MethodReceiverHint::Unknown => None,
+    };
+
+    if let Some(ty_path) = ty_path {
+        let full = if ty_path == "crate" {
+            format!("crate::{method}")
+        } else {
+            format!("{ty_path}::{method}")
+        };
+        let ids = index.lookup_full(&full);
+        if !ids.is_empty() {
+            return match unique_or_conflict(
+                ids,
+                format!("multiple inherent methods `{full}`"),
+            ) {
+                Ok(r) => r,
+                Err(r) => r,
+            };
+        }
+        // Known receiver type but no inherent method — trait methods
+        // (`.clone`, `.into_response`, …), prelude/external fields (`.as_str`
+        // on `String`), and missing names share this drop.
+        return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
+    }
+
+    // No certain receiver type. Do **not** Conflict on same-named inherent
+    // methods elsewhere in the repo — that manufactures false problems for
+    // common std names (`.as_str`, `.len`, `.clone`, …) whose real callee is
+    // external. Without positive evidence the receiver is one of those types,
+    // drop as associated. (Flooding Unresolved was tried and rejected.)
+    ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
+}
+
+/// Declared type of `self.field` on the inherent type enclosing `site`.
+fn self_field_type(site: &PendingCall, field: &str, index: &ResolveIndex) -> Option<String> {
+    let enc = site.enclosing_function.as_ref()?;
+    let func = index.get(enc)?;
+    let (parent, name) = split_parent_name(&func.module_path)?;
+    if name != func.name {
+        return None;
+    }
+    let ty = index.find_type_at_path(&parent)?;
+    ty.fields
+        .iter()
+        .find(|(n, _)| n == field)
+        .map(|(_, path)| path.clone())
+}
+
+/// True when the first path segment names `std`/`core`/… or a registry dependency.
 ///
-/// Path dependencies in [`ResolveIndex::path_crates`] are not external — they
-/// are resolved cross-crate. Scope keywords (`crate` / `self` / `super`) are
-/// never external.
+/// Path-dependency crates in [`ResolveIndex::path_crates`] are not external.
 fn is_external_root(first: &str, index: &ResolveIndex) -> bool {
     if matches!(first, "std" | "core" | "alloc" | "proc_macro") {
         return true;
@@ -697,11 +976,10 @@ fn is_external_root(first: &str, index: &ResolveIndex) -> bool {
     index.external_crates.contains(first)
 }
 
-/// Resolve a bare name (`foo()`) in the call site's module.
+/// Resolve an unqualified free-function call name in `site`'s module.
 ///
-/// Precedence: nested free fn → local binding (excluded) → local definition →
-/// explicit import → glob candidates → constructor / prelude exclusion →
-/// unresolved. Local + explicit of the same name is reported as conflict (E0255).
+/// Precedence: nested free fns, local bindings (excluded), local defs, explicit
+/// imports, then globs — matching rustc's E0255 / E0659 honesty rules.
 fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> ResolveResult {
     // Nested free functions live under the enclosing function's path and are
     // real free-function definitions — resolve them before considering locals.
@@ -808,6 +1086,10 @@ fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> 
     }
 
     // No free function — classify constructors / prelude variants.
+    // `Self(...)` in an inherent method is a constructor of the impl type.
+    if name == "Self" {
+        return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
+    }
     if is_prelude_variant(name) {
         return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
     }
@@ -824,7 +1106,7 @@ fn resolve_unqualified(name: &str, site: &PendingCall, index: &ResolveIndex) -> 
     )))
 }
 
-/// Resolve an unqualified name that is bound only by explicit (non-glob) imports.
+/// Collapse explicit import bindings for `name` into a single [`ResolveResult`].
 fn resolve_explicit_bindings(
     name: &str,
     explicits: &[ExplicitBinding],
@@ -882,10 +1164,10 @@ fn resolve_explicit_bindings(
     )))
 }
 
-/// Resolve a multi-segment path (`crate::a::b`, `super::foo`, import prefixes).
+/// Resolve a qualified call path (`crate::…`, `super::…`, import-prefixed, …).
 ///
-/// Walks scope keywords and module segments, then looks up the final name as a
-/// free function (or classifies constructors / associated functions).
+/// Navigates module segments, follows import / re-export bindings (including into
+/// path dependencies), and classifies the final segment as a function or exclusion.
 fn resolve_qualified(segments: &[&str], site: &PendingCall, index: &ResolveIndex) -> ResolveResult {
     let path = segments.join("::");
     let mut module = site.module_path.clone();
@@ -1037,10 +1319,7 @@ enum SegmentBind {
     None,
 }
 
-/// Collapse import bindings for one path segment into a single [`SegmentBind`].
-///
-/// Conflicting kinds (two modules, module vs foreign module, two types) yield
-/// [`SegmentBind::Ambiguous`].
+/// Classify what an explicit import binding set means as a path-prefix segment.
 fn resolve_segment_binding(
     bindings: &[ExplicitBinding],
     site: &PendingCall,
@@ -1102,10 +1381,10 @@ fn resolve_segment_binding(
     SegmentBind::None
 }
 
-/// Classify a call whose path prefix already resolved to a type (`Type::…`).
+/// Classify a call whose path has already been identified as naming a type.
 ///
-/// Empty suffix → constructor; one member that is an enum variant → constructor;
-/// otherwise associated function — never mapped as a free-function edge.
+/// Bare constructors and single-segment associated forms are excluded; longer
+/// suffixes stay associated-function drops unless they name a free function.
 fn classify_from_type_path(
     ty_path: &str,
     after_type: &[&str],
@@ -1122,11 +1401,31 @@ fn classify_from_type_path(
             if index.enum_has_variant(ty, member) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
             }
+            // Inherent associated function / method: `Type::name(...)`.
+            let method_path = if ty_path == "crate" {
+                format!("crate::{member}")
+            } else {
+                format!("{ty_path}::{member}")
+            };
+            let ids = index.lookup_full(&method_path);
+            if !ids.is_empty() {
+                return match unique_or_conflict(
+                    ids,
+                    format!("multiple inherent items `{method_path}`"),
+                ) {
+                    Ok(r) => r,
+                    Err(r) => r,
+                };
+            }
+            // Indexed type but no inherent item — typically a trait / derive
+            // method (`Cli::parse`, `Type::default`). Same deliberate drop as
+            // other out-of-scope assoc forms, not a missing free function.
             return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
         }
         if is_prelude_variant(member) {
             return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
         }
+        // Type not indexed (external / prelude) — still a deliberate drop.
         return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
     }
     ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
@@ -1223,11 +1522,9 @@ enum TargetResolve {
     HopLimit,
 }
 
-/// Resolve an import / re-export target path to functions, module, type, or external.
+/// Resolve an import / re-export target string into a [`TargetResolve`].
 ///
-/// Follows within-crate import chains up to [`REEXPORT_HOP_LIMIT`]. Path-dep
-/// roots enter cross-crate resolution; other external roots return
-/// [`TargetResolve::External`].
+/// Follows within-crate and cross-crate chains up to [`REEXPORT_HOP_LIMIT`] hops.
 fn resolve_target_path(
     target: &str,
     site: &PendingCall,
@@ -1564,7 +1861,7 @@ enum CrossLookup {
     HopLimit,
 }
 
-/// Look up `name` in a foreign crate module: pub fn, pub re-export, type, or child module.
+/// Look up `name` in a foreign crate module: pub fn, pub re-export, type, or module.
 fn lookup_cross_crate_name(
     foreign: &PathCrateIndex,
     module: &str,
@@ -1955,11 +2252,10 @@ fn resolve_foreign_glob_module(
     Some((foreign.rustc_name.clone(), module))
 }
 
-/// Collect free-function candidates offered by `use …::*` in `from_module`.
+/// Free-function candidates offered by `use …::*` globs in `from_module`.
 ///
-/// Includes locally defined functions visible from the importer and import
-/// targets brought in by those globs. Does not pick a winner — callers use
-/// [`unique_or_conflict`].
+/// Only items visible through the globbed module contribute; distinct candidates
+/// from multiple globs are all returned — never a guessed winner.
 fn collect_glob_function_candidates(
     name: &str,
     from_module: &str,
@@ -1990,6 +2286,7 @@ fn collect_glob_function_candidates(
                 module_path: from_module.into(),
                 owner: crate::extract::CallOwnerKind::File,
                 from_macro: false,
+                method_receiver: None,
             };
             if let TargetResolve::Functions(ids) = resolve_target_path(&target, &site, index, 0) {
                 for id in ids {
@@ -2003,7 +2300,7 @@ fn collect_glob_function_candidates(
     out
 }
 
-/// True when a glob in `from_module` brings a type (or re-exported type) named `name`.
+/// True when a glob in `from_module` brings a visible type (or type re-export) named `name`.
 fn glob_brings_type(name: &str, from_module: &str, index: &ResolveIndex) -> bool {
     for glob_mod in index.globs_in(from_module) {
         if let Some(ty) = index
@@ -2082,12 +2379,12 @@ fn absolutize_vis_path(path: &str, item_module: &str) -> String {
     }
 }
 
-/// True when `child` is a strict module-path descendant of `ancestor`.
+/// True when `child` is a strict `::`-descendant of `ancestor`.
 fn is_descendant(child: &str, ancestor: &str) -> bool {
     child.starts_with(ancestor) && child[ancestor.len()..].starts_with("::")
 }
 
-/// One candidate → resolved; several → conflict with `conflict_reason`; empty → error result.
+/// Turn a candidate id set into `Resolved` / `Conflict`, or an internal error if empty.
 fn unique_or_conflict(
     ids: Vec<FunctionId>,
     conflict_reason: String,
@@ -2215,7 +2512,7 @@ fn classify_non_module_suffix(
             if index.enum_has_variant(ty, member) {
                 return ResolveResult::Excluded(ExclusionKind::VariantOrConstructor);
             }
-            return ResolveResult::Excluded(ExclusionKind::AssociatedFunction);
+            return classify_from_type_path(&ty.full_path(), after_type, full_path, index);
         }
         if looks_like_type_name(type_name) {
             if is_prelude_variant(member) {
@@ -2228,12 +2525,12 @@ fn classify_non_module_suffix(
     ResolveResult::Excluded(ExclusionKind::AssociatedFunction)
 }
 
-/// Prelude enum variants (`Ok` / `Err` / `Some` / `None`) treated as constructors.
+/// True for prelude enum variants `Ok` / `Err` / `Some` / `None`.
 fn is_prelude_variant(name: &str) -> bool {
     matches!(name, "Ok" | "Err" | "Some" | "None")
 }
 
-/// Heuristic: `Self`, a primitive, or UpperCamelCase — likely a type in a path.
+/// Heuristic: `Self`, a primitive, or UpperCamelCase — used to drop constructors.
 fn looks_like_type_name(name: &str) -> bool {
     if name == "Self" || is_primitive_type(name) {
         return true;
@@ -2241,7 +2538,7 @@ fn looks_like_type_name(name: &str) -> bool {
     is_upper_camel_case(name)
 }
 
-/// Rust primitive type name (`bool`, `u32`, `str`, …).
+/// True for Rust primitive scalar / `str` type names.
 fn is_primitive_type(name: &str) -> bool {
     matches!(
         name,
@@ -2290,25 +2587,25 @@ fn is_upper_camel_case(name: &str) -> bool {
     saw_lower
 }
 
-/// Strip turbofish / lifetime suffixes from a path segment (`foo::<T>` → `foo`).
+/// Strip trailing generics / lifetime markers from a path segment (`Foo<T>` → `Foo`).
 fn strip_segment_generics(seg: &str) -> &str {
     seg.split(['<', '\'']).next().unwrap_or(seg)
 }
 
-/// Wrap `reason` as an unresolved [`CallTarget`].
+/// Convenience constructor for [`CallTarget::Unresolved`].
 fn unresolved(reason: impl Into<String>) -> CallTarget {
     CallTarget::Unresolved(UnresolvedCall {
         reason: reason.into(),
     })
 }
 
-/// Split `parent::name` into `(parent, name)`; `None` when there is no `::`.
+/// Split `module_path` into `(parent, final_segment)`, or `None` if it has no `::`.
 fn split_parent_name(module_path: &str) -> Option<(String, String)> {
     let (parent, name) = module_path.rsplit_once("::")?;
     Some((parent.to_string(), name.to_string()))
 }
 
-/// Parent of a module path (`crate::a::b` → `crate::a`); `None` at the crate root.
+/// Parent of `module`, or `None` at the crate root.
 fn parent_module(module: &str) -> Option<String> {
     if module == "crate" {
         None
@@ -2317,7 +2614,7 @@ fn parent_module(module: &str) -> Option<String> {
     }
 }
 
-/// Append `name` as a child module segment under `parent`.
+/// Append `name` under `parent` (`crate` root special-cased).
 fn extend_module_path(parent: &str, name: &str) -> String {
     if parent == "crate" {
         format!("crate::{name}")
@@ -2326,7 +2623,7 @@ fn extend_module_path(parent: &str, name: &str) -> String {
     }
 }
 
-/// Join `parts` onto `parent` with `::` separators.
+/// Join `parent` with owned path `parts` (`crate` root special-cased).
 fn join_path_owned(parent: &str, parts: &[String]) -> String {
     if parts.is_empty() {
         return parent.to_string();
@@ -2342,13 +2639,14 @@ fn join_path_owned(parent: &str, parts: &[String]) -> String {
 mod tests {
     use super::*;
     use crate::extract::{CallOwnerKind, Import, ItemVisibility, TypeDef, TypeKind};
-    use horizon_map::FunctionId;
+    use crate::map::FunctionId;
 
     fn fn_at(path: &str, line: u32) -> Function {
         Function {
             id: FunctionId::from_parts("demo", path, None),
             name: path.rsplit("::").next().unwrap().to_string(),
             module_path: path.to_string(),
+            receiver_type: None,
             line,
             byte_start: 0,
             byte_end: 0,
@@ -2367,6 +2665,7 @@ mod tests {
             module_path: module.into(),
             owner: CallOwnerKind::File,
             from_macro: false,
+                method_receiver: None,
         }
     }
 
@@ -2717,6 +3016,12 @@ mod tests {
             kind: TypeKind::Enum,
             variants: vec!["Resolved".into(), "Conflict".into()],
             visibility: ItemVisibility::Public,
+            line: 1,
+            byte_start: 0,
+            byte_end: 1,
+            doc_comments: vec![],
+            pending_refs: vec![],
+            fields: vec![],
         }];
         let modules = HashSet::from(["crate".into(), "crate::map".into(), "crate::resolve".into()]);
         let imports = vec![explicit(
@@ -2743,13 +3048,19 @@ mod tests {
     }
 
     #[test]
-    fn excludes_local_associated_function() {
+    fn indexed_type_missing_assoc_is_dropped_not_unresolved() {
         let types = vec![TypeDef {
             name: "FunctionId".into(),
             module_path: "crate::map".into(),
             kind: TypeKind::Struct,
             variants: vec![],
             visibility: ItemVisibility::Public,
+            line: 1,
+            byte_start: 0,
+            byte_end: 1,
+            doc_comments: vec![],
+            pending_refs: vec![],
+            fields: vec![],
         }];
         let index = index_with(
             vec![],
@@ -2834,6 +3145,7 @@ mod tests {
             id: FunctionId::from_parts("text_engine", "crate::format::upper", None),
             name: "upper".into(),
             module_path: "crate::format::upper".into(),
+            receiver_type: None,
             line: 1,
             byte_start: 0,
             byte_end: 0,
@@ -2844,6 +3156,7 @@ mod tests {
             id: FunctionId::from_parts("text_engine", "crate::version", None),
             name: "version".into(),
             module_path: "crate::version".into(),
+            receiver_type: None,
             line: 2,
             byte_start: 0,
             byte_end: 0,

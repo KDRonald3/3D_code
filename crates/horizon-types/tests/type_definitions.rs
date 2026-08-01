@@ -1,6 +1,6 @@
 //! W8: type definitions are first-class map nodes with honest type_refs.
 
-use horizon_engine::{TypeKind, TypeTarget, build_function_map};
+use horizon_types::{TypeKind, TypeTarget, build_type_map};
 use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
@@ -16,7 +16,7 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn emits_structs_enums_aliases_and_field_type_refs() {
-    let map = build_function_map(fixture("type-definitions")).expect("build map");
+    let map = build_type_map(fixture("type-definitions")).expect("build map");
     assert_eq!(map.crates.len(), 1);
     let file = &map.crates[0].files[0];
 

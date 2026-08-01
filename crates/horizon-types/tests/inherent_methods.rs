@@ -1,6 +1,6 @@
 //! W8b: inherent methods and one-hop method-call resolution.
 
-use horizon_engine::{CallTarget, build_function_map};
+use horizon_types::{CallTarget, build_type_map};
 use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
@@ -16,7 +16,7 @@ fn fixture(name: &str) -> PathBuf {
 
 #[test]
 fn inherent_methods_resolve_assoc_and_one_hop_calls() {
-    let map = build_function_map(fixture("inherent-methods")).expect("build map");
+    let map = build_type_map(fixture("inherent-methods")).expect("build map");
     let file = &map.crates[0].files[0];
 
     let methods: Vec<&str> = file
@@ -70,7 +70,7 @@ fn inherent_methods_resolve_assoc_and_one_hop_calls() {
         "registry.get should resolve: {resolved_paths:?}"
     );
 
-    // Bare `self.method` inside inherent impl — certain Self type.
+    // Bare `self.method` inside inherent impl â€” certain Self type.
     let via_self = file
         .functions
         .iter()
@@ -114,7 +114,7 @@ fn inherent_methods_resolve_assoc_and_one_hop_calls() {
         as_str_method.call_sites
     );
 
-    // Untyped receiver with colliding inherent names → associated drop, not Conflict.
+    // Untyped receiver with colliding inherent names â†’ associated drop, not Conflict.
     let untyped = file
         .functions
         .iter()
@@ -130,7 +130,7 @@ fn inherent_methods_resolve_assoc_and_one_hop_calls() {
         untyped.call_sites
     );
 
-    // `let Some(c) = wrap_cache()` — return type is a certain hint.
+    // `let Some(c) = wrap_cache()` â€” return type is a certain hint.
     let from_ret = file
         .functions
         .iter()

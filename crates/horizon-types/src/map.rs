@@ -1,12 +1,19 @@
-//! The function-map node types.
+//! Enriched map node types for type definitions and inherent methods.
 //!
-//! Containment is a tree:
+//! This is the contract owned by `horizon-types`, not the free-function JSON
+//! shape in [`horizon_map`]. Containment is a tree:
 //!
 //! ```text
 //! Repository → Crate → Folder → File
 //!                              ├── CallSite (module-level: const/static init, …)
 //!                              ├── DocComment (file-level `//!` / `#![doc]`)
-//!                              └── Function
+//!                              ├── TypeItem (struct / enum / trait / type alias)
+//!                              │     └── TypeRef → TypeTarget
+//!                              │                    ├── Resolved(TypeId)
+//!                              │                    ├── Conflict → several TypeIds
+//!                              │                    └── Unresolved
+//!                              └── Function (free function or inherent method)
+//!                                  ├── receiver_type: Option<TypeId>
 //!                                  ├── CallSite → CallTarget
 //!                                  │                 ├── Resolved(FunctionId)
 //!                                  │                 ├── Conflict  → several FunctionIds
@@ -14,17 +21,9 @@
 //!                                  └── DocComment (`///` / `/**` / `#[doc]`)
 //! ```
 //!
-//! Each [`CallSite`] is a call edge that ends at either a function, a
-//! [`Conflict`] (several candidates), or [`CallTarget::Unresolved`] (none).
-//! Resolved targets are **references** ([`FunctionId`]) to the one canonical
-//! [`Function`] node, never copies — recursion is a pointer back to the same
-//! id. The map never guesses: when a site cannot be resolved to exactly one
-//! definition, the edge records every candidate (or none) rather than picking
-//! a winner or dropping the site.
-//!
-//! Calls that sit outside any free function (e.g. a `const` initialiser
-//! invoking a `const fn`) attach to the owning [`File`], reusing [`CallSite`].
-//! Calls inside `impl` / `trait` items stay excluded — methods are out of scope.
+//! The map never guesses: when a site cannot be resolved to exactly one
+//! definition, the edge records every candidate (or none). Method calls with
+//! no certain one-hop receiver are dropped as associated, not conflicted.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -331,6 +330,11 @@ pub struct File {
     #[serde(default)]
     pub content_hash: String,
     pub functions: Vec<Function>,
+    /// Data-structure definitions in this file (struct / enum / trait /
+    /// type alias). Empty when the file defines none. Deserialises to `[]`
+    /// when absent so maps written before types were emitted still load.
+    #[serde(default)]
+    pub types: Vec<TypeItem>,
     /// Call sites outside any free function (e.g. `const` / `static`
     /// initialisers). Same [`CallSite`] type as on [`Function`]; resolved the
     /// same way. Empty when every path-form call in the file sits inside a
@@ -446,17 +450,141 @@ pub struct CallSite {
     pub from_macro: bool,
 }
 
-/// A free function definition — the only place canonical identity lives.
+/// Stable identity of a type definition in the map.
 ///
-/// Methods and `impl` items are out of scope (see deferred-scope).
+/// Same formatting rules as [`FunctionId`]: `{crate_key}::{module_path}` with
+/// an optional `#L{line}` tie-breaker when two definitions share a path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TypeId(pub String);
+
+impl TypeId {
+    /// Build an id from its canonical parts (see [`FunctionId::from_parts`]).
+    pub fn from_parts(crate_key: &str, module_path: &str, line: Option<u32>) -> Self {
+        let path = match module_path.strip_prefix("crate::") {
+            Some(rest) => format!("{crate_key}::{rest}"),
+            None if module_path == "crate" => crate_key.to_string(),
+            None => format!("{crate_key}::{module_path}"),
+        };
+        match line {
+            Some(n) => Self(format!("{path}#L{n}")),
+            None => Self(path),
+        }
+    }
+
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TypeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Kind of data-structure item emitted on a [`File`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeKind {
+    Struct,
+    Enum,
+    Trait,
+    TypeAlias,
+}
+
+/// Where a type-path mention ends — mirrors [`CallTarget`] for types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum TypeTarget {
+    Resolved(TypeId),
+    Conflict(TypeConflict),
+    Unresolved(UnresolvedType),
+}
+
+/// Several candidate types for one type-path mention.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeConflict {
+    pub candidates: Vec<TypeId>,
+    pub reason: String,
+}
+
+/// A type-path mention with no known indexed target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnresolvedType {
+    pub reason: String,
+}
+
+/// One type path named inside a [`TypeItem`] (field type, alias RHS, …).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeRef {
+    /// Path text exactly as written (turbofish / generics stripped to the
+    /// leading path when extraction could not keep them — see engine docs).
+    pub type_path: String,
+    pub line: u32,
+    pub byte_start: u32,
+    pub byte_end: u32,
+    pub target: TypeTarget,
+}
+
+/// A struct / enum / trait / type-alias definition — first-class map node.
+///
+/// Inherent methods and trait impls are not attached here yet; type *paths*
+/// this definition names are recorded in [`type_refs`] so the Types filter
+/// and a future type DAG have honest edges without guessing receivers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeItem {
+    pub id: TypeId,
+    pub name: String,
+    pub kind: TypeKind,
+    /// Full module path including the type name (e.g. `crate::shapes::Shape`).
+    pub module_path: String,
+    /// 1-based line of the `struct` / `enum` / `trait` / `type` keyword.
+    pub line: u32,
+    /// Byte range of the full item syntax node (attrs + body), same sentinel
+    /// rules as [`Function::byte_start`] / [`Function::byte_end`].
+    #[serde(default)]
+    pub byte_start: u32,
+    #[serde(default)]
+    pub byte_end: u32,
+    /// Variant names when [`TypeKind::Enum`]; omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// Types this definition names. External / primitive paths are omitted
+    /// (same honesty rule as dropped external calls); indexed or local-looking
+    /// paths resolve to [`TypeTarget`].
+    #[serde(default)]
+    pub type_refs: Vec<TypeRef>,
+    #[serde(default)]
+    pub doc_comments: Vec<DocComment>,
+}
+
+/// A free function or inherent method definition — the place canonical
+/// function identity lives.
+///
+/// Inherent `impl Type { fn … }` methods appear here with
+/// [`receiver_type`] set. Trait impl methods and trait items stay excluded.
+/// Associated-function call sites that cannot be tied to an indexed inherent
+/// method remain in [`MapSummary::associated_dropped`] (external / unknown
+/// types); indexed `Type::method` forms resolve to these nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Function {
     pub id: FunctionId,
     pub name: String,
-    /// Full module path of the function (e.g. `crate::shapes::get`).
+    /// Full module path of the function (e.g. `crate::shapes::get`, or
+    /// `crate::Cache::new` for an inherent method).
     /// Distinguishes same-named free functions at different module depths
     /// within one file (inline modules are not separate map nodes).
     pub module_path: String,
+    /// When present, this item is an inherent method of the named type.
+    /// Absent (and omitted from JSON) for free functions. Old maps without
+    /// the field deserialise as free functions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_type: Option<TypeId>,
     /// 1-based line of the `fn` keyword (disambiguates cfg duplicates).
     pub line: u32,
     /// Byte offset (UTF-8) of the start of this free-function item in the file.

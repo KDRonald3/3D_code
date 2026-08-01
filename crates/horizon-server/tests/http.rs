@@ -72,14 +72,12 @@ fn repo_with_source_file(
                     id,
                     name: "documented".into(),
                     module_path: "crate::documented".into(),
-                    receiver_type: None,
                     line: 3,
                     byte_start,
                     byte_end,
                     call_sites: vec![],
                     doc_comments: vec![],
                 }],
-                types: vec![],
                 call_sites: vec![],
                 doc_comments: vec![],
             }],
@@ -151,7 +149,6 @@ fn sample_repo() -> Repository {
                     id: run,
                     name: "run".into(),
                     module_path: "crate::app::run".into(),
-                    receiver_type: None,
                     line: 3,
                     byte_start: 0,
                     byte_end: 80,
@@ -180,7 +177,6 @@ fn sample_repo() -> Repository {
                     ],
                     doc_comments: vec![],
                 }],
-                types: vec![],
                 call_sites: vec![],
                 doc_comments: vec![],
             }],
@@ -288,12 +284,21 @@ async fn serves_index_and_static_assets() {
         ("/static/viewer.js", "getFnsPaneMetrics"),
         ("/static/viewer.js", "zoomFnsAt"),
         ("/static/viewer.js", "zoomMapAt"),
-        // Functions dock: node press selects; pan only from empty background.
+        // Functions dock: click selects; drag rearranges; pan from background only.
         ("/static/viewer.js", "resolveFnsPointerGesture"),
         ("/static/viewer.js", "closest(\".fns-node\")"),
         ("/static/viewer.js", "fnsPanFromBackgroundOnly"),
         ("/static/viewer.js", "getLastFnsNodeActivation"),
+        ("/static/viewer.js", "getLastFnsNodeGesture"),
+        ("/static/viewer.js", "suppressFnsNodeClick"),
+        ("/static/viewer.js", "onFnsNodePointerDown"),
+        ("/static/viewer.js", "fnsNodePos"),
+        ("/static/viewer.js", "getFnsNodePosition"),
+        ("/static/viewer.js", "setFnsNodePosition"),
+        ("/static/viewer.js", "fnsNodeDragThresholdPx"),
+        ("/static/viewer.js", "action: \"drag\""),
         ("/static/viewer.js", "surfacedReason"),
+        ("/static/viewer.css", ".fns-node.dragging"),
         // Dock shares left-occupied pan compensation with the map canvas.
         ("/static/viewer.js", "fnsPanX -= delta"),
         ("/static/viewer.css", "top: auto; /* release vertical-rail"),
@@ -375,6 +380,20 @@ async fn serves_index_and_static_assets() {
         // Cycle-safe layering (mutual/recursive calls must not blow the queue).
         ("/static/function_dag.js", "backEdgeKey"),
         ("/static/viewer.css", ".resize-rail.bottom-rail"),
+        // Inspector source pane: collapsed scrolls at the clamp, expanded
+        // releases the cap and lets the rail scroll.
+        ("/static/viewer.css", ".source-frame"),
+        ("/static/viewer.css", ".source-expand"),
+        ("/static/viewer.css", "--source-clamp"),
+        ("/static/viewer.css", ".source-frame.expanded .source-well"),
+        ("/static/viewer.css", "max-height: none"),
+        ("/static/viewer.js", "renderSourceFrame"),
+        ("/static/viewer.js", "measureSourceFrame"),
+        ("/static/viewer.js", "SOURCE_CLAMP_PX"),
+        ("/static/viewer.js", "getSourcePaneState"),
+        ("/static/viewer.js", "horizon.sourceExpanded"),
+        // Dock text sharpness: no standing layer promotion on the fns world.
+        ("/static/viewer.css", "No standing `will-change` promotion"),
     ] {
         let response = router
             .clone()
@@ -436,6 +455,13 @@ async fn serves_index_and_static_assets() {
     assert!(
         !css_body.contains("opacity: 0.92"),
         "viewer.css must not fade .fns-node.function.external"
+    );
+    // Standing layer promotion rasterises DAG label text once, then scales the
+    // bitmap — that is what made the function cards look blurry next to the
+    // (unpromoted) file cards.
+    assert!(
+        !css_body.contains("will-change: transform"),
+        "viewer.css must not promote a zoomed world — it blurs card text"
     );
 }
 

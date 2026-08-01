@@ -213,6 +213,23 @@
    * Node presses never pan (see resolveFnsPointerGesture) so they never set this.
    */
   let suppressFnsClick = false;
+  /**
+   * Hand-placed Functions-node positions in dock world units. Survive re-layout
+   * (depth change / neighborhood slice); Fit must not clear these.
+   * @type {Map<string, {x:number,y:number}>}
+   */
+  let fnsNodePos = new Map();
+  /** @type {Map<string, HTMLElement>} */
+  let fnsNodeEls = new Map();
+  let fnsNodeDrag = null;
+  /**
+   * Set on Functions-node pointerup when the gesture exceeded DRAG_MOVE.
+   * Consumed by the subsequent click so a rearrange does not select / open
+   * the Inspector. Cleared on the next click handler run.
+   */
+  let suppressFnsNodeClick = false;
+  /** Last Functions-node pointer gesture — for hand-drag verification. */
+  let lastFnsNodeGesture = null;
   /** @type {object|null} last Functions-node activation (stub reason / selection). */
   let lastFnsNodeActivation = null;
   /** @type {string|null} */
@@ -227,6 +244,12 @@
   let worldH = 600;
   /** Bumps on each source fetch so stale responses are ignored. */
   let sourceFetchGen = 0;
+  /**
+   * Source pane expanded past --source-clamp. Survives selection changes, so
+   * an auditor reading long bodies is not thrown back to the preview on every
+   * jump. Restored from storage at boot (the key is not in scope yet here).
+   */
+  let sourceExpanded = false;
 
   // Pan / drag state
   let panDrag = null;
@@ -278,6 +301,7 @@
   }
 
   const THEME_KEY = "horizon.theme";
+  const SOURCE_EXPAND_KEY = "horizon.sourceExpanded";
   const RECENT_KEY = "horizon.recent";
   const RECENT_MAX = 5;
   /** Skip storing maps larger than this — localStorage is ~5 MiB total. */
@@ -296,6 +320,22 @@
       localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
     } catch (_) {
       /* private mode / quota — theme still works for the session */
+    }
+  }
+
+  function readSourceExpanded() {
+    try {
+      return localStorage.getItem(SOURCE_EXPAND_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function persistSourceExpanded() {
+    try {
+      localStorage.setItem(SOURCE_EXPAND_KEY, sourceExpanded ? "1" : "0");
+    } catch (_) {
+      /* private mode / quota — the choice still holds for the session */
     }
   }
 
@@ -1230,17 +1270,11 @@
   function cardVisible(node) {
     if (node.kind === "entry" && !filters.entry) return false;
     if (node.kind === "file" && !filters.file) return false;
-    // Content chips: a file with functions matches Fns; a file with types
-    // matches Types. Empty files (neither) stay visible so the map never
-    // hides a card solely for lacking both. Turning a chip off dims files
-    // whose only matching content is that kind.
+        // Fns content chip dims files that only have free functions when off.
+    // Types stays disabled (type nodes are not in the free-function contract);
+    // maps that still carry a `types` array load without error via typeCount.
     const hasFn = (node.fnCount || 0) > 0;
-    const hasType = (node.typeCount || 0) > 0;
-    if (hasFn || hasType) {
-      const matchFn = hasFn && filters.fn;
-      const matchType = hasType && filters.struct;
-      if (!matchFn && !matchType) return false;
-    }
+    if (hasFn && !filters.fn) return false;
     if (!query) return true;
     const q = query.toLowerCase();
     return (
@@ -1721,12 +1755,65 @@
     return pre;
   }
 
+  /** Collapsed clamp, mirrored from the `--source-clamp` fallback in the CSS. */
+  const SOURCE_CLAMP_PX = 320;
+
+  function applySourceExpanded(frame) {
+    frame.classList.toggle("expanded", sourceExpanded);
+    const btn = frame.querySelector(".source-expand");
+    if (btn) {
+      btn.setAttribute("aria-expanded", sourceExpanded ? "true" : "false");
+      btn.title = sourceExpanded ? "Collapse source" : "Expand source";
+      btn.textContent = sourceExpanded ? "⤡ Collapse" : "⤢ Expand";
+    }
+    measureSourceFrame(frame);
+  }
+
+  /**
+   * Offer the toggle only when the clamp actually holds code back. A hidden or
+   * unlaid-out pane measures 0 — that is "no verdict yet", not "the body is
+   * short", so the toggle stays until a real measurement lands.
+   */
+  function measureSourceFrame(frame) {
+    const well = frame.querySelector(".source-well");
+    const btn = frame.querySelector(".source-expand");
+    if (!well || !btn) return;
+    const height = well.scrollHeight;
+    if (!height) return;
+    btn.hidden = height <= SOURCE_CLAMP_PX + 2;
+  }
+
+  function renderSourceFrame(tokens) {
+    const frame = document.createElement("div");
+    frame.className = "source-frame";
+    frame.appendChild(renderTokens(tokens));
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "source-expand";
+    // The Inspector sits inside gesture-bearing chrome; a toggle press must
+    // never read as a selection, pan or drag.
+    btn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      sourceExpanded = !sourceExpanded;
+      persistSourceExpanded();
+      applySourceExpanded(frame);
+    });
+    frame.appendChild(btn);
+
+    applySourceExpanded(frame);
+    requestAnimationFrame(() => measureSourceFrame(frame));
+    return frame;
+  }
+
   function setSourceHost(host, state, detail) {
     host.replaceChildren();
     const metaEl = host._metaEl;
     if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
     if (state === "served") {
-      host.appendChild(renderTokens(detail.tokens));
+      host.appendChild(renderSourceFrame(detail.tokens));
       return;
     }
     const banner = document.createElement("div");
@@ -2077,6 +2164,18 @@
   }
 
   /**
+   * Effective dock-world position of a Functions node (hand-placed overlay
+   * wins over the last layout position).
+   * @param {string} id
+   */
+  function fnsNodePosition(id) {
+    const ov = fnsNodePos.get(id);
+    if (ov) return ov;
+    const pos = fnsGraph?.positions && fnsGraph.positions[id];
+    return pos || { x: 0, y: 0 };
+  }
+
+  /**
    * Screen rect of a Functions-DAG node (for rail-drift verification).
    * Uses the same pan+scale math as screenXOfFnsWorld — not getBoundingClientRect
    * alone — so a wrong transform is caught even if the DOM moved with the panel.
@@ -2084,7 +2183,10 @@
    */
   function getFnsNodeScreenRect(nodeId) {
     if (!nodeId || !fnsGraph || !els.fnsViewport) return null;
-    const pos = fnsGraph.positions && fnsGraph.positions[nodeId];
+    if (!(fnsGraph.positions && fnsGraph.positions[nodeId]) && !fnsNodePos.has(nodeId)) {
+      return null;
+    }
+    const pos = fnsNodePosition(nodeId);
     if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return null;
     const vp = els.fnsViewport.getBoundingClientRect();
     const nw = fnsGraph.layout?.nodeW || 0;
@@ -2110,10 +2212,10 @@
   /**
    * Pure Functions-dock pointer policy — assertable without a browser DOM.
    *
-   * Rule: a gesture that begins on a node is selection, never pan. Pan only
-   * originates from empty canvas background (or an edge stroke). Small drift
-   * on a node must not lose the click; release inside the node still selects
-   * even at 20+ px movement.
+   * Rule: a gesture that begins on a node never pans. Below DRAG_MOVE it is a
+   * selection click (mirrors file cards). At/above DRAG_MOVE it rearranges the
+   * node without selecting. Pan only originates from empty canvas background
+   * (or an edge stroke).
    *
    * @param {{
    *   startedOn: "node"|"edge"|"background"|"hud",
@@ -2121,7 +2223,7 @@
    *   releasedInsideNode?: boolean,
    * }} opts
    * @returns {{
-   *   action: "select"|"pan"|"activateEdge"|"ignore"|"none",
+   *   action: "select"|"drag"|"pan"|"activateEdge"|"ignore"|"none",
    *   pan: boolean,
    *   select: boolean,
    *   suppressClick: boolean,
@@ -2135,7 +2237,10 @@
       return { action: "ignore", pan: false, select: false, suppressClick: false };
     }
     if (startedOn === "node") {
-      // Never pan from a node. Click wins while the release stays on the node.
+      // Never pan from a node. Same click-vs-drag threshold as file cards.
+      if (moved) {
+        return { action: "drag", pan: false, select: false, suppressClick: true };
+      }
       const inside =
         opts.releasedInsideNode === undefined ? true : !!opts.releasedInsideNode;
       return {
@@ -2275,6 +2380,62 @@
     }
   }
 
+  /** Redraw Functions-dock edges from effective (possibly hand-placed) positions. */
+  function renderFnsEdges() {
+    const pathsEl = els.fnsEdgePaths;
+    if (!pathsEl || !fnsGraph) return;
+    const nw = fnsGraph.layout?.nodeW || 148;
+    const nh = fnsGraph.layout?.nodeH || 48;
+    const frag = document.createDocumentFragment();
+    for (const edge of fnsGraph.edges || []) {
+      const a = fnsNodePosition(edge.from);
+      const b = fnsNodePosition(edge.to);
+      if (
+        !Number.isFinite(a.x) ||
+        !Number.isFinite(a.y) ||
+        !Number.isFinite(b.x) ||
+        !Number.isFinite(b.y)
+      ) {
+        continue;
+      }
+      // Skip edges whose endpoints are not in the current graph (or overlays).
+      const hasA =
+        (fnsGraph.positions && fnsGraph.positions[edge.from]) ||
+        fnsNodePos.has(edge.from);
+      const hasB =
+        (fnsGraph.positions && fnsGraph.positions[edge.to]) ||
+        fnsNodePos.has(edge.to);
+      if (!hasA || !hasB) continue;
+      const x1 = a.x + nw;
+      const y1 = a.y + nh / 2;
+      const x2 = b.x;
+      const y2 = b.y + nh / 2;
+      const mx = (x1 + x2) / 2;
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute(
+        "d",
+        `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`
+      );
+      path.setAttribute(
+        "class",
+        `fns-edge ${edge.kind}` +
+          (fnsActiveEdgeId === edge.id ? " active" : "")
+      );
+      path.dataset.edgeId = edge.id;
+      path.style.pointerEvents = "stroke";
+      path.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (suppressFnsClick) {
+          suppressFnsClick = false;
+          return;
+        }
+        focusDagCallSite(edge);
+      });
+      frag.appendChild(path);
+    }
+    pathsEl.replaceChildren(frag);
+  }
+
   function renderFunctionDag(opts = {}) {
     const fit = !!opts.fit;
     const nodesEl = els.fnsNodes;
@@ -2389,45 +2550,14 @@
       els.fnsWorld.style.height = `${laid.worldH}px`;
     }
 
-    pathsEl.replaceChildren();
-    const nw = laid.nodeW;
-    const nh = laid.nodeH;
-    for (const edge of graph.edges) {
-      const a = laid.pos.get(edge.from);
-      const b = laid.pos.get(edge.to);
-      if (!a || !b) continue;
-      const x1 = a.x + nw;
-      const y1 = a.y + nh / 2;
-      const x2 = b.x;
-      const y2 = b.y + nh / 2;
-      const mx = (x1 + x2) / 2;
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute(
-        "d",
-        `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`
-      );
-      path.setAttribute(
-        "class",
-        `fns-edge ${edge.kind}` +
-          (fnsActiveEdgeId === edge.id ? " active" : "")
-      );
-      path.dataset.edgeId = edge.id;
-      path.style.pointerEvents = "stroke";
-      path.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        if (suppressFnsClick) {
-          suppressFnsClick = false;
-          return;
-        }
-        focusDagCallSite(edge);
-      });
-      pathsEl.appendChild(path);
-    }
+    // Edges + nodes prefer hand-placed overlays (fnsNodePos) over laid.pos.
+    renderFnsEdges();
 
     nodesEl.replaceChildren();
+    fnsNodeEls = new Map();
     for (const node of graph.nodes) {
-      const p = laid.pos.get(node.id);
-      if (!p) continue;
+      if (!laid.pos.get(node.id) && !fnsNodePos.has(node.id)) continue;
+      const p = fnsNodePosition(node.id);
       // div (not button) so conflict candidate chips can be nested buttons.
       const el = document.createElement("div");
       const stubEdge =
@@ -2532,16 +2662,39 @@
           surfacedReason: !!reason,
         };
       };
+      el.addEventListener("pointerdown", (ev) =>
+        onFnsNodePointerDown(ev, node.id)
+      );
       el.addEventListener("click", (ev) => {
         if (ev.target.closest("button")) return;
         ev.stopPropagation();
-        // Node presses never start pan, so suppressFnsClick should stay false.
-        // Keep the guard for safety if a future gesture path sets it.
+        // fnsNodeDrag is already cleared on pointerup — use suppressFnsNodeClick,
+        // which remembers that this gesture was a rearrange, not a selection.
+        if (suppressFnsNodeClick) {
+          suppressFnsNodeClick = false;
+          lastFnsNodeGesture = {
+            ...(lastFnsNodeGesture || {}),
+            id: node.id,
+            clickSuppressed: true,
+            selected: false,
+            rightOpenAfter: rightOpen,
+          };
+          return;
+        }
+        // Pan-from-edge leftover; node presses never set this.
         if (suppressFnsClick) {
           suppressFnsClick = false;
           return;
         }
         activateNode();
+        lastFnsNodeGesture = {
+          id: node.id,
+          moved: false,
+          clickSuppressed: false,
+          selected: true,
+          selectedId: selectedFnId,
+          rightOpenAfter: rightOpen,
+        };
       });
       el.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") {
@@ -2567,6 +2720,7 @@
       }
 
       nodesEl.appendChild(el);
+      fnsNodeEls.set(node.id, el);
     }
 
     if (!graph.nodes.length) {
@@ -2987,6 +3141,8 @@
     layout = new Map();
     nodePos = new Map();
     cardEls = new Map();
+    fnsNodePos = new Map();
+    fnsNodeEls = new Map();
     fnIndex = new Map();
     selectedId = null;
     selectedFnId = null;
@@ -3035,6 +3191,8 @@
     fnIndex = index;
     layout = computeLayout(nodes);
     nodePos = new Map();
+    fnsNodePos = new Map();
+    fnsNodeEls = new Map();
     collapsed = new Set();
     selHistory = [];
     selectedFnId = null;
@@ -3152,6 +3310,73 @@
     cardDrag = null;
     window.removeEventListener("pointermove", onCardPointerMove);
     window.removeEventListener("pointerup", onCardPointerUp);
+  }
+
+  function onFnsNodePointerDown(ev, id) {
+    if (ev.button !== 0) return;
+    // Nested candidate chips own their clicks; do not start a rearrange.
+    if (ev.target.closest("button")) return;
+    ev.stopPropagation();
+    ev.preventDefault();
+    suppressFnsNodeClick = false;
+    const p = fnsNodePosition(id);
+    fnsNodeDrag = {
+      id,
+      sx: ev.clientX,
+      sy: ev.clientY,
+      ox: p.x,
+      oy: p.y,
+      moved: false,
+      rightOpenAtStart: rightOpen,
+      selectedIdAtStart: selectedFnId,
+    };
+    const el = fnsNodeEls.get(id);
+    if (el) el.classList.add("dragging");
+    window.addEventListener("pointermove", onFnsNodePointerMove);
+    window.addEventListener("pointerup", onFnsNodePointerUp);
+  }
+
+  function onFnsNodePointerMove(ev) {
+    if (!fnsNodeDrag) return;
+    const dx = ev.clientX - fnsNodeDrag.sx;
+    const dy = ev.clientY - fnsNodeDrag.sy;
+    if (!fnsNodeDrag.moved && Math.hypot(dx, dy) < DRAG_MOVE) return;
+    fnsNodeDrag.moved = true;
+    // Dock zoom — not the main canvas zoom.
+    const z = fnsZoom > 0 && Number.isFinite(fnsZoom) ? fnsZoom : ZOOM_MIN;
+    const nx = fnsNodeDrag.ox + dx / z;
+    const ny = fnsNodeDrag.oy + dy / z;
+    fnsNodePos.set(fnsNodeDrag.id, { x: nx, y: ny });
+    const el = fnsNodeEls.get(fnsNodeDrag.id);
+    if (el) {
+      el.style.left = `${nx}px`;
+      el.style.top = `${ny}px`;
+    }
+    renderFnsEdges();
+  }
+
+  function onFnsNodePointerUp() {
+    if (fnsNodeDrag) {
+      const el = fnsNodeEls.get(fnsNodeDrag.id);
+      if (el) el.classList.remove("dragging");
+      // Remember drag across the click that browsers fire after pointerup.
+      suppressFnsNodeClick = !!fnsNodeDrag.moved;
+      lastFnsNodeGesture = {
+        id: fnsNodeDrag.id,
+        moved: !!fnsNodeDrag.moved,
+        suppressFnsNodeClick,
+        rightOpenAtStart: fnsNodeDrag.rightOpenAtStart,
+        selectedIdAtStart: fnsNodeDrag.selectedIdAtStart,
+        rightOpenAfterUp: rightOpen,
+        selectedIdAfterUp: selectedFnId,
+        clickSuppressed: null,
+        selected: null,
+        rightOpenAfter: null,
+      };
+    }
+    fnsNodeDrag = null;
+    window.removeEventListener("pointermove", onFnsNodePointerMove);
+    window.removeEventListener("pointerup", onFnsNodePointerUp);
   }
 
   function onCanvasDown(ev) {
@@ -3450,8 +3675,7 @@
       // HUD buttons handle their own clicks; candidate chips are nested buttons.
       if (ev.target.closest(".zoom-hud")) return;
       if (ev.target.closest("button")) return;
-      // Node gesture → select, never pan (matches resolveFnsPointerGesture).
-      // Ordinary mouse/trackpad drift must not swallow the click.
+      // Node gesture → select-or-drag, never pan (matches resolveFnsPointerGesture).
       if (ev.target.closest(".fns-node")) return;
       suppressFnsClick = false;
       fnsPanDrag = {
@@ -3798,6 +4022,7 @@
     } catch (_) {
       dark = false;
     }
+    sourceExpanded = readSourceExpanded();
     applyTheme();
     renderRecent();
     // Publish defaults without treating the initial occupied width as a delta.
@@ -4017,24 +4242,64 @@
       renderDiagnostics,
       /**
        * Deliberate Inspector-open policy (owner rule).
-       * Selection opens; pan / card-drag / rail-resize / zoom must not.
+       * Selection opens; pan / card-drag / fns-node-drag / rail-resize / zoom must not.
        */
       inspectorOpenPolicy: () => ({
         selectionOpens: true,
         viewManipulationOpens: false,
         cardDragThresholdPx: DRAG_MOVE,
-        // Functions dock: node press selects; pan only from empty background.
+        // Functions dock: click selects; drag rearranges; pan only from background.
         fnsNodePressSelects: true,
+        fnsNodeDragThresholdPx: DRAG_MOVE,
         fnsPanFromBackgroundOnly: true,
         openHelper: "openInspectorForSelection",
       }),
-      /** Pure click-vs-pan rule for the Functions dock (no DOM required). */
+      /** Pure click-vs-drag-vs-pan rule for the Functions dock (no DOM required). */
       resolveFnsPointerGesture,
       /** Last Functions-node activation — honest null before any click. */
       getLastFnsNodeActivation: () =>
         lastFnsNodeActivation ? { ...lastFnsNodeActivation } : null,
       /** Current call-site / stub focus — honest null when none. */
       getDiagFocus: () => (diagFocus ? { ...diagFocus } : null),
+      /**
+       * Inspector source pane. `clamped` means the --source-clamp cap is still
+       * holding code back; collapsed scrolls in place, so `wellScrollable` is
+       * expected there and pins the rule only once expanded — full height, rail
+       * scrolls. Honest `mounted: false` when no source is on screen.
+       */
+      getSourcePaneState: () => {
+        const frame = els.inspector?.querySelector(".source-frame");
+        if (!frame) {
+          return {
+            mounted: false,
+            expanded: sourceExpanded,
+            clamped: false,
+            toggleVisible: false,
+            wellScrollHeight: 0,
+            wellClientHeight: 0,
+            wellScrollable: false,
+          };
+        }
+        const well = frame.querySelector(".source-well");
+        const btn = frame.querySelector(".source-expand");
+        const scrollHeight = well ? well.scrollHeight : 0;
+        const clientHeight = well ? well.clientHeight : 0;
+        const overflowY = well
+          ? getComputedStyle(well).overflowY
+          : "visible";
+        const expanded = frame.classList.contains("expanded");
+        return {
+          mounted: true,
+          expanded,
+          clamped: !expanded && scrollHeight > clientHeight + 1,
+          toggleVisible: !!btn && !btn.hidden,
+          wellScrollHeight: scrollHeight,
+          wellClientHeight: clientHeight,
+          wellScrollable:
+            (overflowY === "auto" || overflowY === "scroll") &&
+            scrollHeight > clientHeight + 1,
+        };
+      },
       /** Outcome of the last card press/release (+ click if any). For hand-drag checks. */
       getLastCardGesture: () => {
         const g = lastCardGesture;
@@ -4048,6 +4313,69 @@
             g.rightOpenAtStart === false && rightOpen === true,
           rightOpenNow: rightOpen,
         };
+      },
+      /**
+       * Outcome of the last Functions-node press/release (+ click if any).
+       * Honest null before any gesture.
+       */
+      getLastFnsNodeGesture: () => {
+        const g = lastFnsNodeGesture;
+        if (!g) return null;
+        const selNow = selectedFnId;
+        return {
+          ...g,
+          selectedIdNow: selNow,
+          selectionChanged: g.selectedIdAtStart !== selNow,
+          inspectorOpened:
+            g.rightOpenAtStart === false && rightOpen === true,
+          rightOpenNow: rightOpen,
+        };
+      },
+      /**
+       * Dock-world position of a Functions node. Honest null when the graph is
+       * absent or the id is not in the current layout / overlays.
+       * @param {string} id
+       */
+      getFnsNodePosition: (id) => {
+        if (!id || !fnsGraph) return null;
+        const key = String(id);
+        if (
+          !(fnsGraph.positions && fnsGraph.positions[key]) &&
+          !fnsNodePos.has(key)
+        ) {
+          return null;
+        }
+        const p = fnsNodePosition(key);
+        return { id: key, x: p.x, y: p.y, handPlaced: fnsNodePos.has(key) };
+      },
+      /**
+       * Set a Functions node's dock-world position (for console drag arithmetic).
+       * Updates the overlay map, live DOM, and edges. Returns the new position
+       * or null when the graph / id is unavailable.
+       * @param {string} id
+       * @param {number} x
+       * @param {number} y
+       */
+      setFnsNodePosition: (id, x, y) => {
+        if (!id || !fnsGraph) return null;
+        const key = String(id);
+        if (
+          !(fnsGraph.positions && fnsGraph.positions[key]) &&
+          !fnsNodePos.has(key)
+        ) {
+          return null;
+        }
+        const nx = Number(x);
+        const ny = Number(y);
+        if (!Number.isFinite(nx) || !Number.isFinite(ny)) return null;
+        fnsNodePos.set(key, { x: nx, y: ny });
+        const el = fnsNodeEls.get(key);
+        if (el) {
+          el.style.left = `${nx}px`;
+          el.style.top = `${ny}px`;
+        }
+        renderFnsEdges();
+        return { id: key, x: nx, y: ny, handPlaced: true };
       },
       /**
        * Cheap smoke: invoke exported helpers so a missing binding throws here
@@ -4079,8 +4407,12 @@
           "getUiState",
           "inspectorOpenPolicy",
           "getLastCardGesture",
+          "getLastFnsNodeGesture",
+          "getFnsNodePosition",
+          "setFnsNodePosition",
           "getLastFnsNodeActivation",
           "getDiagFocus",
+          "getSourcePaneState",
           "resolveFnsPointerGesture",
           "runLayoutAcceptance",
           "computeRightAggressorLayout",
@@ -4147,6 +4479,30 @@
                 });
                 continue;
               }
+            } else if (name === "getLastFnsNodeGesture") {
+              // Honest null before any node gesture.
+              const g = fn();
+              if (g !== null && (typeof g !== "object" || g.id == null)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "getLastFnsNodeGesture returned unexpected value",
+                });
+                continue;
+              }
+            } else if (name === "getFnsNodePosition") {
+              // Honest null when no DAG / unknown id — must not throw.
+              const g = fn("__missing__");
+              if (g !== null) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "getFnsNodePosition should be null for missing id",
+                });
+                continue;
+              }
+            } else if (name === "setFnsNodePosition") {
+              // Side-effecting DOM write — probe presence only.
             } else if (name === "getDiagFocus") {
               const g = fn();
               if (g !== null && typeof g !== "object") {
@@ -4160,28 +4516,56 @@
             } else if (name === "resolveFnsPointerGesture") {
               const cases = [
                 {
-                  name: "nodeDrift8",
+                  name: "nodeTap",
+                  opts: {
+                    startedOn: "node",
+                    movePx: 0,
+                    releasedInsideNode: true,
+                  },
+                  expect: { action: "select", pan: false, suppressClick: false },
+                },
+                {
+                  name: "nodeDrift4",
+                  opts: {
+                    startedOn: "node",
+                    movePx: 4,
+                    releasedInsideNode: true,
+                  },
+                  expect: { action: "select", pan: false, suppressClick: false },
+                },
+                {
+                  name: "nodeDrag8",
                   opts: {
                     startedOn: "node",
                     movePx: 8,
                     releasedInsideNode: true,
                   },
-                  expect: { action: "select", pan: false, suppressClick: false },
+                  expect: {
+                    action: "drag",
+                    pan: false,
+                    select: false,
+                    suppressClick: true,
+                  },
                 },
                 {
-                  name: "nodeDrift20",
+                  name: "nodeDrag20",
                   opts: {
                     startedOn: "node",
                     movePx: 20,
                     releasedInsideNode: true,
                   },
-                  expect: { action: "select", pan: false, suppressClick: false },
+                  expect: {
+                    action: "drag",
+                    pan: false,
+                    select: false,
+                    suppressClick: true,
+                  },
                 },
                 {
                   name: "nodeReleaseOutside",
                   opts: {
                     startedOn: "node",
-                    movePx: 20,
+                    movePx: 3,
                     releasedInsideNode: false,
                   },
                   expect: { action: "none", pan: false, select: false },
@@ -4248,12 +4632,24 @@
                 p.selectionOpens !== true ||
                 p.viewManipulationOpens !== false ||
                 p.fnsNodePressSelects !== true ||
+                p.fnsNodeDragThresholdPx !== DRAG_MOVE ||
                 p.fnsPanFromBackgroundOnly !== true
               ) {
                 checks.push({
                   name,
                   ok: false,
                   error: "inspectorOpenPolicy missing Functions gesture flags",
+                });
+                continue;
+              }
+            } else if (name === "getSourcePaneState") {
+              // Collapsed scrolls in place; expanded must hand off to the rail.
+              const s = fn();
+              if (!s || (s.expanded && s.wellScrollable)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "expanded source pane still scrolls instead of the rail",
                 });
                 continue;
               }

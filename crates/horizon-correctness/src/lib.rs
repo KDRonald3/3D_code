@@ -499,6 +499,7 @@ struct MapSite<'a> {
     site: &'a CallSite,
 }
 
+/// Flatten every call site in the map with its caller id for oracle matching.
 fn collect_map_sites(map: &Repository) -> Vec<MapSite<'_>> {
     let mut out = Vec::new();
     for krate in &map.crates {
@@ -522,6 +523,7 @@ fn collect_map_sites(map: &Repository) -> Vec<MapSite<'_>> {
     out
 }
 
+/// Collect every file in a crate, walking nested folders.
 fn all_files(krate: &Crate) -> Vec<&File> {
     let mut out = Vec::new();
     let mut stack: Vec<&Folder> = krate.folders.iter().collect();
@@ -533,6 +535,7 @@ fn all_files(krate: &Crate) -> Vec<&File> {
     out
 }
 
+/// Locate a call site by caller, path, and optional line for oracle comparison.
 fn find_site<'a>(
     sites: &'a [MapSite<'a>],
     caller: &str,
@@ -555,6 +558,7 @@ fn find_site<'a>(
     })
 }
 
+/// True when actual and expected FunctionIds agree under suffix/`#L` shorthand.
 fn id_matches(actual: &str, expected: &str) -> bool {
     if actual == expected || actual.ends_with(expected) || expected.ends_with(actual) {
         return true;
@@ -584,6 +588,7 @@ fn ids_agree(horizon: &str, lsif: &str) -> bool {
     false
 }
 
+/// True when actual conflict candidates match the oracle set (via [`id_matches`]).
 fn conflict_matches(actual: &[FunctionId], expected: &[String]) -> bool {
     if actual.len() != expected.len() {
         return false;
@@ -601,6 +606,7 @@ fn conflict_matches(actual: &[FunctionId], expected: &[String]) -> bool {
     })
 }
 
+/// Render an oracle expectation for mismatch reports.
 fn format_expected(exp: &ExpectedTarget) -> String {
     match exp {
         ExpectedTarget::Resolved { id } => format!("resolved → {id}"),
@@ -610,10 +616,12 @@ fn format_expected(exp: &ExpectedTarget) -> String {
     }
 }
 
+/// Render a map call site for mismatch reports.
 fn format_site(site: &CallSite) -> String {
     format!("L{} {} → {}", site.line, site.call_path, format_target(&site.target))
 }
 
+/// Render a [`CallTarget`] for mismatch reports.
 fn format_target(t: &CallTarget) -> String {
     match t {
         CallTarget::Resolved(id) => format!("resolved → {}", id.as_str()),
@@ -625,6 +633,7 @@ fn format_target(t: &CallTarget) -> String {
     }
 }
 
+/// Horizon FunctionId for a resolved site (or formatted target otherwise).
 fn func_target(site: &CallSite) -> String {
     match &site.target {
         CallTarget::Resolved(id) => id.as_str().to_string(),
@@ -632,6 +641,7 @@ fn func_target(site: &CallSite) -> String {
     }
 }
 
+/// Enumerate resolved call sites with file and caller for LSIF comparison.
 fn iter_resolved_sites(map: &Repository) -> Vec<(PathBuf, String, &CallSite)> {
     let mut out = Vec::new();
     for krate in &map.crates {
@@ -653,6 +663,7 @@ fn iter_resolved_sites(map: &Repository) -> Vec<(PathBuf, String, &CallSite)> {
     out
 }
 
+/// Classify one pending call through resolve into a [`CallOutcome`] (including drops).
 fn outcome_for(pending: &PendingCall, path: &Path, index: &ResolveIndex) -> Result<CallOutcome> {
     let (kind, targets, reason) = match resolve_call(pending, index)? {
         ResolveResult::Target(CallTarget::Resolved(id)) => {
@@ -694,6 +705,7 @@ fn outcome_for(pending: &PendingCall, path: &Path, index: &ResolveIndex) -> Resu
     })
 }
 
+/// Heuristic: external drop that looks like a known local free function.
 fn looks_suspicious_external(o: &CallOutcome, known: &HashSet<String>) -> bool {
     let first = o.call_path.split("::").next().unwrap_or("");
     // External drops should root in std/core/alloc/proc_macro or a dep name.
@@ -703,6 +715,7 @@ fn looks_suspicious_external(o: &CallOutcome, known: &HashSet<String>) -> bool {
         && !o.call_path.contains("::")
 }
 
+/// Heuristic: constructor drop that looks like a known lowercase free function.
 fn looks_suspicious_constructor(o: &CallOutcome, known: &HashSet<String>) -> bool {
     let name = o.call_path.rsplit("::").next().unwrap_or("");
     // Lowercase bare name that is a known free function — constructors are usually UpperCamel / prelude.
@@ -711,6 +724,7 @@ fn looks_suspicious_constructor(o: &CallOutcome, known: &HashSet<String>) -> boo
         && !matches!(name, "ok" | "err" | "some" | "none")
 }
 
+/// Heuristic: associated drop that looks like a `module::free_fn` path.
 fn looks_suspicious_associated(o: &CallOutcome, known: &HashSet<String>) -> bool {
     // `module::free_fn` where free_fn is known and first segment is lowercase — may be a module path.
     let segs: Vec<&str> = o.call_path.split("::").collect();
@@ -724,6 +738,7 @@ fn looks_suspicious_associated(o: &CallOutcome, known: &HashSet<String>) -> bool
     }
 }
 
+/// Pick up to `n` evenly spaced samples from a slice for audit display.
 fn take_spread(items: &[CallOutcome], n: usize) -> Vec<CallOutcome> {
     if items.is_empty() || n == 0 {
         return Vec::new();
@@ -750,6 +765,7 @@ struct LsifOcc {
     is_impl: bool,
 }
 
+/// Parse an LSIF index into path → moniker occurrences for comparison.
 fn load_lsif(path: &Path) -> Result<HashMap<PathBuf, Vec<LsifOcc>>> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let mut verts: HashMap<u64, serde_json::Value> = HashMap::new();
@@ -850,6 +866,7 @@ fn load_lsif(path: &Path) -> Result<HashMap<PathBuf, Vec<LsifOcc>>> {
     Ok(by_path)
 }
 
+/// Follow an LSIF `next` edge to a vertex with the given label.
 fn follow_next_label(
     out_edges: &HashMap<u64, Vec<&serde_json::Value>>,
     verts: &HashMap<u64, serde_json::Value>,
@@ -868,6 +885,7 @@ fn follow_next_label(
     None
 }
 
+/// Resolve the moniker identifier attached to an LSIF result set.
 fn moniker_of(
     out_edges: &HashMap<u64, Vec<&serde_json::Value>>,
     verts: &HashMap<u64, serde_json::Value>,
@@ -893,6 +911,7 @@ fn moniker_of(
     None
 }
 
+/// Convert an LSIF `file://` URI to a normalized [`PathBuf`].
 fn uri_to_path(uri: &str) -> Result<PathBuf> {
     let rest = uri
         .strip_prefix("file:///")
@@ -906,6 +925,7 @@ fn uri_to_path(uri: &str) -> Result<PathBuf> {
     Ok(discover::normalize_path(&path))
 }
 
+/// UTF-16 column span of `name` within a call's byte range (LSIF uses UTF-16).
 fn name_utf16_span(src: &[u8], byte_start: u32, byte_end: u32, name: &str) -> Option<(u32, u32)> {
     let start = byte_start as usize;
     let end = (byte_end as usize).min(src.len());
@@ -921,6 +941,7 @@ fn name_utf16_span(src: &[u8], byte_start: u32, byte_end: u32, name: &str) -> Op
     Some((sc, ec))
 }
 
+/// Last byte offset of `needle` in `hay`.
 fn memchr_rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
@@ -933,6 +954,7 @@ fn memchr_rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
+/// UTF-16 column of a byte offset within its line.
 fn byte_to_utf16_col(src: &[u8], byte_off: usize) -> Option<u32> {
     let line_start = match src[..byte_off].iter().rposition(|&b| b == b'\n') {
         Some(i) => i + 1,
@@ -942,6 +964,7 @@ fn byte_to_utf16_col(src: &[u8], byte_off: usize) -> Option<u32> {
     Some(utf16_len(prefix))
 }
 
+/// Length of a string in UTF-16 code units.
 fn utf16_len(s: &str) -> u32 {
     s.encode_utf16().count() as u32
 }

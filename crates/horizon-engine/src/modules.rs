@@ -127,7 +127,6 @@ impl Walker {
                 module_path,
                 content_hash: String::new(),
                 functions: Vec::new(),
-                types: Vec::new(),
                 call_sites: Vec::new(),
                 doc_comments: Vec::new(),
             },
@@ -389,6 +388,7 @@ fn inside_non_probe_module(node: &SyntaxNode, probe: &SyntaxNode) -> bool {
     false
 }
 
+/// Visibility of a `mod` item as written (`pub`, `pub(crate)`, …).
 fn module_visibility_of(module: &ast::Module) -> ItemVisibility {
     match module.visibility() {
         None => ItemVisibility::Private,
@@ -408,6 +408,7 @@ fn module_visibility_of(module: &ast::Module) -> ItemVisibility {
     }
 }
 
+/// Value of `#[path = "…"]` on `module`, if present.
 fn path_attribute(module: &ast::Module) -> Option<String> {
     for attr in module.attrs() {
         if attr.simple_name().as_deref() != Some("path") {
@@ -437,6 +438,7 @@ fn path_attribute(module: &ast::Module) -> Option<String> {
     None
 }
 
+/// Resolve the on-disk path for a `mod name;` (or `#[path]` override).
 fn resolve_module_file(
     child_dir: &Path,
     path_attr_base: &Path,
@@ -472,6 +474,7 @@ fn module_child_dir(file: &Path) -> PathBuf {
     }
 }
 
+/// Append `name` to `parent`, producing `crate::name` when `parent` is `crate`.
 fn extend_module_path(parent: &str, name: &str) -> String {
     if parent == "crate" {
         format!("crate::{name}")

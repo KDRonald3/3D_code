@@ -118,7 +118,6 @@ absent.
 | `module_path` | string | no | Module path of this file (`"crate"`, `"crate::shapes"`, …) |
 | `content_hash` | string | no† | Lowercase hex-encoded SHA-256 (64 hex digits, no algorithm prefix) of the **raw file bytes** as read from disk at extract time — no newline normalisation. On Windows a CRLF edit changes the digest. A consumer that slices source by `Function.byte_*` must re-hash the path and refuse to slice on mismatch. Algorithm is SHA-256 by this contract; switching later would be a wire-format bump. Empty string means the hash is unavailable (see [Backward compatibility](#backward-compatibility-byte_start-byte_end-content_hash)) |
 | `functions` | array of `Function` | no | Free functions defined in this file |
-| `types` | array of `TypeItem` | no† | Struct / enum / trait / type-alias definitions. Empty when the file defines none. Absent in maps written before types were emitted (deserialises to `[]`) |
 | `call_sites` | array of `CallSite` | no | Calls **outside** any free function (e.g. `const` / `static` init). Empty when every path-form call sits inside a function. Never holds calls from `impl` / `trait` items |
 | `doc_comments` | array of `DocComment` | no | Inner module docs (`//!`, `/*! … */`, `#![doc = "…"]`) |
 
@@ -130,8 +129,7 @@ absent.
 |---|---|---|---|
 | `id` | string (`FunctionId`) | no | Canonical identity — see below |
 | `name` | string | no | Function name as written |
-| `module_path` | string | no | Full path including name, with a leading `crate` segment (e.g. `"crate::shapes::get"`, or `"crate::Cache::new"` for an inherent method). Distinct from `id`, which substitutes the crate key for `crate` |
-| `receiver_type` | string (`TypeId`) | yes | Present when this item is an inherent method of that type; omitted for free functions |
+| `module_path` | string | no | Full path including name, with a leading `crate` segment (e.g. `"crate::shapes::get"`). Distinct from `id`, which substitutes the crate key for `crate` |
 | `line` | number (u32) | no | 1-based line of the `fn` keyword |
 | `byte_start` | number (u32) | no† | UTF-8 byte offset of the start of this free-function item in the file |
 | `byte_end` | number (u32) | no† | UTF-8 byte offset one past the end of this free-function item |
@@ -148,7 +146,11 @@ the attributes an auditor needs when comparing `#[cfg]`-duplicated definitions).
 Doc comment text therefore appears both inside this range and separately in
 `doc_comments`; that duplication is accepted.
 
-Methods and `impl` items never appear as `Function` nodes.
+Methods and `impl` items never appear as `Function` nodes. Type definitions
+and inherent-method analysis live in the sibling crate `horizon-types` (see
+that crate’s README), not in this free-function JSON contract. Older maps that
+still carry a `types` array or `receiver_type` field continue to load: serde
+ignores unknown fields.
 
 ### Backward compatibility (`byte_start` / `byte_end` / `content_hash`)
 
@@ -343,12 +345,9 @@ Repository
             └── doc_comments[]      (outer)
 ```
 
-`File.types` holds struct / enum / trait / type-alias nodes (`TypeItem`) with
-resolved `type_refs` for field types and alias RHS paths. External and prelude
-type paths are omitted from `type_refs` (same honesty rule as dropped external
-calls). Module nodes are still not emitted; inline modules contribute path
-segments on `Function.module_path` / `File.module_path` / `TypeItem.module_path`
-but do not appear as separate containers.
+Module nodes are still not emitted; inline modules contribute path segments on
+`Function.module_path` / `File.module_path` but do not appear as separate
+containers. Type nodes are not part of this contract — see `horizon-types`.
 
 ---
 

@@ -3,6 +3,11 @@
 # Scratch target dir used when a background agent builds in parallel
 /target-agent
 
+# horizon-types sits outside the workspace, so it builds into its own dir and
+# resolves its own lock file rather than sharing the workspace ones
+/crates/horizon-types/target
+/crates/horizon-types/Cargo.lock
+
 # LaTeX build artifacts
 *.aux
 *.log

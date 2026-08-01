@@ -8,6 +8,7 @@ use axum::Json;
 use horizon_map::map_from_slice;
 use serde_json::json;
 
+/// Liveness probe: `{ "ok": true }`.
 pub async fn health() -> impl IntoResponse {
     Json(json!({ "ok": true }))
 }

@@ -246,7 +246,6 @@ mod client {
         module_path: "crate::client".into(),
         owner: CallOwnerKind::File,
         from_macro: false,
-        method_receiver: None,
     };
 
     match resolve_call(&site("upper"), &index).unwrap() {
