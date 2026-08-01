@@ -13,10 +13,12 @@
     "Other"
   ],
   "activationEvents": [
+    "onCommand:horizon.map.open",
     "onCommand:horizon.map.toggle",
-    "onCommand:horizon.map.analyseWorkspace",
+    "onCommand:horizon.map.analyse",
     "onCommand:horizon.map.show",
     "onCommand:horizon.map.hide",
+    "onCommand:horizon.map.analyseWorkspace",
     "onView:horizon.map.view"
   ],
   "main": "./out/extension.js",
@@ -26,13 +28,19 @@
   "contributes": {
     "commands": [
       {
+        "command": "horizon.map.open",
+        "title": "Horizon: Open Map",
+        "category": "Horizon",
+        "icon": "$(map)"
+      },
+      {
         "command": "horizon.map.toggle",
         "title": "Horizon: Toggle Map ↔ Classic",
         "category": "Horizon",
         "icon": "$(map)"
       },
       {
-        "command": "horizon.map.analyseWorkspace",
+        "command": "horizon.map.analyse",
         "title": "Horizon: Analyse Workspace",
         "category": "Horizon",
         "icon": "$(refresh)"
@@ -46,15 +54,38 @@
         "command": "horizon.map.hide",
         "title": "Horizon: Show Classic",
         "category": "Horizon"
+      },
+      {
+        "command": "horizon.map.analyseWorkspace",
+        "title": "Horizon: Analyse Workspace (alias)",
+        "category": "Horizon"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "horizon.map.toggle",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "editorTextFocus || horizon.map.visible || !editorFocus"
+      },
+      {
+        "command": "horizon.map.open",
+        "key": "ctrl+shift+h",
+        "mac": "cmd+shift+h"
       }
     ],
     "configuration": {
       "title": "Horizon Map",
       "properties": {
+        "horizon.map.sidecarUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Attach to an already-running horizon-server (e.g. http://127.0.0.1:PORT). Overrides spawn when set. Env HORIZON_SIDECAR_URL also works."
+        },
         "horizon.map.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to the horizon-server binary (W3 sidecar)."
+          "description": "Absolute path to the horizon-server binary (W4 sidecar spawn)."
         },
         "horizon.map.cargoWorkspace": {
           "type": "string",
@@ -64,7 +95,7 @@
         "horizon.map.autoStartSidecar": {
           "type": "boolean",
           "default": true,
-          "description": "Warm-start the horizon-server sidecar on extension activate."
+          "description": "Warm-start or attach the horizon-server sidecar on extension activate."
         }
       }
     },
@@ -91,7 +122,7 @@
     "menus": {
       "view/title": [
         {
-          "command": "horizon.map.analyseWorkspace",
+          "command": "horizon.map.analyse",
           "when": "view == horizon.map.view",
           "group": "navigation"
         },
@@ -103,23 +134,32 @@
       ],
       "commandPalette": [
         {
+          "command": "horizon.map.open"
+        },
+        {
           "command": "horizon.map.toggle"
         },
         {
-          "command": "horizon.map.analyseWorkspace"
+          "command": "horizon.map.analyse"
         },
         {
           "command": "horizon.map.show"
         },
         {
           "command": "horizon.map.hide"
+        },
+        {
+          "command": "horizon.map.analyseWorkspace",
+          "when": "false"
         }
       ]
     }
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "preview": "node scripts/preview-server.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

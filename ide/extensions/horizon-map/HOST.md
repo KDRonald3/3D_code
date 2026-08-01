@@ -30,11 +30,12 @@ Completions are informational only — the canvas stays non-editable.
 
 | Phase | Behaviour |
 |---|---|
-| Start | Prefer `horizon.map.serverPath` / `HORIZON_SERVER_PATH`, else a built `target/{release,debug}/horizon-server`, else `cargo run -p horizon-server -- --no-open` from the Horizon Cargo workspace |
+| Attach | If `HORIZON_SIDECAR_URL` / `horizon.map.sidecarUrl` is set, health-check and use it (do not spawn/kill) |
+| Start | Else prefer `horizon.map.serverPath` / `HORIZON_SERVER_PATH`, else a built `target/{release,debug}/horizon-server`, else `cargo run -p horizon-server -- --no-open` |
 | Discover | Parse `http://127.0.0.1:PORT/` from stdout; refuse non-loopback URLs |
 | Health | `GET /api/health` → `{ ok: true }` |
 | Analyse | `POST /api/analyse` `{ path }`, poll `GET /api/analyse`, then `GET /api/map` |
-| Stop | `SIGTERM` on deactivate / dispose |
+| Stop | `SIGTERM` on deactivate / dispose (skipped when attached externally) |
 
 Localhost + server `host_guard` already restrict the HTTP surface.
 
@@ -42,11 +43,28 @@ Localhost + server `host_guard` already restrict the HTTP surface.
 
 | Command | Action |
 |---|---|
+| `horizon.map.open` | Show/focus Map view |
 | `horizon.map.toggle` | Show/focus Map view ↔ focus classic text editor |
-| `horizon.map.analyseWorkspace` | Analyse active workspace folder via sidecar |
-| `horizon.map.show` / `horizon.map.hide` | One-way helpers |
+| `horizon.map.analyse` | Analyse active workspace folder via sidecar |
+| `horizon.map.show` / `horizon.map.hide` | Aliases for open / classic |
+| `horizon.map.analyseWorkspace` | Alias for `horizon.map.analyse` |
+
+Keybindings: `Ctrl/Cmd+Shift+M` → toggle; `Ctrl/Cmd+Shift+H` → open.
 
 View id: `horizon.map.view` (activity-bar container `horizon`).
+
+## Sidecar attach
+
+Prefer an already-running server:
+
+```bash
+export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT
+# or setting horizon.map.sidecarUrl
+```
+
+When set, `HorizonSidecar` attaches (health-checks `/api/health`) and does **not**
+spawn or kill the process. Otherwise it spawns via `serverPath` / built binary /
+`cargo run -p horizon-server`.
 
 ## rust-analyzer recommendation
 
@@ -89,9 +107,10 @@ is missing, a minimal analyse stub HTML is served instead.
 
 | Setting | Purpose |
 |---|---|
+| `horizon.map.sidecarUrl` | Attach to running server (`http://127.0.0.1:PORT`); env `HORIZON_SIDECAR_URL` |
 | `horizon.map.serverPath` | Absolute path to `horizon-server` binary |
 | `horizon.map.cargoWorkspace` | Horizon repo root for `cargo run -p horizon-server` |
-| `horizon.map.autoStartSidecar` | Warm-start sidecar on activate (default `true`) |
+| `horizon.map.autoStartSidecar` | Warm-start / attach sidecar on activate (default `true`) |
 
 ## Security notes
 

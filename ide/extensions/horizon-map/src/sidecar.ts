@@ -1,9 +1,10 @@
 /**
- * Local `horizon-server` sidecar lifecycle.
+ * Local `horizon-server` sidecar client (W2 stub; W4 fleshes out lifecycle).
  *
- * Spawns the Axum server on loopback (ephemeral port), health-checks
- * `/api/health`, and drives `/api/analyse` + `/api/map` for the map webview.
- * Never accepts non-localhost base URLs.
+ * Prefer attaching to an already-running server via `HORIZON_SIDECAR_URL` /
+ * `horizon.map.sidecarUrl` (e.g. `http://127.0.0.1:PORT`). Otherwise spawn
+ * the Axum binary on loopback. Health-checks `/api/health` and drives
+ * `/api/analyse`, `/api/map`, `/api/source`. Never accepts non-localhost URLs.
  */
 
 import { ChildProcess, spawn } from "child_process";
@@ -29,6 +30,8 @@ export type AnalyseProgress = {
 export class HorizonSidecar implements vscode.Disposable {
   private process: ChildProcess | undefined;
   private baseUrl: string | undefined;
+  /** True when using an externally started server (do not kill on stop). */
+  private attachedExternal = false;
   private starting: Promise<string> | undefined;
   private readonly output: vscode.OutputChannel;
   private disposed = false;
@@ -40,24 +43,64 @@ export class HorizonSidecar implements vscode.Disposable {
     this.output = output ?? vscode.window.createOutputChannel("Horizon Sidecar");
   }
 
-  /** Loopback base URL (`http://127.0.0.1:PORT`), starting the server if needed. */
+  /** Loopback base URL (`http://127.0.0.1:PORT`), attaching or starting as needed. */
   async ensureRunning(): Promise<string> {
     if (this.disposed) {
       throw new Error("sidecar disposed");
     }
-    if (this.baseUrl && this.process && !this.process.killed) {
+
+    // Prefer an explicit URL (env / setting) — attach without spawning.
+    const configured = this.resolveConfiguredUrl();
+    if (configured) {
+      assertLocalhostUrl(configured);
+      if (await this.healthOk(configured)) {
+        this.baseUrl = configured.replace(/\/?$/, "");
+        this.attachedExternal = true;
+        this.log(`attached to ${this.baseUrl}`);
+        return this.baseUrl;
+      }
+      throw new Error(
+        `HORIZON_SIDECAR_URL / horizon.map.sidecarUrl is set (${configured}) but /api/health failed`
+      );
+    }
+
+    if (this.baseUrl) {
       if (await this.healthOk(this.baseUrl)) {
         return this.baseUrl;
+      }
+      if (this.attachedExternal) {
+        throw new Error(`attached sidecar at ${this.baseUrl} is no longer healthy`);
       }
       this.log("health check failed; restarting sidecar");
       await this.stop();
     }
+
     if (!this.starting) {
       this.starting = this.spawnServer().finally(() => {
         this.starting = undefined;
       });
     }
     return this.starting;
+  }
+
+  /**
+   * Resolve attach URL from setting or `HORIZON_SIDECAR_URL`.
+   * Empty / unset → spawn path.
+   */
+  private resolveConfiguredUrl(): string | undefined {
+    const config = vscode.workspace.getConfiguration("horizon.map");
+    const fromConfig = (config.get<string>("sidecarUrl") || "").trim();
+    const fromEnv = (process.env.HORIZON_SIDECAR_URL || "").trim();
+    const raw = fromConfig || fromEnv;
+    if (!raw) {
+      return undefined;
+    }
+    try {
+      const u = new URL(raw);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      throw new Error(`invalid HORIZON_SIDECAR_URL / sidecarUrl: ${raw}`);
+    }
   }
 
   /** POST `/api/analyse` and poll until done/failed; then GET `/api/map`. */
@@ -175,9 +218,12 @@ export class HorizonSidecar implements vscode.Disposable {
 
   async stop(): Promise<void> {
     const proc = this.process;
+    const wasExternal = this.attachedExternal;
     this.process = undefined;
     this.baseUrl = undefined;
-    if (!proc || proc.killed) {
+    this.attachedExternal = false;
+    // Never kill a server we only attached to.
+    if (wasExternal || !proc || proc.killed) {
       return;
     }
     await new Promise<void>((resolve) => {
@@ -206,6 +252,7 @@ export class HorizonSidecar implements vscode.Disposable {
   private async spawnServer(): Promise<string> {
     const { command, args, cwd } = this.resolveLaunch();
     this.log(`starting: ${command} ${args.join(" ")} (cwd=${cwd ?? "default"})`);
+    this.attachedExternal = false;
 
     const child = spawn(command, args, {
       cwd,

@@ -3918,16 +3918,69 @@
   }
 
   /**
+   * Poll GET /api/analyse until the job leaves `running`, then load the map
+   * (browser / static-preview path — not used in the VS Code webview).
+   */
+  function watchAnalyseJobHttp() {
+    stopAnalyseTimers();
+    analyseTickTimer = setInterval(updateAnalyseElapsed, 250);
+    return new Promise((resolve) => {
+      const finish = (body) => {
+        stopAnalyseTimers();
+        setAnalyseOverlay(false);
+        if (els.analyseRun) els.analyseRun.disabled = false;
+        if (els.analyseWorkspace) els.analyseWorkspace.disabled = false;
+        resolve(body);
+      };
+      const poll = async () => {
+        try {
+          const res = await fetch("/api/analyse");
+          const body = await res.json().catch(() => ({}));
+          applyAnalyseResult(body);
+          if (body.status === "running") {
+            return;
+          }
+          if (body.status === "done") {
+            try {
+              const mapRes = await fetch("/api/map");
+              if (!mapRes.ok) {
+                showImport(
+                  `Analysis finished but /api/map returned ${mapRes.status}`
+                );
+                finish({ status: "error", error: `map ${mapRes.status}` });
+                return;
+              }
+              const map = await mapRes.json();
+              loadMap(map, body.path || "analyse");
+              if (els.analyseForm) els.analyseForm.hidden = true;
+              finish(body);
+            } catch (err) {
+              showImport(
+                `Analysis finished but map load failed: ${err.message || err}`
+              );
+              finish({ status: "error", error: String(err.message || err) });
+            }
+            return;
+          }
+          finish(body);
+        } catch (err) {
+          showImport(`Lost contact with /api/analyse: ${err.message || err}`);
+          finish({ status: "error", error: String(err.message || err) });
+        }
+      };
+      poll();
+      analysePollTimer = setInterval(poll, 400);
+    });
+  }
+
+  /**
    * Wait for terminal analyseResult via the bridge (IDE) — no HTTP polling.
    */
   function watchAnalyseJob() {
     stopAnalyseTimers();
     analyseTickTimer = setInterval(updateAnalyseElapsed, 250);
-    if (!Bridge) {
-      return Promise.resolve({
-        status: "error",
-        error: "HorizonBridge unavailable",
-      });
+    if (!Bridge || !IDE_MODE) {
+      return watchAnalyseJobHttp();
     }
     // Terminal resolution is handled inside Bridge.analyseAndWait; progress
     // arrives via the shared onMessage listener → applyAnalyseResult.
@@ -3935,23 +3988,47 @@
   }
 
   /**
-   * Request analysis through the extension host (no hardcoded sidecar URL).
+   * Request analysis. In the IDE webview this goes through the extension host
+   * (no hardcoded sidecar URL). In static preview / desktop it POSTs /api/analyse.
    * @param {string} [path] optional; omit for workspace root (preferred in IDE)
    */
   async function startAnalyse(path) {
-    if (!Bridge) {
-      throw new Error("HorizonBridge unavailable — cannot analyse from webview");
+    if (IDE_MODE && Bridge) {
+      analyseStartedAt = Date.now();
+      setAnalyseOverlay(true, path || "workspace");
+      updateAnalyseElapsed();
+      if (els.analyseRun) els.analyseRun.disabled = true;
+      if (els.analyseWorkspace) els.analyseWorkspace.disabled = true;
+      stopAnalyseTimers();
+      analyseTickTimer = setInterval(updateAnalyseElapsed, 250);
+      const body = await Bridge.analyseAndWait(path || undefined);
+      applyAnalyseResult(body);
+      return body;
+    }
+
+    // Static preview / horizon-server desktop
+    const res = await fetch("/api/analyse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path || "" }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      analyseStartedAt = Date.now() - (Number(body.elapsed_ms) || 0);
+      setAnalyseOverlay(true, body.path || path);
+      if (els.analyseRun) els.analyseRun.disabled = true;
+      if (els.analyseWorkspace) els.analyseWorkspace.disabled = true;
+      return watchAnalyseJobHttp();
+    }
+    if (!res.ok) {
+      throw new Error(body.error || `HTTP ${res.status}`);
     }
     analyseStartedAt = Date.now();
-    setAnalyseOverlay(true, path || "workspace");
+    setAnalyseOverlay(true, body.path || path);
     updateAnalyseElapsed();
     if (els.analyseRun) els.analyseRun.disabled = true;
     if (els.analyseWorkspace) els.analyseWorkspace.disabled = true;
-    stopAnalyseTimers();
-    analyseTickTimer = setInterval(updateAnalyseElapsed, 250);
-    const body = await Bridge.analyseAndWait(path || undefined);
-    applyAnalyseResult(body);
-    return body;
+    return watchAnalyseJobHttp();
   }
 
   async function runWorkspaceAnalyse() {
@@ -3971,8 +4048,9 @@
       runWorkspaceAnalyse();
     });
   }
-  // Browser-only path form — keep inert in the IDE webview.
+  // Browser path form — keep inert in the IDE webview; useful for static preview.
   if (els.openFolder && !IDE_MODE) {
+    els.openFolder.hidden = false;
     els.openFolder.addEventListener("click", () => {
       if (!els.analyseForm) return;
       els.analyseForm.hidden = false;
@@ -4864,7 +4942,7 @@
     }
 
     // Tell the host we are ready; it may push mapData or leave us on import.
-    if (Bridge) {
+    if (Bridge && IDE_MODE) {
       bootStatus = { phase: "readyPosted" };
       Bridge.ready();
       // Brief grace: if host already has a map it will send mapData.
@@ -4878,7 +4956,19 @@
       return;
     }
 
-    // Non-IDE fallback (should not run in the extension webview).
+    // Static preview / desktop: try GET /api/map, else import screen.
+    bootStatus = { phase: "fetchMap" };
+    try {
+      const res = await fetch("/api/map");
+      if (res.ok) {
+        const map = await res.json();
+        loadMap(map, "api");
+        bootStatus = { phase: "loaded", files: fileNodes.length, via: "http" };
+        return;
+      }
+    } catch (_) {
+      /* no sidecar — fall through */
+    }
     bootStatus = { phase: "noMap" };
     showImport(null);
   }

@@ -2,8 +2,7 @@
  * Horizon Map extension entry — activate, commands, sidecar + inspection.
  *
  * W2 owns webview media (`media/*`) and the bridge protocol.
- * W3 owns host TypeScript: sidecar lifecycle, Map ↔ Classic toggle,
- * and the read-only inspection canvas backed by a real text editor + RA.
+ * Host TypeScript: sidecar client, Map ↔ Classic toggle, inspection bridge.
  */
 
 import * as vscode from "vscode";
@@ -32,13 +31,19 @@ export function activate(context: vscode.ExtensionContext): void {
       provider,
       { webviewOptions: { retainContextWhenHidden: true } }
     ),
+    // Canonical W2 commands
+    vscode.commands.registerCommand("horizon.map.open", () => toggle.showMap()),
     vscode.commands.registerCommand("horizon.map.toggle", () => toggle.toggle()),
-    vscode.commands.registerCommand("horizon.map.analyseWorkspace", () =>
+    vscode.commands.registerCommand("horizon.map.analyse", () =>
       provider.analyseWorkspace()
     ),
+    // Aliases kept for docs / earlier host wiring
     vscode.commands.registerCommand("horizon.map.show", () => toggle.showMap()),
     vscode.commands.registerCommand("horizon.map.hide", () =>
       toggle.showClassic()
+    ),
+    vscode.commands.registerCommand("horizon.map.analyseWorkspace", () =>
+      provider.analyseWorkspace()
     )
   );
 
