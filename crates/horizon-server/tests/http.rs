@@ -380,6 +380,20 @@ async fn serves_index_and_static_assets() {
         // Cycle-safe layering (mutual/recursive calls must not blow the queue).
         ("/static/function_dag.js", "backEdgeKey"),
         ("/static/viewer.css", ".resize-rail.bottom-rail"),
+        // Inspector source pane: collapsed scrolls at the clamp, expanded
+        // releases the cap and lets the rail scroll.
+        ("/static/viewer.css", ".source-frame"),
+        ("/static/viewer.css", ".source-expand"),
+        ("/static/viewer.css", "--source-clamp"),
+        ("/static/viewer.css", ".source-frame.expanded .source-well"),
+        ("/static/viewer.css", "max-height: none"),
+        ("/static/viewer.js", "renderSourceFrame"),
+        ("/static/viewer.js", "measureSourceFrame"),
+        ("/static/viewer.js", "SOURCE_CLAMP_PX"),
+        ("/static/viewer.js", "getSourcePaneState"),
+        ("/static/viewer.js", "horizon.sourceExpanded"),
+        // Dock text sharpness: no standing layer promotion on the fns world.
+        ("/static/viewer.css", "No standing `will-change` promotion"),
     ] {
         let response = router
             .clone()
@@ -441,6 +455,13 @@ async fn serves_index_and_static_assets() {
     assert!(
         !css_body.contains("opacity: 0.92"),
         "viewer.css must not fade .fns-node.function.external"
+    );
+    // Standing layer promotion rasterises DAG label text once, then scales the
+    // bitmap — that is what made the function cards look blurry next to the
+    // (unpromoted) file cards.
+    assert!(
+        !css_body.contains("will-change: transform"),
+        "viewer.css must not promote a zoomed world — it blurs card text"
     );
 }
 

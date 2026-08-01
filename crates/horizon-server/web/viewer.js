@@ -244,6 +244,12 @@
   let worldH = 600;
   /** Bumps on each source fetch so stale responses are ignored. */
   let sourceFetchGen = 0;
+  /**
+   * Source pane expanded past --source-clamp. Survives selection changes, so
+   * an auditor reading long bodies is not thrown back to the preview on every
+   * jump. Restored from storage at boot (the key is not in scope yet here).
+   */
+  let sourceExpanded = false;
 
   // Pan / drag state
   let panDrag = null;
@@ -295,6 +301,7 @@
   }
 
   const THEME_KEY = "horizon.theme";
+  const SOURCE_EXPAND_KEY = "horizon.sourceExpanded";
   const RECENT_KEY = "horizon.recent";
   const RECENT_MAX = 5;
   /** Skip storing maps larger than this — localStorage is ~5 MiB total. */
@@ -313,6 +320,22 @@
       localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
     } catch (_) {
       /* private mode / quota — theme still works for the session */
+    }
+  }
+
+  function readSourceExpanded() {
+    try {
+      return localStorage.getItem(SOURCE_EXPAND_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function persistSourceExpanded() {
+    try {
+      localStorage.setItem(SOURCE_EXPAND_KEY, sourceExpanded ? "1" : "0");
+    } catch (_) {
+      /* private mode / quota — the choice still holds for the session */
     }
   }
 
@@ -1732,12 +1755,65 @@
     return pre;
   }
 
+  /** Collapsed clamp, mirrored from the `--source-clamp` fallback in the CSS. */
+  const SOURCE_CLAMP_PX = 320;
+
+  function applySourceExpanded(frame) {
+    frame.classList.toggle("expanded", sourceExpanded);
+    const btn = frame.querySelector(".source-expand");
+    if (btn) {
+      btn.setAttribute("aria-expanded", sourceExpanded ? "true" : "false");
+      btn.title = sourceExpanded ? "Collapse source" : "Expand source";
+      btn.textContent = sourceExpanded ? "⤡ Collapse" : "⤢ Expand";
+    }
+    measureSourceFrame(frame);
+  }
+
+  /**
+   * Offer the toggle only when the clamp actually holds code back. A hidden or
+   * unlaid-out pane measures 0 — that is "no verdict yet", not "the body is
+   * short", so the toggle stays until a real measurement lands.
+   */
+  function measureSourceFrame(frame) {
+    const well = frame.querySelector(".source-well");
+    const btn = frame.querySelector(".source-expand");
+    if (!well || !btn) return;
+    const height = well.scrollHeight;
+    if (!height) return;
+    btn.hidden = height <= SOURCE_CLAMP_PX + 2;
+  }
+
+  function renderSourceFrame(tokens) {
+    const frame = document.createElement("div");
+    frame.className = "source-frame";
+    frame.appendChild(renderTokens(tokens));
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "source-expand";
+    // The Inspector sits inside gesture-bearing chrome; a toggle press must
+    // never read as a selection, pan or drag.
+    btn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      sourceExpanded = !sourceExpanded;
+      persistSourceExpanded();
+      applySourceExpanded(frame);
+    });
+    frame.appendChild(btn);
+
+    applySourceExpanded(frame);
+    requestAnimationFrame(() => measureSourceFrame(frame));
+    return frame;
+  }
+
   function setSourceHost(host, state, detail) {
     host.replaceChildren();
     const metaEl = host._metaEl;
     if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
     if (state === "served") {
-      host.appendChild(renderTokens(detail.tokens));
+      host.appendChild(renderSourceFrame(detail.tokens));
       return;
     }
     const banner = document.createElement("div");
@@ -3946,6 +4022,7 @@
     } catch (_) {
       dark = false;
     }
+    sourceExpanded = readSourceExpanded();
     applyTheme();
     renderRecent();
     // Publish defaults without treating the initial occupied width as a delta.
@@ -4184,6 +4261,45 @@
         lastFnsNodeActivation ? { ...lastFnsNodeActivation } : null,
       /** Current call-site / stub focus — honest null when none. */
       getDiagFocus: () => (diagFocus ? { ...diagFocus } : null),
+      /**
+       * Inspector source pane. `clamped` means the --source-clamp cap is still
+       * holding code back; collapsed scrolls in place, so `wellScrollable` is
+       * expected there and pins the rule only once expanded — full height, rail
+       * scrolls. Honest `mounted: false` when no source is on screen.
+       */
+      getSourcePaneState: () => {
+        const frame = els.inspector?.querySelector(".source-frame");
+        if (!frame) {
+          return {
+            mounted: false,
+            expanded: sourceExpanded,
+            clamped: false,
+            toggleVisible: false,
+            wellScrollHeight: 0,
+            wellClientHeight: 0,
+            wellScrollable: false,
+          };
+        }
+        const well = frame.querySelector(".source-well");
+        const btn = frame.querySelector(".source-expand");
+        const scrollHeight = well ? well.scrollHeight : 0;
+        const clientHeight = well ? well.clientHeight : 0;
+        const overflowY = well
+          ? getComputedStyle(well).overflowY
+          : "visible";
+        const expanded = frame.classList.contains("expanded");
+        return {
+          mounted: true,
+          expanded,
+          clamped: !expanded && scrollHeight > clientHeight + 1,
+          toggleVisible: !!btn && !btn.hidden,
+          wellScrollHeight: scrollHeight,
+          wellClientHeight: clientHeight,
+          wellScrollable:
+            (overflowY === "auto" || overflowY === "scroll") &&
+            scrollHeight > clientHeight + 1,
+        };
+      },
       /** Outcome of the last card press/release (+ click if any). For hand-drag checks. */
       getLastCardGesture: () => {
         const g = lastCardGesture;
@@ -4296,6 +4412,7 @@
           "setFnsNodePosition",
           "getLastFnsNodeActivation",
           "getDiagFocus",
+          "getSourcePaneState",
           "resolveFnsPointerGesture",
           "runLayoutAcceptance",
           "computeRightAggressorLayout",
@@ -4522,6 +4639,17 @@
                   name,
                   ok: false,
                   error: "inspectorOpenPolicy missing Functions gesture flags",
+                });
+                continue;
+              }
+            } else if (name === "getSourcePaneState") {
+              // Collapsed scrolls in place; expanded must hand off to the rail.
+              const s = fn();
+              if (!s || (s.expanded && s.wellScrollable)) {
+                checks.push({
+                  name,
+                  ok: false,
+                  error: "expanded source pane still scrolls instead of the rail",
                 });
                 continue;
               }
