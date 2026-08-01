@@ -1,0 +1,129 @@
+{
+  "name": "horizon-map",
+  "displayName": "Horizon Map",
+  "description": "Rust free-function codebase map for the Horizon IDE.",
+  "version": "0.1.0",
+  "publisher": "horizon",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:horizon.map.toggle",
+    "onCommand:horizon.map.analyseWorkspace",
+    "onCommand:horizon.map.show",
+    "onCommand:horizon.map.hide",
+    "onView:horizon.map.view"
+  ],
+  "main": "./out/extension.js",
+  "extensionDependencies": [
+    "rust-lang.rust-analyzer"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "horizon.map.toggle",
+        "title": "Horizon: Toggle Map ↔ Classic",
+        "category": "Horizon",
+        "icon": "$(map)"
+      },
+      {
+        "command": "horizon.map.analyseWorkspace",
+        "title": "Horizon: Analyse Workspace",
+        "category": "Horizon",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "horizon.map.show",
+        "title": "Horizon: Show Map",
+        "category": "Horizon"
+      },
+      {
+        "command": "horizon.map.hide",
+        "title": "Horizon: Show Classic",
+        "category": "Horizon"
+      }
+    ],
+    "configuration": {
+      "title": "Horizon Map",
+      "properties": {
+        "horizon.map.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the horizon-server binary (W3 sidecar)."
+        },
+        "horizon.map.cargoWorkspace": {
+          "type": "string",
+          "default": "",
+          "description": "Horizon Cargo workspace root for `cargo run -p horizon-server`."
+        },
+        "horizon.map.autoStartSidecar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warm-start the horizon-server sidecar on extension activate."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "horizon",
+          "title": "Horizon",
+          "icon": "media/horizon-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "horizon": [
+        {
+          "type": "webview",
+          "id": "horizon.map.view",
+          "name": "Map",
+          "contextualTitle": "Horizon Map",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "horizon.map.analyseWorkspace",
+          "when": "view == horizon.map.view",
+          "group": "navigation"
+        },
+        {
+          "command": "horizon.map.toggle",
+          "when": "view == horizon.map.view",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "horizon.map.toggle"
+        },
+        {
+          "command": "horizon.map.analyseWorkspace"
+        },
+        {
+          "command": "horizon.map.show"
+        },
+        {
+          "command": "horizon.map.hide"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
