@@ -20,7 +20,9 @@ singleton `HorizonMapInput` (`horizon-map:` scheme). Commands:
 | `horizon.map.open` / `horizon.map.show` | Open / focus the Map EditorPane |
 | `horizon.map.toggle` | Map ↔ classic editors |
 | `horizon.map.hide` | Close map, focus classic |
-| `horizon.map.analyse` | Open map + request workspace analyse |
+| `horizon.map.analyse` | Open map + analyse workspace |
+| `horizon.map.chooseFolder` | QuickPick / browse analyse folder |
+| `horizon.inspection.triggerSuggest` | Completions in Inspection editor |
 
 ## One path: bootstrap → build → run
 

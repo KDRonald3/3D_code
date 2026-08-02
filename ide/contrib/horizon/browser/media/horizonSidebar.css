@@ -1,0 +1,75 @@
+/* Activity-bar Horizon pane */
+
+.horizon-sidebar {
+	padding: 14px 12px;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.horizon-sidebar-intro {
+	margin: 0 0 4px;
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--vscode-descriptionForeground);
+}
+
+.horizon-sidebar-folder {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 6px 0 2px;
+}
+
+.horizon-sidebar-folder-caption {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+}
+
+.horizon-sidebar-folder-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.horizon-sidebar-status {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	min-height: 1em;
+}
+
+.horizon-sidebar-status[hidden] {
+	display: none;
+}
+
+.horizon-sidebar-btn {
+	appearance: none;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-radius: 2px;
+	padding: 8px 12px;
+	font-size: 13px;
+	font-family: inherit;
+	text-align: center;
+	cursor: pointer;
+}
+
+.horizon-sidebar-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.horizon-sidebar-btn.secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.horizon-sidebar-btn.secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}

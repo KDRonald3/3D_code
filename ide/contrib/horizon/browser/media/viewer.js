@@ -3872,14 +3872,15 @@
     refreshFocus();
   });
 
-  els.openJson.addEventListener("click", () => {
-    if (IDE_MODE && Bridge) {
-      Bridge.openMapJson();
-      return;
-    }
-    els.jsonInput.click();
-  });
-  els.switchProject.addEventListener("click", () => showImport(null));
+  if (els.openJson) {
+    els.openJson.addEventListener("click", () => {
+      if (IDE_MODE && Bridge) {
+        Bridge.openMapJson();
+        return;
+      }
+      els.jsonInput.click();
+    });
+  }  els.switchProject.addEventListener("click", () => showImport(null));
   els.clearError.addEventListener("click", () => {
     els.importError.hidden = true;
     els.importErrorText.textContent = "";

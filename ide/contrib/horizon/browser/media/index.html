@@ -47,11 +47,11 @@
         <span id="import-workspace-name" class="import-workspace-name mono"></span>
       </div>
       <div class="import-actions">
-        <button type="button" id="analyse-workspace" class="import-primary" title="Analyse the workspace via the Horizon IDE host">
-          Analyse folder
-        </button>
-        <button type="button" id="choose-folder" class="import-secondary" title="Ask the host to pick a different folder">
+        <button type="button" id="choose-folder" class="import-primary" title="Ask the host to pick a workspace folder or browse on disk">
           Choose folder…
+        </button>
+        <button type="button" id="analyse-workspace" class="import-secondary" title="Analyse the workspace via the Horizon IDE host">
+          Analyse workspace
         </button>
         <!-- Browser static-preview only: shows the local path form. Hidden in IDE. -->
         <button type="button" id="open-folder" class="import-secondary" hidden title="Enter a local repository path">
@@ -59,10 +59,13 @@
         </button>
       </div>
       <div class="import-advanced">
-        <button type="button" id="open-json" class="import-link" title="Load a saved Horizon Repository .json">
-          Open map JSON…
-        </button>
-        <span class="import-advanced-hint">Advanced — load a saved map instead of analysing</span>
+        <details class="import-advanced-details">
+          <summary class="import-advanced-summary">Advanced</summary>
+          <button type="button" id="open-json" class="import-link" title="Load a saved Horizon Repository .json">
+            Open map JSON…
+          </button>
+          <span class="import-advanced-hint">Power users — load a saved map instead of analysing</span>
+        </details>
       </div>
       <!-- Path form kept in DOM for static preview; always hidden in IDE mode. -->
       <form id="analyse-form" class="analyse-form" hidden>
