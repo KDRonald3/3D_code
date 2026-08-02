@@ -5,7 +5,7 @@
 import * as DOM from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { basename } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
@@ -17,7 +17,6 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
@@ -29,7 +28,10 @@ import {
 	HORIZON_MAP_VISIBLE_CONTEXT,
 	WebviewToHostMessage,
 } from '../common/horizon.js';
+import { IHorizonSidecarService } from '../common/horizonSidecar.js';
+import { HorizonAnalyseProgress, IHorizonAnalysisService } from './horizonAnalysis.js';
 import { buildHorizonMapFallbackHtml, buildHorizonMapHtml, horizonMediaFileRoot } from './horizonHtml.js';
+import { IHorizonInspectionService } from './horizonInspection.js';
 import { HorizonMapInput } from './horizonInput.js';
 
 import './media/horizonEditor.css';
@@ -39,8 +41,8 @@ export const HorizonMapVisibleContext = new RawContextKey<boolean>(HORIZON_MAP_V
 /**
  * Built-in EditorPane hosting the Horizon Map webview (first-class workbench contrib).
  *
- * Sidecar analyse / inspection (W3–W4) attach here; MVP loads map media and
- * handles the webview bridge protocol.
+ * Analyse root + sidecar calls go through {@link IHorizonAnalysisService}.
+ * Function / file selection opens read-only inspection via {@link IHorizonInspectionService}.
  */
 export class HorizonMapEditorPane extends EditorPane {
 
@@ -60,13 +62,33 @@ export class HorizonMapEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@IFileService private readonly _fileService: IFileService,
-		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IFileDialogService private readonly _fileDialogService: IFileDialogService,
+		@IHorizonAnalysisService private readonly _analysisService: IHorizonAnalysisService,
+		@IHorizonInspectionService private readonly _inspectionService: IHorizonInspectionService,
+		@IHorizonSidecarService private readonly _sidecarService: IHorizonSidecarService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 	) {
 		super(HorizonMapEditorPane.ID, group, telemetryService, themeService, storageService);
 		this._mapVisible = HorizonMapVisibleContext.bindTo(contextKeyService);
+
+		this._register(this._analysisService.onDidChangeFolder(folder => {
+			if (!folder || !this._webview.value) {
+				return;
+			}
+			this.post({
+				type: 'workspaceInfo',
+				root: folder.path,
+				name: folder.name,
+			});
+		}));
+
+		this._register(this._analysisService.onDidChangeProgress(progress => {
+			if (!this._webview.value) {
+				return;
+			}
+			this.postAnalyseProgress(progress);
+		}));
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -126,9 +148,9 @@ export class HorizonMapEditorPane extends EditorPane {
 		void this._webview.value?.postMessage(message);
 	}
 
-	/** Re-run analyse (command palette). Sidecar wiring lands in W4. */
+	/** Re-run analyse for the current Horizon folder (command / sidebar). */
 	async analyseWorkspace(pathOverride?: string): Promise<void> {
-		await this.runAnalyse(pathOverride);
+		await this.runAnalyse(pathOverride, true);
 	}
 
 	private async ensureWebview(): Promise<void> {
@@ -187,51 +209,109 @@ export class HorizonMapEditorPane extends EditorPane {
 				await this.onReady();
 				break;
 			case 'analyse':
-				await this.runAnalyse(msg.path);
+				// Webview is untrusted: ignore optional path overrides. Analyse
+				// the host-owned Horizon folder only (set via QuickPick / Browse).
+				if (msg.path && msg.path.trim()) {
+					console.warn('[Horizon] ignoring webview analyse path override');
+				}
+				await this.runAnalyse(undefined, true);
 				break;
 			case 'selectFunction':
-				// W3: open read-only inspection on the real file/range.
-				this._notificationService.notify({
-					severity: Severity.Info,
-					message: localize(
-						'horizonSelectFunctionStub',
-						"Horizon: selected {0} (inspection canvas lands in W3).",
-						msg.functionName || msg.functionId || 'function'
-					),
+				await this._inspectionService.openInspection({
+					type: 'selectFunction',
+					functionId: msg.functionId,
+					fileId: msg.fileId ?? null,
+					filePath: msg.filePath ?? null,
+					functionName: msg.functionName ?? null,
+					line: msg.line ?? null,
+					byteStart: msg.byteStart ?? null,
+					byteEnd: msg.byteEnd ?? null,
+					contentHash: msg.contentHash ?? null,
 				});
 				break;
 			case 'selectFile':
 				if (msg.filePath) {
-					this._notificationService.notify({
-						severity: Severity.Info,
-						message: localize('horizonSelectFileStub', "Horizon: file {0} (read-only inspection in W3).", msg.filePath),
-					});
+					await this._inspectionService.openFileReadonly(msg.filePath);
 				}
 				break;
 			case 'openMapJson':
 				await this.openMapJson();
 				break;
+			case 'chooseFolder':
+				await this.chooseFolderFromWebview();
+				break;
 			case 'sourceRequest':
-				this.post({
-					type: 'sourceResult',
-					requestId: msg.requestId,
-					error: 'unavailable',
-					message: 'Source slices require the Horizon sidecar (W4).',
-				});
+				await this.handleSourceRequest(msg);
 				break;
 		}
 	}
 
+	private async handleSourceRequest(msg: Extract<WebviewToHostMessage, { type: 'sourceRequest' }>): Promise<void> {
+		try {
+			const result = await this._sidecarService.getSource({
+				path: msg.path,
+				byteStart: msg.byteStart,
+				byteEnd: msg.byteEnd,
+				expectedHash: msg.expectedHash,
+			});
+			if (result.ok) {
+				this.post({
+					type: 'sourceResult',
+					requestId: msg.requestId,
+					tokens: result.tokens,
+				});
+			} else {
+				this.post({
+					type: 'sourceResult',
+					requestId: msg.requestId,
+					error: result.errorKind,
+					errorKind: result.errorKind,
+					message: result.error,
+				});
+			}
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.post({
+				type: 'sourceResult',
+				requestId: msg.requestId,
+				error: 'unavailable',
+				message,
+			});
+		}
+	}
+
 	private async onReady(): Promise<void> {
-		const folder = this._workspaceService.getWorkspace().folders[0];
+		const folder = this._analysisService.getFolder();
 		if (folder) {
 			this.post({
 				type: 'workspaceInfo',
-				root: folder.uri.fsPath || folder.uri.path,
-				name: basename(folder.uri) || folder.name,
+				root: folder.path,
+				name: folder.name,
 			});
 		}
 		this.postTheme();
+
+		const lastMap = this._analysisService.lastMap;
+		if (lastMap !== undefined) {
+			this.post({
+				type: 'mapData',
+				map: lastMap,
+				label: folder?.name || folder?.path,
+			});
+			this.post({
+				type: 'analyseResult',
+				status: 'done',
+				path: folder?.path,
+				label: folder?.name,
+				map: lastMap,
+			});
+			return;
+		}
+
+		const progress = this._analysisService.progress;
+		if (progress.status === 'running' || progress.status === 'failed' || progress.status === 'error') {
+			this.postAnalyseProgress(progress);
+		}
 	}
 
 	private postTheme(): void {
@@ -243,50 +323,63 @@ export class HorizonMapEditorPane extends EditorPane {
 		this.post({ type: 'theme', theme });
 	}
 
-	private async runAnalyse(pathOverride?: string): Promise<void> {
-		const folder = this._workspaceService.getWorkspace().folders[0];
-		const target = (pathOverride || '').trim() || (folder ? (folder.uri.fsPath || folder.uri.path) : '');
-		if (!target) {
+	private postAnalyseProgress(progress: HorizonAnalyseProgress): void {
+		this.post({
+			type: 'analyseResult',
+			status: progress.status === 'idle' ? 'idle' : progress.status,
+			path: progress.path,
+			label: progress.label,
+			error: progress.error,
+			elapsed_ms: progress.elapsed_ms,
+			map: progress.map,
+		});
+		if (progress.status === 'done' && progress.map !== undefined) {
 			this.post({
-				type: 'analyseResult',
-				status: 'error',
-				error: 'No workspace folder open.',
+				type: 'mapData',
+				map: progress.map,
+				label: progress.label || progress.path,
 			});
-			this._notificationService.error(localize('horizonNoWorkspace', "Horizon: open a Rust workspace folder to analyse."));
+		}
+	}
+
+	private async runAnalyse(pathOverride?: string, notifyOnFailure = false): Promise<void> {
+		const progress = await this._analysisService.analyse(pathOverride);
+		// Progress events already mirror into the webview when mounted; post once
+		// more in case the listener raced with ensureWebview.
+		if (this._webview.value) {
+			this.postAnalyseProgress(progress);
+		}
+		if (notifyOnFailure && (progress.status === 'failed' || progress.status === 'error')) {
+			this._notificationService.notify({
+				severity: Severity.Warning,
+				message: localize(
+					'horizonAnalyseFailed',
+					"Horizon analyse: {0}",
+					progress.error || 'failed'
+				),
+			});
+		}
+	}
+
+	/** Webview "Choose folder…" → same QuickPick path as the sidebar. */
+	private async chooseFolderFromWebview(): Promise<void> {
+		const folder = await this._analysisService.chooseFolder();
+		if (!folder) {
 			return;
 		}
-
-		// W4 will spawn/attach horizon-server. Surface a clear interim status.
-		this.post({
-			type: 'analyseResult',
-			status: 'running',
-			path: target,
-		});
-		this.post({
-			type: 'analyseResult',
-			status: 'failed',
-			path: target,
-			error: 'Sidecar analyse is not wired in the workbench contrib yet (W4). Use ./ide/scripts/run-sidecar.sh meanwhile.',
-		});
-		this._notificationService.notify({
-			severity: Severity.Warning,
-			message: localize(
-				'horizonAnalyseStub',
-				"Horizon analyse: sidecar not yet attached to the Map EditorPane (W4)."
-			),
-		});
+		await this.runAnalyse(folder.path, true);
 	}
 
 	private async openMapJson(): Promise<void> {
 		const filters: FileFilter[] = [{ name: 'JSON', extensions: ['json'] }];
-		const defaultUri = this._workspaceService.getWorkspace().folders[0]?.uri;
+		const folder = this._analysisService.getFolder();
 		const picked = await this._fileDialogService.showOpenDialog({
 			canSelectFiles: true,
 			canSelectFolders: false,
 			canSelectMany: false,
 			filters,
 			title: localize('horizonOpenMapJson', "Open Horizon map JSON"),
-			defaultUri,
+			defaultUri: folder ? URI.file(folder.path) : undefined,
 		});
 		if (!picked?.[0]) {
 			return;

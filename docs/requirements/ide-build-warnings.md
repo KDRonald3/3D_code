@@ -189,14 +189,9 @@ From `%APPDATA%\code-oss-dev\logs\<stamp>\window1\renderer.log` on a clean launc
 
 Upstream Code-OSS noise: the Chat contrib has no default agent in an OSS build. Not a Horizon regression.
 
-Horizon Map itself loads: all five `Horizon:` commands register, the Map EditorPane opens, and the webview renders. Analysing from inside the IDE still reports the expected W4 stub:
+Horizon Map itself loads: all five `Horizon:` commands register, the Map EditorPane opens, and the webview renders.
 
-```text
-Analysis failed for <workspace>: Sidecar analyse is not wired in the workbench
-contrib yet (W4). Use ./ide/scripts/run-sidecar.sh meanwhile.
-```
-
-Until W4 lands, produce a map with the sidecar (`POST /api/analyse`, then `GET /api/map`) and load it through **Open map JSON** in the Map pane.
+Measured against the build at `b43261d`, in-IDE analyse reported a W4 stub and a map had to be produced out-of-band (`POST /api/analyse`, then `GET /api/map`) and loaded via **Open map JSON**. Sidecar spawn/attach landed on `main` afterwards, so re-check this section against a current build before trusting it.
 
 ---
 

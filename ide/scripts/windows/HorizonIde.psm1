@@ -1,4 +1,4 @@
-﻿# Shared helpers for Horizon IDE Windows scripts.
+# Shared helpers for Horizon IDE Windows scripts.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -24,6 +24,11 @@ function Get-HorizonRoots {
         ContribSrc    = Join-Path $ide "contrib\horizon"
         ContribDst    = Join-Path $ide "code-oss\src\vs\workbench\contrib\horizon"
         WorkbenchMain = Join-Path $ide "code-oss\src\vs\workbench\workbench.common.main.ts"
+        WorkbenchDesktopMain = Join-Path $ide "code-oss\src\vs\workbench\workbench.desktop.main.ts"
+        CacheDir      = Join-Path $ide ".cache"
+        SidecarUrlFile = if ($env:HORIZON_SIDECAR_URL_FILE) { $env:HORIZON_SIDECAR_URL_FILE } else { Join-Path $ide ".cache\horizon-sidecar.url" }
+        SidecarPidFile = if ($env:HORIZON_SIDECAR_PID_FILE) { $env:HORIZON_SIDECAR_PID_FILE } else { Join-Path $ide ".cache\horizon-sidecar.pid" }
+        SidecarLogFile = if ($env:HORIZON_SIDECAR_LOG_FILE) { $env:HORIZON_SIDECAR_LOG_FILE } else { Join-Path $ide ".cache\horizon-sidecar.log" }
         VscodeRef     = $ref
         VscodeRepo    = if ($env:HORIZON_VSCODE_REPO) { $env:HORIZON_VSCODE_REPO } else { "https://github.com/microsoft/vscode.git" }
     }
@@ -146,26 +151,44 @@ function Assert-HorizonWindowsPrereqs {
         Throw-Horizon "Python 3 is required (on PATH as python). Install from https://www.python.org/downloads/ and enable 'Add python.exe to PATH'."
     }
     if (-not (Test-HorizonWindowsBuildTools)) {
-        Throw-Horizon "A Visual C++ toolchain is required (prefer VS 2026 or 2022 Build Tools with Desktop development with C++). See ide\WINDOWS.md"
+        Throw-Horizon @"
+A Visual C++ toolchain is required to compile Code-OSS on Windows.
+
+Prefer: Visual Studio 2026 (or Build Tools) with workload
+  Desktop development with C++
+
+Also accepted: Visual Studio 2022 Build Tools with the same workload.
+
+Or see: https://github.com/microsoft/vscode/wiki/How-to-Contribute#prerequisites
+
+If this is too heavy, use WSL2 instead - see ide\WINDOWS.md
+"@
     }
     $vsPath = Get-HorizonVisualStudioInstallPath
     if ($vsPath) {
         Write-HorizonInfo "MSVC toolchain: $vsPath"
-        # VS 2026 installs under ...\18\Community (not ...\2026\...). Always export both env vars.
-        if (-not $env:vs2022_install) {
-            $env:vs2022_install = $vsPath
+        # Help older node-gyp / electron tooling that still keys off vs2022_install.
+        if (-not $env:vs2022_install -and -not $env:vs2026_install) {
+            # VS 2026 installs under ...\18\<edition>, not ...\2026\<edition>.
+            if ($vsPath -match '\\2026\\' -or $vsPath -match '\\18\\') {
+                $env:vs2026_install = $vsPath
+                # Some node-gyp versions only honor vs2022_install - point it at 2026 too.
+                $env:vs2022_install = $vsPath
+                Write-HorizonInfo "set vs2026_install / vs2022_install -> $vsPath"
+            } elseif ($vsPath -match '\\2022\\') {
+                $env:vs2022_install = $vsPath
+                Write-HorizonInfo "set vs2022_install -> $vsPath"
+            }
         }
-        if (-not $env:vs2026_install) {
-            $env:vs2026_install = $vsPath
-        }
-        Write-HorizonInfo "set vs2026_install / vs2022_install -> $vsPath"
         if (-not $env:npm_config_msvs_version) {
-            if ($vsPath -match '\\18\\' -or $vsPath -match '\\2026\\') {
+            if ($env:vs2026_install) {
                 $env:npm_config_msvs_version = "2026"
-            } else {
+            } elseif ($env:vs2022_install) {
                 $env:npm_config_msvs_version = "2022"
             }
-            $env:GYP_MSVS_VERSION = $env:npm_config_msvs_version
+            if ($env:npm_config_msvs_version) {
+                $env:GYP_MSVS_VERSION = $env:npm_config_msvs_version
+            }
         }
     }
     Write-HorizonInfo "Windows build prerequisites look present (Git, Python, MSVC)"
@@ -246,6 +269,7 @@ function Sync-HorizonContrib {
     }
 
     Wire-HorizonContribImport -Roots $Roots
+    Wire-HorizonDesktopContribImport -Roots $Roots
 }
 
 function Wire-HorizonContribImport {
@@ -277,6 +301,38 @@ function Wire-HorizonContribImport {
     Write-HorizonInfo "wired Horizon contrib import -> $mainTs"
 }
 
+function Wire-HorizonDesktopContribImport {
+    param($Roots)
+    $entrySrc = Join-Path $Roots.ContribSrc "electron-browser\horizon.contribution.ts"
+    $entryDst = Join-Path $Roots.ContribDst "electron-browser\horizon.contribution.ts"
+    if (-not (Test-Path $entrySrc) -and -not (Test-Path $entryDst)) {
+        Write-HorizonInfo "no electron-browser horizon contribution yet; skip desktop import wire"
+        return
+    }
+    $mainTs = $Roots.WorkbenchDesktopMain
+    if (-not $mainTs -or -not (Test-Path $mainTs)) {
+        Write-HorizonWarn "missing workbench.desktop.main.ts; skip desktop contrib wire"
+        return
+    }
+    $marker = "contrib/horizon/electron-browser/horizon.contribution"
+    $importLine = "import './contrib/horizon/electron-browser/horizon.contribution.js';"
+    $text = [System.IO.File]::ReadAllText($mainTs)
+    if ($text.Contains($marker)) {
+        Write-HorizonInfo "Horizon electron sidecar already registered in workbench.desktop.main.ts"
+        return
+    }
+    $block = "`r`n// Horizon Map sidecar (desktop spawn/attach - electron-browser)`r`n$importLine`r`n"
+    $needle = "export { main }"
+    $idx = $text.IndexOf($needle)
+    if ($idx -lt 0) {
+        $text = $text.TrimEnd() + "`r`n" + $block
+    } else {
+        $text = $text.Substring(0, $idx) + $block + "`r`n" + $text.Substring($idx)
+    }
+    [System.IO.File]::WriteAllText($mainTs, $text, [System.Text.UTF8Encoding]::new($false))
+    Write-HorizonInfo "wired Horizon desktop contrib import -> $mainTs"
+}
+
 function Test-HorizonCodeOssBuilt {
     param($Roots)
     $dir = $Roots.CodeOssDir
@@ -284,6 +340,236 @@ function Test-HorizonCodeOssBuilt {
     if (Test-Path (Join-Path $dir "out\main.js")) { return $true }
     if (Test-Path (Join-Path $dir "out\vs\code\electron-main\main.js")) { return $true }
     return $false
+}
+
+function Get-HorizonContribOutJs {
+    param($Roots)
+    return (Join-Path $Roots.CodeOssDir "out\vs\workbench\contrib\horizon\browser\horizon.contribution.js")
+}
+
+function Test-HorizonBuiltIn {
+    param($Roots)
+    if (-not (Test-HorizonCodeOssBuilt -Roots $Roots)) { return $false }
+    return (Test-Path (Get-HorizonContribOutJs -Roots $Roots))
+}
+
+function Ensure-HorizonProductOverlay {
+    param($Roots)
+    $upstream = Join-Path $Roots.CodeOssDir "product.json.upstream"
+    $codeProduct = Join-Path $Roots.CodeOssDir "product.json"
+    if (Test-Path $upstream) {
+        Copy-Item $upstream $codeProduct -Force
+    }
+    Merge-HorizonProductOverlay -Roots $Roots
+}
+
+function Invoke-HorizonCompileClient {
+    param($Roots)
+    if (-not (Test-Path (Join-Path $Roots.CodeOssDir "node_modules"))) {
+        Throw-Horizon "node_modules missing; run .\ide\scripts\windows\Build.ps1 first (npm ci)"
+    }
+    Initialize-HorizonNode
+    if (-not $env:NODE_OPTIONS) {
+        $env:NODE_OPTIONS = "--max-old-space-size=8192"
+    }
+    Push-Location $Roots.CodeOssDir
+    try {
+        Write-HorizonInfo "compiling client (npx gulp compile-client) - includes contrib/horizon -> out\"
+        # .cmd, not the PowerShell shim: npx.ps1 throws under Set-StrictMode -Version Latest.
+        npx.cmd gulp compile-client
+        if ($LASTEXITCODE -ne 0) {
+            Throw-Horizon "gulp compile-client failed"
+        }
+    } finally {
+        Pop-Location
+    }
+    $outJs = Get-HorizonContribOutJs -Roots $Roots
+    if (-not (Test-Path $outJs)) {
+        Throw-Horizon "compile-client finished but Horizon contrib JS missing: $outJs. Did Sync-Contrib run before compile?"
+    }
+    Write-HorizonInfo "Horizon contrib compiled -> $outJs"
+}
+
+function Invoke-HorizonCompileFull {
+    param($Roots)
+    Initialize-HorizonNode
+    if (-not $env:NODE_OPTIONS) {
+        $env:NODE_OPTIONS = "--max-old-space-size=8192"
+    }
+    Push-Location $Roots.CodeOssDir
+    try {
+        Write-HorizonInfo "compiling Code-OSS (npm run compile - full client + extensions)..."
+        npm.cmd run compile
+        if ($LASTEXITCODE -ne 0) {
+            Throw-Horizon "npm run compile failed. Tip: default Build uses compile-client (HORIZON_COMPILE_MODE=client)."
+        }
+    } finally {
+        Pop-Location
+    }
+    $outJs = Get-HorizonContribOutJs -Roots $Roots
+    if (-not (Test-Path $outJs)) {
+        Throw-Horizon "full compile finished but Horizon contrib JS missing: $outJs"
+    }
+}
+
+function Invoke-HorizonCompileCodeOss {
+    param($Roots)
+    $mode = if ($env:HORIZON_COMPILE_MODE) { $env:HORIZON_COMPILE_MODE.Trim().ToLowerInvariant() } else { "client" }
+    switch ($mode) {
+        { $_ -in @("client", "compile-client") } { Invoke-HorizonCompileClient -Roots $Roots }
+        { $_ -in @("full", "all") } { Invoke-HorizonCompileFull -Roots $Roots }
+        default { Throw-Horizon "unknown HORIZON_COMPILE_MODE='$mode' (use client or full)" }
+    }
+    if (-not (Test-HorizonCodeOssBuilt -Roots $Roots)) {
+        Throw-Horizon "compile finished but electron main entry is missing under out\"
+    }
+}
+
+function Test-HorizonContribOutStale {
+    param($Roots)
+    $src = $Roots.ContribSrc
+    $outJs = Get-HorizonContribOutJs -Roots $Roots
+    if (-not (Test-Path $src)) { return $true }
+    if (-not (Test-Path $outJs)) { return $true }
+    $outTime = (Get-Item $outJs).LastWriteTimeUtc
+    $exts = @(".ts", ".js", ".css", ".html", ".json", ".svg", ".png")
+    $newest = Get-ChildItem -Path $src -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $exts -contains $_.Extension.ToLowerInvariant() } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if (-not $newest) { return $false }
+    return ($newest.LastWriteTimeUtc -gt $outTime)
+}
+
+function Ensure-HorizonContribCompiled {
+    param($Roots)
+    $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
+    if (Test-HorizonContribOutStale -Roots $Roots) {
+        Write-HorizonWarn "contrib sources newer than out/ (or contrib JS missing) - sync + compile-client"
+        Sync-HorizonContrib -Roots $Roots -Mode $mode
+        Invoke-HorizonCompileClient -Roots $Roots
+    } else {
+        Write-HorizonInfo "Horizon contrib out/ is up to date"
+    }
+}
+
+function Test-HorizonSidecarUrlHealthy {
+    param([string]$Url)
+    if (-not $Url) { return $false }
+    $base = $Url.TrimEnd("/")
+    try {
+        $resp = Invoke-WebRequest -Uri "$base/api/health" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        return ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300)
+    } catch {
+        return $false
+    }
+}
+
+function Read-HorizonSidecarUrlFile {
+    param($Roots)
+    $candidates = @(
+        $Roots.SidecarUrlFile,
+        (Join-Path $Roots.IdeRoot ".cache\sidecar.url")
+    )
+    foreach ($f in $candidates) {
+        if (-not (Test-Path $f)) { continue }
+        $url = ((Get-Content -Raw $f) -split "\r?\n" | Select-Object -First 1).Trim()
+        if ($url -match '^http://(127\.0\.0\.1|localhost|\[::1\]):\d+/?$') {
+            return $url.TrimEnd("/")
+        }
+    }
+    return $null
+}
+
+function Write-HorizonSidecarUrlFile {
+    param($Roots, [string]$Url)
+    $dir = Split-Path -Parent $Roots.SidecarUrlFile
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $clean = $Url.TrimEnd("/")
+    Set-Content -Path $Roots.SidecarUrlFile -Value $clean -Encoding ascii
+    Write-HorizonInfo "wrote sidecar URL -> $($Roots.SidecarUrlFile) ($clean)"
+}
+
+function Resolve-HorizonServerBinary {
+    param($Roots)
+    if ($env:HORIZON_SERVER_PATH -and (Test-Path $env:HORIZON_SERVER_PATH)) {
+        return (Resolve-Path $env:HORIZON_SERVER_PATH).Path
+    }
+    $candidates = @(
+        (Join-Path $Roots.RepoRoot "target\release\horizon-server.exe"),
+        (Join-Path $Roots.RepoRoot "target\debug\horizon-server.exe")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    if (Test-HorizonCommand "horizon-server") {
+        return (Get-Command horizon-server).Source
+    }
+    return $null
+}
+
+function Ensure-HorizonSidecar {
+    param($Roots)
+    $url = $null
+    if ($env:HORIZON_SIDECAR_URL) {
+        $url = $env:HORIZON_SIDECAR_URL.TrimEnd("/")
+        if (Test-HorizonSidecarUrlHealthy -Url $url) {
+            Write-HorizonSidecarUrlFile -Roots $Roots -Url $url
+            $env:HORIZON_SIDECAR_URL = $url
+            Write-HorizonInfo "using existing HORIZON_SIDECAR_URL=$url"
+            return
+        }
+        Write-HorizonWarn "HORIZON_SIDECAR_URL=$url failed /api/health; will try URL file or spawn"
+    }
+
+    $fromFile = Read-HorizonSidecarUrlFile -Roots $Roots
+    if ($fromFile -and (Test-HorizonSidecarUrlHealthy -Url $fromFile)) {
+        $env:HORIZON_SIDECAR_URL = $fromFile
+        Write-HorizonInfo "attached sidecar from $($Roots.SidecarUrlFile) ($fromFile)"
+        return
+    }
+
+    $bin = Resolve-HorizonServerBinary -Roots $Roots
+    if (-not $bin) {
+        Write-HorizonWarn "horizon-server not found - Map analyse needs: cargo build -p horizon-server --release"
+        Write-HorizonWarn "or .\ide\scripts\windows\Run-Sidecar.ps1 (writes $($Roots.SidecarUrlFile))"
+        return
+    }
+
+    $cacheDir = $Roots.CacheDir
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    if (Test-Path $Roots.SidecarLogFile) { Remove-Item -Force $Roots.SidecarLogFile -ErrorAction SilentlyContinue }
+
+    Write-HorizonInfo "starting sidecar in background: $bin"
+    $errLog = Join-Path $Roots.CacheDir "sidecar.err.log"
+    if (Test-Path $errLog) { Remove-Item -Force $errLog -ErrorAction SilentlyContinue }
+    # stdout and stderr must be different files for Start-Process
+    $proc = Start-Process -FilePath $bin -ArgumentList @("--no-open") `
+        -RedirectStandardOutput $Roots.SidecarLogFile `
+        -RedirectStandardError $errLog `
+        -PassThru -WindowStyle Hidden
+    Set-Content -Path $Roots.SidecarPidFile -Value $proc.Id -Encoding ascii
+
+    for ($i = 0; $i -lt 50; $i++) {
+        if ($proc.HasExited) {
+            Write-HorizonWarn "sidecar exited early - see $($Roots.SidecarLogFile) / $errLog"
+            return
+        }
+        if (Test-Path $Roots.SidecarLogFile) {
+            $line = Get-Content $Roots.SidecarLogFile -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match '^http://(127\.0\.0\.1|localhost|\[::1\]):\d+/?$' } |
+                Select-Object -First 1
+            if ($line) {
+                $url = $line.TrimEnd("/")
+                Write-HorizonSidecarUrlFile -Roots $Roots -Url $url
+                $env:HORIZON_SIDECAR_URL = $url
+                Write-HorizonInfo "sidecar ready pid=$($proc.Id) $url"
+                return
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    Write-HorizonWarn "sidecar started (pid=$($proc.Id)) but URL not seen yet - check $($Roots.SidecarLogFile)"
 }
 
 Export-ModuleMember -Function @(
@@ -294,9 +580,22 @@ Export-ModuleMember -Function @(
     "Initialize-HorizonNode",
     "Assert-HorizonWindowsPrereqs",
     "Merge-HorizonProductOverlay",
+    "Ensure-HorizonProductOverlay",
     "Sync-HorizonContrib",
     "Wire-HorizonContribImport",
+    "Wire-HorizonDesktopContribImport",
     "Test-HorizonCodeOssBuilt",
+    "Test-HorizonBuiltIn",
+    "Get-HorizonContribOutJs",
+    "Invoke-HorizonCompileClient",
+    "Invoke-HorizonCompileFull",
+    "Invoke-HorizonCompileCodeOss",
+    "Test-HorizonContribOutStale",
+    "Ensure-HorizonContribCompiled",
+    "Ensure-HorizonSidecar",
+    "Write-HorizonSidecarUrlFile",
+    "Read-HorizonSidecarUrlFile",
+    "Resolve-HorizonServerBinary",
     "Test-HorizonWindowsBuildTools",
     "Get-HorizonVisualStudioInstallPath",
     "Repair-HorizonPreinstallVs2026",

@@ -1,4 +1,4 @@
-﻿# Re-sync ide\contrib\horizon into the Code-OSS workbench tree.
+# Re-sync ide\contrib\horizon into the Code-OSS workbench tree.
 [CmdletBinding()]
 param(
     [ValidateSet("copy", "link")]
@@ -11,4 +11,5 @@ $ErrorActionPreference = "Stop"
 Import-Module "$PSScriptRoot\HorizonIde.psm1" -Force
 $Roots = Get-HorizonRoots
 Sync-HorizonContrib -Roots $Roots -Mode $Mode
-Write-HorizonInfo "done - rebuild/restart the IDE if it is already running"
+Write-HorizonInfo "done - run Build.ps1 / Dev.ps1 (gulp compile-client) so out\ picks up changes"
+

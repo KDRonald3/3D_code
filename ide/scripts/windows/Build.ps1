@@ -1,4 +1,17 @@
-﻿# Build Horizon IDE on Windows (npm ci + npm run compile).
+# Build Horizon IDE on Windows.
+#
+# Always:
+#   1. Re-apply product.json overlay (branding)
+#   2. Patch VS 2026 into Code-OSS preinstall.js
+#   3. Sync ide\contrib\horizon -> code-oss\src\vs\workbench\contrib\horizon
+#   4. npm ci when needed
+#   5. Compile so Horizon TS lands in out\ (Map buttons, analyse, folder picker)
+#
+# Compile mode ($env:HORIZON_COMPILE_MODE):
+#   client (default) - npx gulp compile-client (workbench src -> out/, includes contrib)
+#   full - npm run compile (client + extensions; heavier / flakier)
+#
+# After a successful build: .\ide\scripts\windows\Run.ps1
 [CmdletBinding()]
 param(
     [switch]$SkipPrereqCheck
@@ -14,7 +27,9 @@ if (Test-Path variable:/PSNativeCommandUseErrorActionPreference) {
 Import-Module "$PSScriptRoot\HorizonIde.psm1" -Force
 $Roots = Get-HorizonRoots
 
+$compileMode = if ($env:HORIZON_COMPILE_MODE) { $env:HORIZON_COMPILE_MODE } else { "client" }
 Write-HorizonInfo "Horizon IDE build (Windows)"
+Write-HorizonInfo "compile mode: $compileMode"
 
 if (-not (Test-Path (Join-Path $Roots.CodeOssDir "package.json"))) {
     Throw-Horizon "Code-OSS missing; run .\ide\scripts\windows\Bootstrap.ps1 first"
@@ -25,12 +40,8 @@ if (-not $SkipPrereqCheck) {
     Assert-HorizonWindowsPrereqs
 }
 
-$upstream = Join-Path $Roots.CodeOssDir "product.json.upstream"
-$codeProduct = Join-Path $Roots.CodeOssDir "product.json"
-if (Test-Path $upstream) {
-    Copy-Item $upstream $codeProduct -Force
-}
-Merge-HorizonProductOverlay -Roots $Roots
+# --- Product surface: brand + toolchain patch + always sync contrib -----------
+Ensure-HorizonProductOverlay -Roots $Roots
 Repair-HorizonPreinstallVs2026 -Roots $Roots
 $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
 Sync-HorizonContrib -Roots $Roots -Mode $mode
@@ -44,11 +55,9 @@ try {
     if (-not $env:NODE_OPTIONS) {
         $env:NODE_OPTIONS = "--max-old-space-size=8192"
     }
+    # The Playwright browser download stalls behind many proxies and is not needed to build.
     if (-not $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD) {
         $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
-    }
-    if (-not $env:GYP_MSVS_VERSION -and $env:npm_config_msvs_version) {
-        $env:GYP_MSVS_VERSION = $env:npm_config_msvs_version
     }
     # npm's bundled node-gyp (<= 11.x) only knows Visual Studio up to 2022; VS 2026 needs node-gyp 12+.
     if (-not $env:npm_config_node_gyp) {
@@ -57,6 +66,9 @@ try {
             $env:npm_config_node_gyp = $modernGyp
             Write-HorizonInfo "npm_config_node_gyp -> $modernGyp"
         }
+    }
+    if (-not $env:GYP_MSVS_VERSION -and $env:npm_config_msvs_version) {
+        $env:GYP_MSVS_VERSION = $env:npm_config_msvs_version
     }
 
     $needInstall = $false
@@ -75,9 +87,20 @@ try {
             Remove-Item -Recurse -Force "node_modules"
         }
         if (Test-Path "package-lock.json") {
+            # npm.cmd, not npm: npm.ps1 throws under Set-StrictMode -Version Latest.
             npm.cmd ci --no-fund --no-audit
             if ($LASTEXITCODE -ne 0) {
-                Throw-Horizon "npm ci failed. Common causes: missing VS C++ tools, Node < 22.15.1, yarn, path length/antivirus. See ide\WINDOWS.md"
+                Throw-Horizon @"
+npm ci failed.
+
+Common Windows causes:
+  - Missing Visual Studio 2026/2022 C++ tools (Desktop development with C++)
+  - Node < 22.15.1
+  - Using yarn (unsupported - use npm)
+  - Path too long / antivirus locking node_modules
+
+See ide\WINDOWS.md
+"@
             }
         } else {
             npm.cmd install --no-fund --no-audit
@@ -88,24 +111,25 @@ try {
     } else {
         Write-HorizonInfo "node_modules present; skipping npm ci (set `$env:HORIZON_FORCE_NPM_CI=1 to reinstall)"
     }
-
-    Write-HorizonInfo "compiling Code-OSS (npm run compile)..."
-    npm.cmd run compile
-    if ($LASTEXITCODE -ne 0) {
-        Throw-Horizon "npm run compile failed. Fix errors above, then re-run Build.ps1. Prefer WSL2 if native Windows keeps failing - see ide\WINDOWS.md"
-    }
-
-    if (-not (Test-Path "scripts\code.bat")) {
-        Throw-Horizon "scripts\code.bat missing from Code-OSS tree"
-    }
-    if (-not (Test-Path "out\main.js") -and -not (Test-Path "out\vs\code\electron-main\main.js")) {
-        Throw-Horizon "compile finished but electron main entry is missing under out/"
-    }
 } finally {
     Pop-Location
 }
 
-Write-HorizonInfo "build complete"
+# Default: compile-client so contrib/horizon TypeScript is emitted under out\.
+Invoke-HorizonCompileCodeOss -Roots $Roots
+
+if (-not (Test-Path (Join-Path $Roots.CodeOssDir "scripts\code.bat"))) {
+    Throw-Horizon "scripts\code.bat missing from Code-OSS tree"
+}
+if (-not (Test-HorizonBuiltIn -Roots $Roots)) {
+    Throw-Horizon "build finished but Horizon is not present under out\ (missing electron main or contrib JS)"
+}
+
+Write-HorizonInfo "build complete - Horizon Map contrib is compiled into out\"
 Write-Host ""
 Write-Host "Launch with:"
 Write-Host "  .\ide\scripts\windows\Run.ps1 [workspace-path]"
+Write-Host ""
+Write-Host "Fast iteration after editing ide\contrib\horizon:"
+Write-Host "  .\ide\scripts\windows\Dev.ps1 [workspace-path]"
+Write-Host "  # or: `$env:HORIZON_COMPILE_MODE='full'; .\ide\scripts\windows\Build.ps1"

@@ -20,6 +20,16 @@ export const HORIZON_CMD_TOGGLE = 'horizon.map.toggle';
 export const HORIZON_CMD_ANALYSE = 'horizon.map.analyse';
 export const HORIZON_CMD_SHOW = 'horizon.map.show';
 export const HORIZON_CMD_HIDE = 'horizon.map.hide';
+/** QuickPick workspace folders + Browse… (primary analyse-root UX). */
+export const HORIZON_CMD_CHOOSE_FOLDER = 'horizon.map.chooseFolder';
+/** Trigger suggest in the active Inspection editor (informational completions). */
+export const HORIZON_CMD_TRIGGER_INSPECT_SUGGEST = 'horizon.inspection.triggerSuggest';
+
+/** Context key: an Inspection editor is the active text editor. */
+export const HORIZON_INSPECTION_ACTIVE_CONTEXT = 'horizon.inspection.active';
+
+/** Workspace-scoped storage key for the Horizon analyse root path. */
+export const HORIZON_FOLDER_STORAGE_KEY = 'horizon.analyseFolder';
 
 /** Messages the webview posts to the workbench host. */
 export type WebviewToHostMessage =
@@ -42,6 +52,7 @@ export type WebviewToHostMessage =
 		filePath?: string | null;
 	}
 	| { type: 'openMapJson' }
+	| { type: 'chooseFolder' }
 	| {
 		type: 'sourceRequest';
 		requestId: string;

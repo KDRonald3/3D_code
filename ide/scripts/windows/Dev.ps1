@@ -1,9 +1,5 @@
-# Launch the built Horizon IDE on Windows (forked Code-OSS via scripts\code.bat).
-#
-# Before launch:
-#   - Re-apply product overlay (branding)
-#   - If contrib sources are newer than out\, auto sync + gulp compile-client
-#   - Start / attach horizon-server sidecar (URL -> ide\.cache\horizon-sidecar.url)
+# Fast iteration on Windows: sync contrib -> gulp compile-client -> run.
+# Use after editing ide\contrib\horizon\ when a full Build already exists.
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
@@ -20,40 +16,24 @@ $Roots = Get-HorizonRoots
 
 if (-not (Test-HorizonCodeOssBuilt -Roots $Roots)) {
     Throw-Horizon @"
-built Horizon IDE not ready.
+no prior build.
 
-Run:
+Run once:
   .\ide\scripts\windows\Bootstrap.ps1
   .\ide\scripts\windows\Build.ps1
-Then re-run .\ide\scripts\windows\Run.ps1
-
-Or use WSL2 - see ide\WINDOWS.md
+Then use .\ide\scripts\windows\Dev.ps1 for sync + compile-client + run.
 "@
 }
 
+Write-HorizonInfo "Horizon IDE fast path (Sync-Contrib + compile-client + run)"
 Ensure-HorizonProductOverlay -Roots $Roots
-
+Repair-HorizonPreinstallVs2026 -Roots $Roots
 $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
-if (Test-HorizonContribOutStale -Roots $Roots) {
-    Write-HorizonWarn "contrib newer than out\ - syncing and running gulp compile-client"
-    Sync-HorizonContrib -Roots $Roots -Mode $mode
-    Invoke-HorizonCompileClient -Roots $Roots
-} else {
-    Sync-HorizonContrib -Roots $Roots -Mode $mode
-    if (-not (Test-Path (Get-HorizonContribOutJs -Roots $Roots))) {
-        Write-HorizonWarn "Horizon contrib JS missing under out\ - compiling client"
-        Invoke-HorizonCompileClient -Roots $Roots
-    }
-}
-
-if (-not (Test-HorizonBuiltIn -Roots $Roots)) {
-    Throw-Horizon "Horizon contrib is not compiled into out\. Run .\ide\scripts\windows\Build.ps1"
-}
-
+Sync-HorizonContrib -Roots $Roots -Mode $mode
+Invoke-HorizonCompileClient -Roots $Roots
 Ensure-HorizonSidecar -Roots $Roots
 
 Initialize-HorizonNode
-
 $codeBat = Join-Path $Roots.CodeOssDir "scripts\code.bat"
 Write-HorizonInfo "launching built Horizon IDE ($codeBat)"
 if ($env:HORIZON_SIDECAR_URL) {
