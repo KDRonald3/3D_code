@@ -66,7 +66,8 @@ const horizonViewIcon = registerIcon(
 	localize('horizonViewIcon', 'Icon for the Horizon activity bar.')
 );
 
-const HORIZON_VIEWLET_ID = 'workbench.view.extension.horizon';
+/** Built-in activity-bar id — must NOT use `workbench.view.extension.*` (extension namespace). */
+const HORIZON_VIEWLET_ID = 'workbench.view.horizon';
 
 const horizonViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
 	id: HORIZON_VIEWLET_ID,

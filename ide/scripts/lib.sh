@@ -177,45 +177,15 @@ PY
 }
 
 horizon_sync_extension() {
-  local mode="${1:-copy}" # copy | link
-  local src="${HORIZON_EXTENSION_SRC}"
+  # DEPRECATED: never copy the extension package into Code-OSS — it conflicts
+  # with the built-in workbench contrib (duplicate commands / viewlet ids).
   local dst="${HORIZON_EXTENSION_DST}"
-
-  [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS checkout missing at ${HORIZON_CODE_OSS_DIR} (run bootstrap first)"
-  [[ -d "${HORIZON_CODE_OSS_DIR}/extensions" ]] || horizon_die "Code-OSS extensions/ missing"
-
-  if [[ ! -d "${src}" ]]; then
-    horizon_warn "deprecated extension source missing: ${src}; skipping extension sync"
-    return 0
-  fi
-
-  horizon_warn "horizon-map extension sync is legacy — product surface is ide/contrib/horizon (workbench contrib)"
-
-  mkdir -p "$(dirname "${dst}")"
+  horizon_warn "horizon-map extension sync is disabled — product surface is ide/contrib/horizon"
   if [[ -e "${dst}" || -L "${dst}" ]]; then
     rm -rf "${dst}"
+    horizon_info "removed leftover ${dst}"
   fi
-
-  case "${mode}" in
-    link)
-      ln -s "${src}" "${dst}"
-      horizon_info "linked ${src} -> ${dst} (legacy)"
-      ;;
-    copy|*)
-      if command -v rsync >/dev/null 2>&1; then
-        mkdir -p "${dst}"
-        rsync -a --delete \
-          --exclude node_modules \
-          --exclude .git \
-          "${src}/" "${dst}/"
-      else
-        mkdir -p "${dst}"
-        cp -a "${src}/." "${dst}/"
-        rm -rf "${dst}/node_modules" 2>/dev/null || true
-      fi
-      horizon_info "copied ${src} -> ${dst} (legacy)"
-      ;;
-  esac
+  return 0
 }
 
 # Sync ide/contrib/horizon into Code-OSS workbench contrib and register the import.
