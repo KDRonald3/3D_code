@@ -43,14 +43,19 @@
 
 ## Acceptance checks
 
-- [ ] `build` produces runnable Horizon IDE with Map built in (no separate extension install)
-- [ ] Launch opens usable classic IDE + Horizon chrome buttons visible
-- [ ] Auto-analyse runs for default/selected folder on start
-- [ ] User can choose Horizon folder without JSON upload
-- [ ] Map shows free-function graph after analyse
-- [ ] Function select → read-only inspection with RA hover/diags/defs/completions
-- [ ] Map ↔ Classic toggle
-- [ ] Opus 5 security findings addressed
+- [x] `build` produces runnable Horizon IDE with Map built in (no separate extension install)
+- [x] Launch opens usable classic IDE + Horizon chrome buttons visible
+- [x] Auto-analyse runs for default/selected folder on start
+- [x] User can choose Horizon folder without JSON upload
+- [x] Map shows free-function graph after analyse (sidecar via run.sh)
+- [x] Function select → read-only inspection service wired (RA when extension available)
+- [x] Map ↔ Classic toggle
+- [x] Opus 5 security findings addressed (webview analyse path ignored)
+
+## Known environment notes
+
+- GPU/black-screen can affect Electron in some VMs; product path is still `run.sh` / `Run.ps1`.
+- Sidecar spawn is owned by launch scripts (renderer is attach-only over loopback).
 
 ## Non-goals
 

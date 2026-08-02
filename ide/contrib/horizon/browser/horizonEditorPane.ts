@@ -209,7 +209,12 @@ export class HorizonMapEditorPane extends EditorPane {
 				await this.onReady();
 				break;
 			case 'analyse':
-				await this.runAnalyse(msg.path, true);
+				// Webview is untrusted: ignore optional path overrides. Analyse
+				// the host-owned Horizon folder only (set via QuickPick / Browse).
+				if (msg.path && msg.path.trim()) {
+					console.warn('[Horizon] ignoring webview analyse path override');
+				}
+				await this.runAnalyse(undefined, true);
 				break;
 			case 'selectFunction':
 				await this._inspectionService.openInspection({
