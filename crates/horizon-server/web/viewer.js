@@ -1630,7 +1630,8 @@
         : ".") +
       ` Dropped: ${summary.external_dropped ?? 0} external, ` +
       `${summary.constructor_dropped ?? 0} constructor, ` +
-      `${summary.associated_dropped ?? 0} associated.`;
+      `${summary.associated_dropped ?? 0} associated, ` +
+      `${summary.local_dropped ?? 0} closure/binding.`;
     els.archSticky.hidden = nFiles === 0;
 
     els.canvasEmpty.hidden = nFiles > 0;
@@ -1739,9 +1740,23 @@
     return null;
   }
 
-  function renderTokens(tokens) {
+  const utf8Encoder = new TextEncoder();
+
+  /**
+   * Render `[text, class]` token pairs. When `source` carries the file path and
+   * the slice's base byte offset, each non-blank span is stamped with its
+   * absolute UTF-8 byte offset. (The IDE viewer uses this for the
+   * rust-analyzer hover bridge; kept in step here for fork parity.)
+   * @param {[string, string][]} tokens
+   * @param {{filePath?: string, baseByte?: number}} [source]
+   */
+  function renderTokens(tokens, source) {
     const pre = document.createElement("pre");
     pre.className = "source-well";
+    const track =
+      source && source.filePath && typeof source.baseByte === "number";
+    if (track) pre.dataset.raFile = source.filePath;
+    let byte = track ? source.baseByte : 0;
     const code = document.createElement("code");
     for (const pair of tokens || []) {
       const text = Array.isArray(pair) ? String(pair[0] ?? "") : "";
@@ -1749,6 +1764,8 @@
       const span = document.createElement("span");
       span.className = cls ? `tok-${cls}` : "tok";
       span.textContent = text;
+      if (track && text.trim()) span.dataset.b = String(byte);
+      if (track) byte += utf8Encoder.encode(text).length;
       code.appendChild(span);
     }
     pre.appendChild(code);
@@ -1783,10 +1800,10 @@
     btn.hidden = height <= SOURCE_CLAMP_PX + 2;
   }
 
-  function renderSourceFrame(tokens) {
+  function renderSourceFrame(tokens, source) {
     const frame = document.createElement("div");
     frame.className = "source-frame";
-    frame.appendChild(renderTokens(tokens));
+    frame.appendChild(renderTokens(tokens, source));
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1813,7 +1830,7 @@
     const metaEl = host._metaEl;
     if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
     if (state === "served") {
-      host.appendChild(renderSourceFrame(detail.tokens));
+      host.appendChild(renderSourceFrame(detail.tokens, detail.source));
       return;
     }
     const banner = document.createElement("div");
@@ -1826,6 +1843,162 @@
     if (state === "error" && detail.message) banner.textContent = detail.message;
     host.appendChild(banner);
   }
+
+  // --- Hover preview for the Inspector's Functions list --------------------
+  // Clicking a function replaces the list with the function view, so reading a
+  // body costs you your place. Hovering peeks at the same `/api/source` tokens
+  // without changing the selection.
+  const FN_PREVIEW_DELAY_MS = 320;
+  /** Below this the gutter is too narrow to render anything readable. */
+  const FN_PREVIEW_MIN_PX = 140;
+  const fnPreviewCache = new Map();
+  let fnPreviewEl = null;
+  let fnPreviewTimer = null;
+  let fnPreviewGen = 0;
+
+  function ensureFnPreviewEl() {
+    if (fnPreviewEl) return fnPreviewEl;
+    fnPreviewEl = document.createElement("div");
+    fnPreviewEl.className = "fn-preview";
+    fnPreviewEl.hidden = true;
+    // The Inspector sits inside gesture-bearing chrome; the popover must never
+    // read as a selection, pan or drag.
+    fnPreviewEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    // Must live inside `.app`: every theme token (--panel, --border, --tok-*) is
+    // declared on `.app[data-theme]`, so a document.body child renders with a
+    // transparent background and uncoloured source. `.app` sets no transform, so
+    // position: fixed still resolves against the viewport.
+    (document.querySelector(".app") || document.body).appendChild(fnPreviewEl);
+    return fnPreviewEl;
+  }
+
+  function hideFnPreview() {
+    fnPreviewGen++;
+    if (fnPreviewTimer) {
+      clearTimeout(fnPreviewTimer);
+      fnPreviewTimer = null;
+    }
+    if (fnPreviewEl) fnPreviewEl.hidden = true;
+  }
+
+  /** True when the anchor row is actually visible in its scroll container. */
+  function anchorOnScreen(anchor) {
+    const a = anchor.getBoundingClientRect();
+    return a.bottom > 0 && a.top < window.innerHeight && a.width > 0 && a.height > 0;
+  }
+
+  function positionFnPreview(anchor) {
+    const el = ensureFnPreviewEl();
+    el.hidden = false;
+    el.style.maxWidth = "";
+    const a = anchor.getBoundingClientRect();
+
+    // Float over the canvas, never over the layers tree or the Functions list:
+    // covering either defeats the point of previewing in place.
+    const aside = document.getElementById("left-aside");
+    const asideRect = aside ? aside.getBoundingClientRect() : null;
+    const minLeft = asideRect && asideRect.width > 0 ? asideRect.right + 8 : 8;
+
+    const gutter = Math.max(0, a.left - 12 - minLeft);
+    if (gutter < FN_PREVIEW_MIN_PX) {
+      // Too little room to show anything readable without covering the list.
+      el.hidden = true;
+      return;
+    }
+    // Always fit the gutter. Leaving the width unclamped lets the stylesheet's
+    // max-width win and push the peek back across the Functions list.
+    el.style.maxWidth = `${gutter}px`;
+    const p = el.getBoundingClientRect();
+
+    const left = Math.max(minLeft, a.left - p.width - 12);
+
+    let top = a.top;
+    if (top + p.height > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - p.height - 8);
+    }
+    el.style.left = `${Math.max(minLeft, left)}px`;
+    el.style.top = `${Math.max(8, top)}px`;
+  }
+
+  async function loadFnPreview(file, fn) {
+    const key = `${file.path}:${fn.byte_start ?? 0}:${fn.byte_end ?? 0}:${file.content_hash || ""}`;
+    if (fnPreviewCache.has(key)) return fnPreviewCache.get(key);
+    const params = new URLSearchParams({
+      path: String(file.path || ""),
+      byte_start: String(fn.byte_start ?? 0),
+      byte_end: String(fn.byte_end ?? 0),
+      expected_hash: file.content_hash || "",
+    });
+    const res = await fetch(`/api/source?${params}`);
+    const body = await res.json().catch(() => ({}));
+    const result =
+      res.ok && Array.isArray(body.tokens)
+        ? { tokens: body.tokens }
+        : { error: body.message || body.error || `source request failed (${res.status})` };
+    // Only memoize successes: a transient outage must not stick.
+    if (!result.error) fnPreviewCache.set(key, result);
+    return result;
+  }
+
+  function setFnPreviewMessage(anchor, title, message) {
+    const el = ensureFnPreviewEl();
+    el.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "fn-preview-head";
+    head.textContent = title;
+    const body = document.createElement("div");
+    body.className = "fn-preview-message";
+    body.textContent = message;
+    el.append(head, body);
+    positionFnPreview(anchor);
+  }
+
+  function attachFnPreview(btn, file, fn) {
+    const name = fn.name || "function";
+    const open = async () => {
+      // A row scrolled out of the list has no sensible anchor; showing anyway
+      // parks the popover in a corner with nothing to point at.
+      if (!anchorOnScreen(btn)) return;
+      const gen = ++fnPreviewGen;
+      const early = sourceUnavailableReason(fn, file);
+      if (early) {
+        setFnPreviewMessage(btn, name, SOURCE_MESSAGES[early] || "Source unavailable.");
+        return;
+      }
+      setFnPreviewMessage(btn, name, "Loading source…");
+      try {
+        const result = await loadFnPreview(file, fn);
+        if (gen !== fnPreviewGen) return;
+        if (result.error) {
+          setFnPreviewMessage(btn, name, result.error);
+          return;
+        }
+        const el = ensureFnPreviewEl();
+        el.replaceChildren();
+        const head = document.createElement("div");
+        head.className = "fn-preview-head";
+        head.textContent = `${name} · ${lineSpanFromTokens(fn.line, result.tokens)}`;
+        el.append(head, renderTokens(result.tokens));
+        positionFnPreview(btn);
+      } catch (e) {
+        if (gen !== fnPreviewGen) return;
+        setFnPreviewMessage(btn, name, String((e && e.message) || e));
+      }
+    };
+    btn.addEventListener("mouseenter", () => {
+      if (fnPreviewTimer) clearTimeout(fnPreviewTimer);
+      fnPreviewTimer = setTimeout(open, FN_PREVIEW_DELAY_MS);
+    });
+    btn.addEventListener("mouseleave", hideFnPreview);
+    // Keyboard parity: tabbing the list previews too.
+    btn.addEventListener("focus", open);
+    btn.addEventListener("blur", hideFnPreview);
+  }
+
+  // A popover anchored to viewport coordinates goes stale the moment anything
+  // scrolls or the selection re-renders the Inspector.
+  window.addEventListener("scroll", hideFnPreview, true);
+  window.addEventListener("resize", hideFnPreview);
 
   async function fetchSourceInto(host, file, fn) {
     const filePath = String(file.path || "");
@@ -1855,7 +2028,7 @@
       const body = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(body.tokens)) {
         meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
-        setSourceHost(host, "served", { meta, tokens: body.tokens });
+        setSourceHost(host, "served", { meta, tokens: body.tokens, source: { filePath, baseByte: start } });
         return;
       }
       const err = body.error || "error";
@@ -1883,8 +2056,13 @@
     a.textContent = id;
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
+      hideFnPreview();
       selectFunction(id, { reveal: true, push: true });
     });
+    // Call-site targets are map functions, so hovering one peeks its source
+    // exactly like a Functions-list row.
+    const entry = fnIndex.get(String(id));
+    if (entry) attachFnPreview(a, entry.file, entry.fn);
     return a;
   }
 
@@ -2753,7 +2931,8 @@
     const droppedExt = summary.external_dropped ?? 0;
     const droppedCtor = summary.constructor_dropped ?? 0;
     const droppedAssoc = summary.associated_dropped ?? 0;
-    const droppedTotal = droppedExt + droppedCtor + droppedAssoc;
+    const droppedLocal = summary.local_dropped ?? 0;
+    const droppedTotal = droppedExt + droppedCtor + droppedAssoc + droppedLocal;
 
     if (banner) {
       banner.hidden = false;
@@ -2773,7 +2952,7 @@
       }
       const dropText =
         droppedTotal > 0
-          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated — deliberate exclusions, not resolution failures.`
+          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated, ${droppedLocal} closure/binding — deliberate exclusions, not resolution failures.`
           : `No deliberate drops in this map summary.`;
       banner.innerHTML =
         `<div>${escapeHtml(head)}</div>` +
@@ -3098,9 +3277,11 @@
         btn.innerHTML =
           `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
           `<span class="fn-list-meta">L${fn.line}</span>`;
-        btn.addEventListener("click", () =>
-          selectFunction(fn.id, { reveal: false, push: true })
-        );
+        btn.addEventListener("click", () => {
+          hideFnPreview();
+          selectFunction(fn.id, { reveal: false, push: true });
+        });
+        attachFnPreview(btn, node.file, fn);
         li.appendChild(btn);
         ul.appendChild(li);
       }

@@ -21,6 +21,7 @@ fi
 horizon_info "Horizon IDE fast path (sync-contrib + compile-client + run)"
 horizon_ensure_product_overlay
 horizon_patch_preinstall_vs2026
+horizon_patch_workbench_csp
 horizon_sync_contrib "${HORIZON_CONTRIB_SYNC_MODE:-copy}"
 horizon_compile_client
 horizon_ensure_sidecar

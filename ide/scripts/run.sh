@@ -55,6 +55,9 @@ fi
 horizon_ensure_sidecar
 
 horizon_setup_node
+
+horizon_ensure_rust_analyzer
+
 cd "${HORIZON_CODE_OSS_DIR}"
 horizon_info "launching built Horizon IDE (scripts/code.sh)"
 if [[ -n "${HORIZON_SIDECAR_URL:-}" ]]; then

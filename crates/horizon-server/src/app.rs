@@ -1,6 +1,7 @@
 //! Router construction for the Horizon map viewer server.
 
 use crate::analyse::{get_analyse, post_analyse};
+use crate::cors::allow_cross_origin;
 use crate::host_guard::reject_non_local_host;
 use crate::routes::{get_map, health, post_map};
 use crate::source::get_source;
@@ -31,5 +32,8 @@ pub fn app(state: AppState) -> Router {
         .route("/api/source", get(get_source))
         .layer(middleware::from_fn(reject_non_local_host))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        // Outermost: preflights must be answered before the Host guard, and even
+        // rejections need CORS headers or the browser hides the real status.
+        .layer(middleware::from_fn(allow_cross_origin))
         .with_state(state)
 }

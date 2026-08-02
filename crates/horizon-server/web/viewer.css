@@ -1563,9 +1563,13 @@ select {
 
 .source-well {
   margin: 0;
-  background: var(--code);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  /*
+   * No slab or outline: the code shares its container's background so the
+   * Inspector and the hover peek read as one surface. A separate `--code`
+   * fill plus border drew a grey box around every listing.
+   */
+  background: transparent;
+  border: none;
   padding: 11px 12px;
   overflow-x: auto;
   /*
@@ -1623,6 +1627,13 @@ select {
   font-size: inherit;
   color: var(--tok);
   white-space: pre;
+  /*
+   * Kept in step with the IDE copy, where the webview host styles bare <code>
+   * with --vscode-textPreformat-background and paints a band behind each line.
+   */
+  background: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 .source-banner {
@@ -1643,6 +1654,51 @@ select {
   background: var(--panel2);
   color: var(--text3);
   border-color: var(--border);
+}
+
+/*
+ * Hover preview for the Inspector's Functions list. Anchored to the viewport
+ * (fixed) because the list scrolls inside the Inspector rail; positioning is
+ * recomputed on each open and dismissed on scroll/resize.
+ */
+.fn-preview {
+  position: fixed;
+  z-index: 60;
+  /* Rust lines run long; too narrow a peek clips mid-identifier and forces a
+     horizontal scroll the popover cannot receive (pointer-events: none).
+     positionFnPreview caps max-width to the free gutter at open time. */
+  max-width: min(720px, 62vw);
+  /* No min-width: CSS resolves min-width over max-width, so any floor here
+     would defeat the gutter clamp positionFnPreview applies and push the peek
+     back across the Functions list on narrow windows. */
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.fn-preview[hidden] {
+  display: none;
+}
+
+.fn-preview-head {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--text3);
+  margin-bottom: 7px;
+}
+
+.fn-preview-message {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text3);
+}
+
+/* The preview is a peek, not the Inspector's full source pane. */
+.fn-preview .source-well {
+  max-height: 260px;
 }
 
 .tok-kw {
@@ -1843,6 +1899,17 @@ select {
   font-size: 10.5px;
   color: var(--text3);
   word-break: break-all;
+}
+
+/* Out-of-map target: clickable, but muted so in-map jumps stay the accent.
+   (def-jump links are emitted by the IDE viewer only; kept for parity.) */
+.call-target a.def-jump {
+  color: var(--text3);
+  border-bottom: 1px dotted currentColor;
+}
+
+.call-target a.def-jump:hover {
+  color: var(--text);
 }
 
 .call-target .reason {

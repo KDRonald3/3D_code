@@ -43,6 +43,7 @@ if (-not $SkipPrereqCheck) {
 # --- Product surface: brand + toolchain patch + always sync contrib -----------
 Ensure-HorizonProductOverlay -Roots $Roots
 Repair-HorizonPreinstallVs2026 -Roots $Roots
+Repair-HorizonWorkbenchCsp -Roots $Roots
 $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
 Sync-HorizonContrib -Roots $Roots -Mode $mode
 

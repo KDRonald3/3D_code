@@ -18,18 +18,23 @@
  * Sidecar `sourceRequest` slices remain an optional webview inspector fallback.
  */
 
+import { timeout } from '../../../../base/common/async.js';
 import { VSBuffer, encodeHex } from '../../../../base/common/buffer.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { basename, isEqual, isEqualOrParent, joinPath, resolvePath } from '../../../../base/common/resources.js';
+import { isEqual, isEqualOrParent, joinPath, resolvePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
-import { IPosition } from '../../../../editor/common/core/position.js';
-import { IRange } from '../../../../editor/common/core/range.js';
+import { IPosition, Position } from '../../../../editor/common/core/position.js';
+import { IRange, Range } from '../../../../editor/common/core/range.js';
 import { ScrollType } from '../../../../editor/common/editorCommon.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { LocationLink, Location } from '../../../../editor/common/languages.js';
 import { ITextModel } from '../../../../editor/common/model.js';
+import { ILanguageFeaturesService } from '../../../../editor/common/services/languageFeatures.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
+import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
@@ -58,8 +63,56 @@ export interface IHorizonInspectionService {
 	/** Open / reveal a free function in a read-only editor on the real file URI. */
 	openInspection(payload: SelectFunctionPayload): Promise<void>;
 
-	/** Open a file read-only without a function range (file-card selection). */
-	openFileReadonly(filePath: string): Promise<void>;
+	/**
+	 * Record the Map's current function selection without opening anything.
+	 * Selecting in the Map is a browsing gesture; taking over the editor area
+	 * belongs to an explicit command.
+	 */
+	setPendingSelection(payload: SelectFunctionPayload | undefined): void;
+
+	/** Open the remembered selection — the explicit counterpart to the above. */
+	openPendingSelection(): Promise<void>;
+
+	/**
+	 * Go to the definition of a call target that is not in the map, by asking
+	 * the definition providers (rust-analyzer) at the call site's own position
+	 * in the enclosing file.
+	 */
+	openDefinitionAt(payload: {
+		filePath: string | null;
+		callPath?: string | null;
+		line?: number | null;
+		byteStart?: number | null;
+		byteEnd?: number | null;
+	}): Promise<void>;
+
+	/**
+	 * What the hover providers (rust-analyzer) say about the symbol at a UTF-8
+	 * byte offset in a workspace file. Markdown blocks, or undefined when no
+	 * provider answers. Never raises notifications — hover must stay quiet.
+	 */
+	hoverAt(filePath: string | null, byteOffset: number | null): Promise<string[] | undefined>;
+
+	/**
+	 * Where the definition of the symbol at a UTF-8 byte offset lives, without
+	 * opening anything. `path` is workspace-relative (forward slashes) when the
+	 * target is in the workspace, else null. Quiet like hoverAt — the webview
+	 * uses this to decide between an in-map jump and `openDefinitionAt`.
+	 */
+	definitionAt(
+		filePath: string | null,
+		byteOffset: number | null
+	): Promise<{ path: string | null; line: number; byteOffset: number | null } | undefined>;
+
+	/**
+	 * rust-analyzer semantic tokens covering `[byteStart, byteEnd)` of a
+	 * workspace file, as absolute UTF-8 byte ranges. Quiet like hoverAt.
+	 */
+	semanticTokensFor(
+		filePath: string | null,
+		byteStart: number | null,
+		byteEnd: number | null
+	): Promise<{ b: number; l: number; t: string; m?: string[] }[] | undefined>;
 
 	/**
 	 * Trigger the suggest widget in the active inspection editor.
@@ -90,6 +143,8 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 	declare readonly _serviceBrand: undefined;
 
 	private session: InspectionSession | undefined;
+	/** Last function selected in the Map; opened only on explicit request. */
+	private pendingSelection: SelectFunctionPayload | undefined;
 	private readonly status: IStatusbarEntryAccessor;
 	private readonly inspectionActive: IContextKey<boolean>;
 	/** Document versions we last observed — used to undo sneaky edits. */
@@ -110,6 +165,8 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 		@ILanguageService private readonly languageService: ILanguageService,
 		@IModelService private readonly modelService: IModelService,
 		@ITextFileService private readonly textFileService: ITextFileService,
+		@ITextModelService private readonly textModelService: ITextModelService,
+		@ILanguageFeaturesService private readonly languageFeaturesService: ILanguageFeaturesService,
 	) {
 		super();
 
@@ -143,6 +200,24 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 		this._register(this.editorService.onDidActiveEditorChange(() => {
 			void this.syncActiveContext();
 		}));
+	}
+
+	setPendingSelection(payload: SelectFunctionPayload | undefined): void {
+		this.pendingSelection = payload;
+	}
+
+	async openPendingSelection(): Promise<void> {
+		if (!this.pendingSelection) {
+			this.notificationService.notify({
+				severity: Severity.Info,
+				message: localize(
+					'horizonInspectNoSelection',
+					"Horizon: select a function in the Map first, then run this command."
+				),
+			});
+			return;
+		}
+		await this.openInspection(this.pendingSelection);
 	}
 
 	async openInspection(payload: SelectFunctionPayload): Promise<void> {
@@ -183,17 +258,325 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 		});
 	}
 
-	async openFileReadonly(filePath: string): Promise<void> {
-		const uri = await this.resolveWorkspaceFile(filePath);
+	async openDefinitionAt(payload: {
+		filePath: string | null;
+		callPath?: string | null;
+		line?: number | null;
+		byteStart?: number | null;
+		byteEnd?: number | null;
+	}): Promise<void> {
+		if (!payload.filePath) {
+			return;
+		}
+		const uri = await this.resolveWorkspaceFile(payload.filePath);
 		if (!uri) {
 			return;
 		}
-		const label = basename(uri);
-		await this.openReadonlyEditor(uri, {
-			functionId: null,
-			functionName: label,
-			range: undefined,
-			preview: true,
+
+		// Hold a model reference so the extension host opens the document and
+		// rust-analyzer attaches its providers to it.
+		const ref = await this.textModelService.createModelReference(uri);
+		try {
+			const model = ref.object.textEditorModel;
+			const position = await this.resolveCalleePosition(uri, model, payload);
+			if (!position) {
+				this.notifyNoDefinition(payload.callPath);
+				return;
+			}
+
+			let providers = this.languageFeaturesService.definitionProvider.ordered(model);
+			if (!providers.length) {
+				// rust-analyzer may still be starting; give registration a moment.
+				await timeout(2500);
+				providers = this.languageFeaturesService.definitionProvider.ordered(model);
+			}
+			if (!providers.length) {
+				this.notificationService.notify({
+					severity: Severity.Info,
+					message: localize(
+						'horizonNoDefProvider',
+						"Horizon: no definition provider for Rust — is rust-analyzer installed and ready?"
+					),
+				});
+				return;
+			}
+
+			let target: { uri: URI; range: IRange } | undefined;
+			for (const provider of providers) {
+				try {
+					const result = await provider.provideDefinition(
+						model,
+						new Position(position.lineNumber, position.column),
+						CancellationToken.None
+					);
+					target = firstDefinitionLocation(result ?? undefined);
+					if (target) {
+						break;
+					}
+				} catch (err) {
+					console.warn('[Horizon] definition provider failed', err);
+				}
+			}
+			if (!target) {
+				this.notifyNoDefinition(payload.callPath);
+				return;
+			}
+
+			await this.editorService.openEditor({
+				resource: target.uri,
+				options: {
+					pinned: false,
+					preserveFocus: false,
+					selection: {
+						startLineNumber: target.range.startLineNumber,
+						startColumn: target.range.startColumn,
+						endLineNumber: target.range.startLineNumber,
+						endColumn: target.range.startColumn,
+					},
+					selectionRevealType: TextEditorSelectionRevealType.Center,
+				},
+			});
+		} finally {
+			ref.dispose();
+		}
+	}
+
+	async hoverAt(filePath: string | null, byteOffset: number | null): Promise<string[] | undefined> {
+		if (!filePath || typeof byteOffset !== 'number' || byteOffset < 0) {
+			return undefined;
+		}
+		const uri = await this.resolveWorkspaceFile(filePath, true);
+		if (!uri) {
+			return undefined;
+		}
+		const ref = await this.textModelService.createModelReference(uri);
+		try {
+			const model = ref.object.textEditorModel;
+			const raw = await this.fileService.readFile(uri);
+			const pos = clampPosition(byteOffsetToPosition(raw.value.buffer, byteOffset), model);
+			const providers = this.languageFeaturesService.hoverProvider.ordered(model);
+			for (const provider of providers) {
+				try {
+					const hover = await provider.provideHover(
+						model,
+						new Position(pos.lineNumber, pos.column),
+						CancellationToken.None
+					);
+					const contents = hover?.contents
+						?.map(c => (typeof c === 'string' ? c : c.value))
+						.filter((v): v is string => !!v && !!v.trim());
+					if (contents && contents.length) {
+						return contents;
+					}
+				} catch (err) {
+					console.warn('[Horizon] hover provider failed', err);
+				}
+			}
+			return undefined;
+		} finally {
+			ref.dispose();
+		}
+	}
+
+	async definitionAt(
+		filePath: string | null,
+		byteOffset: number | null
+	): Promise<{ path: string | null; line: number; byteOffset: number | null } | undefined> {
+		if (!filePath || typeof byteOffset !== 'number' || byteOffset < 0) {
+			return undefined;
+		}
+		const uri = await this.resolveWorkspaceFile(filePath, true);
+		if (!uri) {
+			return undefined;
+		}
+		const ref = await this.textModelService.createModelReference(uri);
+		try {
+			const model = ref.object.textEditorModel;
+			const raw = await this.fileService.readFile(uri);
+			const pos = clampPosition(byteOffsetToPosition(raw.value.buffer, byteOffset), model);
+
+			let providers = this.languageFeaturesService.definitionProvider.ordered(model);
+			if (!providers.length) {
+				await timeout(2000);
+				providers = this.languageFeaturesService.definitionProvider.ordered(model);
+			}
+			let target: { uri: URI; range: IRange } | undefined;
+			for (const provider of providers) {
+				try {
+					const result = await provider.provideDefinition(
+						model,
+						new Position(pos.lineNumber, pos.column),
+						CancellationToken.None
+					);
+					target = firstDefinitionLocation(result ?? undefined);
+					if (target) {
+						break;
+					}
+				} catch (err) {
+					console.warn('[Horizon] definition provider failed', err);
+				}
+			}
+			if (!target) {
+				return undefined;
+			}
+
+			// Providers may return URIs with different drive-letter casing than the
+			// workspace folder (`c:/…` vs `C:/…`); compare case-insensitively.
+			let relPath: string | null = null;
+			let targetByte: number | null = null;
+			const targetPath = target.uri.scheme === Schemas.file ? target.uri.path : null;
+			if (targetPath) {
+				for (const f of this.workspaceService.getWorkspace().folders) {
+					if (f.uri.scheme !== Schemas.file) {
+						continue;
+					}
+					const base = f.uri.path.replace(/\/+$/, '');
+					if (targetPath.toLowerCase().startsWith(base.toLowerCase() + '/')) {
+						relPath = targetPath.slice(base.length + 1);
+						break;
+					}
+				}
+			}
+			if (relPath) {
+				try {
+					const targetRaw = await this.fileService.readFile(target.uri);
+					targetByte = positionToByteOffset(targetRaw.value.buffer, {
+						lineNumber: target.range.startLineNumber,
+						column: target.range.startColumn,
+					});
+				} catch {
+					// in-map matching degrades to path+line; the open fallback still works
+				}
+			}
+			return { path: relPath, line: target.range.startLineNumber, byteOffset: targetByte };
+		} finally {
+			ref.dispose();
+		}
+	}
+
+	async semanticTokensFor(
+		filePath: string | null,
+		byteStart: number | null,
+		byteEnd: number | null
+	): Promise<{ b: number; l: number; t: string; m?: string[] }[] | undefined> {
+		if (!filePath || typeof byteStart !== 'number' || typeof byteEnd !== 'number' || byteEnd <= byteStart) {
+			return undefined;
+		}
+		const uri = await this.resolveWorkspaceFile(filePath, true);
+		if (!uri) {
+			return undefined;
+		}
+		const ref = await this.textModelService.createModelReference(uri);
+		try {
+			const model = ref.object.textEditorModel;
+			let providers = this.languageFeaturesService.documentRangeSemanticTokensProvider.ordered(model);
+			if (!providers.length) {
+				await timeout(2000);
+				providers = this.languageFeaturesService.documentRangeSemanticTokensProvider.ordered(model);
+			}
+			const provider = providers[0];
+			if (!provider) {
+				return undefined;
+			}
+
+			const raw = await this.fileService.readFile(uri);
+			const bytes = raw.value.buffer;
+			const startPos = clampPosition(byteOffsetToPosition(bytes, byteStart), model);
+			const endPos = clampPosition(byteOffsetToPosition(bytes, byteEnd), model);
+			const range = new Range(startPos.lineNumber, 1, endPos.lineNumber, model.getLineMaxColumn(endPos.lineNumber));
+
+			const result = await provider.provideDocumentRangeSemanticTokens(model, range, CancellationToken.None);
+			if (!result || !result.data || !result.data.length) {
+				return undefined;
+			}
+			const legend = provider.getLegend();
+
+			// Byte offset of each line start, from the raw bytes (handles CRLF).
+			const lineStartByte: number[] = [0];
+			for (let i = 0; i < bytes.length; i++) {
+				if (bytes[i] === 0x0a) {
+					lineStartByte.push(i + 1);
+				}
+			}
+
+			const out: { b: number; l: number; t: string; m?: string[] }[] = [];
+			const data = result.data;
+			let line = 0;
+			let char = 0;
+			for (let i = 0; i + 4 < data.length && out.length < 4000; i += 5) {
+				const deltaLine = data[i];
+				const deltaChar = data[i + 1];
+				const length = data[i + 2];
+				const typeIdx = data[i + 3];
+				const modBits = data[i + 4];
+				line += deltaLine;
+				char = deltaLine === 0 ? char + deltaChar : deltaChar;
+				const lineNumber = line + 1;
+				if (lineNumber > model.getLineCount() || line >= lineStartByte.length) {
+					continue;
+				}
+				const lineText = model.getLineContent(lineNumber);
+				const b = lineStartByte[line] + utf8ByteLength(lineText.substring(0, char));
+				if (b < byteStart || b >= byteEnd) {
+					continue;
+				}
+				const l = utf8ByteLength(lineText.substring(char, char + length));
+				const t = legend.tokenTypes[typeIdx] ?? 'unknown';
+				const m: string[] = [];
+				for (let bit = 0; bit < legend.tokenModifiers.length; bit++) {
+					if (modBits & (1 << bit)) {
+						m.push(legend.tokenModifiers[bit]);
+					}
+				}
+				out.push(m.length ? { b, l, t, m } : { b, l, t });
+			}
+			return out.length ? out : undefined;
+		} finally {
+			ref.dispose();
+		}
+	}
+
+	/**
+	 * Position of the callee identifier inside the call expression. `byte_start`
+	 * covers the whole expression, so anchoring there would resolve the leading
+	 * crate/module segment; advance to the final path segment instead.
+	 */
+	private async resolveCalleePosition(
+		uri: URI,
+		model: ITextModel,
+		payload: { callPath?: string | null; line?: number | null; byteStart?: number | null }
+	): Promise<IPosition | undefined> {
+		const byteStart = payload.byteStart;
+		if (typeof byteStart === 'number' && byteStart > 0) {
+			try {
+				const raw = await this.fileService.readFile(uri);
+				let anchor = byteStart;
+				const callPath = (payload.callPath || '').trim();
+				if (callPath) {
+					const lastSegment = callPath.split('::').filter(Boolean).pop() ?? '';
+					const idx = lastSegment ? callPath.lastIndexOf(lastSegment) : -1;
+					if (idx > 0) {
+						anchor += utf8ByteLength(callPath.slice(0, idx));
+					}
+				}
+				return clampPosition(byteOffsetToPosition(raw.value.buffer, anchor), model);
+			} catch (err) {
+				console.warn('[Horizon] callee byte→position failed', err);
+			}
+		}
+		if (typeof payload.line === 'number' && payload.line > 0) {
+			const lineNumber = Math.min(payload.line, model.getLineCount());
+			return { lineNumber, column: 1 };
+		}
+		return undefined;
+	}
+
+	private notifyNoDefinition(callPath: string | null | undefined): void {
+		this.notificationService.notify({
+			severity: Severity.Info,
+			message: callPath
+				? localize('horizonNoDefFor', "Horizon: no definition found for {0} (rust-analyzer may still be indexing).", callPath)
+				: localize('horizonNoDef', "Horizon: no definition found (rust-analyzer may still be indexing)."),
 		});
 	}
 
@@ -290,20 +673,24 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 	 * Resolve `filePath` to a `file:` URI under an open workspace folder.
 	 * Rejects path escapes (`..`) and paths outside the workspace.
 	 */
-	private async resolveWorkspaceFile(filePath: string): Promise<URI | undefined> {
+	private async resolveWorkspaceFile(filePath: string, quiet = false): Promise<URI | undefined> {
 		const folders = this.workspaceService.getWorkspace().folders;
 		if (!folders.length) {
-			this.notificationService.error(
-				localize('horizonInspectNoWorkspace', "Horizon: open a workspace folder before inspecting a function.")
-			);
+			if (!quiet) {
+				this.notificationService.error(
+					localize('horizonInspectNoWorkspace', "Horizon: open a workspace folder before inspecting a function.")
+				);
+			}
 			return undefined;
 		}
 
 		const trimmed = filePath.trim();
 		if (!trimmed) {
-			this.notificationService.error(
-				localize('horizonInspectBadPath', "Horizon: refusing empty file path.")
-			);
+			if (!quiet) {
+				this.notificationService.error(
+					localize('horizonInspectBadPath', "Horizon: refusing empty file path.")
+				);
+			}
 			return undefined;
 		}
 
@@ -350,6 +737,9 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 				return false;
 			}
 		});
+		if (quiet) {
+			return undefined;
+		}
 		if (!underAny && (trimmed.includes('..') || trimmed.startsWith('/') || /^[A-Za-z]:[\\/]/.test(trimmed))) {
 			this.notificationService.error(
 				localize('horizonInspectPathEscape', "Horizon: refusing path outside workspace: {0}", trimmed)
@@ -640,6 +1030,43 @@ export function byteOffsetToPosition(
 	const lineBytes = raw.subarray(lineStart, clamped);
 	const character = new TextDecoder('utf-8').decode(lineBytes).length;
 	return { lineNumber: line + 1, column: character + 1 };
+}
+
+/** Bytes `s` occupies in UTF-8 — matches the map's byte-offset space. */
+function utf8ByteLength(s: string): number {
+	return new TextEncoder().encode(s).length;
+}
+
+/** Inverse of `byteOffsetToPosition`: 1-based (line, UTF-16 column) → UTF-8 byte offset. */
+export function positionToByteOffset(raw: Uint8Array, pos: IPosition): number {
+	let lineStart = 0;
+	let line = 1;
+	while (line < pos.lineNumber && lineStart < raw.length) {
+		const nl = raw.indexOf(0x0a, lineStart);
+		if (nl < 0) {
+			break;
+		}
+		lineStart = nl + 1;
+		line++;
+	}
+	let lineEnd = raw.indexOf(0x0a, lineStart);
+	if (lineEnd < 0) {
+		lineEnd = raw.length;
+	}
+	const lineText = new TextDecoder('utf-8').decode(raw.subarray(lineStart, lineEnd));
+	return lineStart + utf8ByteLength(lineText.substring(0, Math.max(0, pos.column - 1)));
+}
+
+/** Normalize a Definition result (Location | Location[] | LocationLink[]) to its first target. */
+function firstDefinitionLocation(
+	result: Location | Location[] | LocationLink[] | undefined
+): { uri: URI; range: IRange } | undefined {
+	const first = Array.isArray(result) ? result[0] : result;
+	if (!first || !first.uri || !first.range) {
+		return undefined;
+	}
+	const link = first as LocationLink;
+	return { uri: first.uri, range: link.targetSelectionRange ?? first.range };
 }
 
 function clampPosition(pos: IPosition, model: ITextModel | null): IPosition {

@@ -1693,9 +1693,13 @@ select {
 
 .source-well {
   margin: 0;
-  background: var(--code);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  /*
+   * No slab or outline: the code shares its container's background so the
+   * Inspector and the hover peek read as one surface. A separate `--code`
+   * fill plus border drew a grey box around every listing.
+   */
+  background: transparent;
+  border: none;
   padding: 11px 12px;
   overflow-x: auto;
   /*
@@ -1753,6 +1757,14 @@ select {
   font-size: inherit;
   color: var(--tok);
   white-space: pre;
+  /*
+   * The webview host styles bare <code> with --vscode-textPreformat-background
+   * and a radius. On an inline element holding pre-formatted text that paints a
+   * grey band behind every line, so state it explicitly rather than inherit it.
+   */
+  background: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 .source-banner {
@@ -1773,6 +1785,228 @@ select {
   background: var(--panel2);
   color: var(--text3);
   border-color: var(--border);
+}
+
+/*
+ * Hover preview for the Inspector's Functions list. Anchored to the viewport
+ * (fixed) because the list scrolls inside the Inspector rail; positioning is
+ * recomputed on each open and dismissed on scroll/resize.
+ */
+.fn-preview {
+  position: fixed;
+  z-index: 60;
+  /* Rust lines run long; too narrow a peek clips mid-identifier and forces a
+     horizontal scroll the popover cannot receive (pointer-events: none). */
+  max-width: min(720px, 62vw);
+  /* No min-width: CSS resolves min-width over max-width, so any floor here
+     would defeat the gutter clamp positionFnPreview applies and push the peek
+     back across the Functions list on narrow windows. */
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.fn-preview[hidden] {
+  display: none;
+}
+
+.fn-preview-head {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--text3);
+  margin-bottom: 7px;
+}
+
+.fn-preview-message {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text3);
+}
+
+/* The preview is a peek, not the Inspector's full source pane. */
+.fn-preview .source-well {
+  max-height: 260px;
+}
+
+/*
+ * rust-analyzer hover card for Inspector source spans — mirrors the editor's
+ * hover: signature in a code block, docs below. Viewport-anchored like
+ * .fn-preview and dismissed on scroll.
+ */
+.ra-hover {
+  position: fixed;
+  z-index: 70;
+  max-width: min(640px, 58vw);
+  max-height: 45vh;
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.ra-hover[hidden] {
+  display: none;
+}
+
+.ra-hover-code {
+  margin: 0 0 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--tok);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ra-hover-text {
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+
+.ra-hover-text code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--tok);
+}
+
+.ra-hover-sep {
+  margin: 7px 0;
+  border-top: 1px solid var(--border);
+}
+
+.ra-hover-heading {
+  margin: 6px 0 2px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--tok);
+}
+
+.ra-hover-list {
+  margin: 4px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+
+.ra-hover-list code,
+.ra-hover-heading code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--tok);
+}
+
+.ra-hover-text strong {
+  color: var(--tok);
+}
+
+/*
+ * rust-analyzer semantic token colors (VS Code Dark+/Light+ approximations).
+ * Overlaid onto sidecar lexical spans when the semantic bridge answers;
+ * unmatched spans keep their lexical color.
+ */
+.app[data-theme="dark"] {
+  --ra-fn: #dcdcaa;
+  --ra-type: #4ec9b0;
+  --ra-var: #9cdcfe;
+  --ra-kw: #569cd6;
+  --ra-const: #4fc1ff;
+  --ra-string: #ce9178;
+  --ra-comment: #6a9955;
+  --ra-number: #b5cea8;
+  --ra-lifetime: #569cd6;
+}
+
+.app[data-theme="light"] {
+  --ra-fn: #795e26;
+  --ra-type: #267f99;
+  --ra-var: #001080;
+  --ra-kw: #0000ff;
+  --ra-const: #0070c1;
+  --ra-string: #a31515;
+  --ra-comment: #008000;
+  --ra-number: #098658;
+  --ra-lifetime: #0000ff;
+}
+
+/* Unprefixed on purpose: the same palette colors the Inspector's source
+ * panes and the hover card's code blocks (which live outside .source-well). */
+.ra-function,
+.ra-method,
+.ra-macro,
+.ra-macroBang,
+.ra-derive {
+  color: var(--ra-fn);
+}
+
+.ra-struct,
+.ra-enum,
+.ra-union,
+.ra-typeAlias,
+.ra-trait,
+.ra-interface,
+.ra-class,
+.ra-builtinType,
+.ra-typeParameter,
+.ra-namespace,
+.ra-type {
+  color: var(--ra-type);
+}
+
+.ra-variable,
+.ra-parameter,
+.ra-property {
+  color: var(--ra-var);
+}
+
+.ra-keyword,
+.ra-selfKeyword,
+.ra-selfTypeKeyword {
+  color: var(--ra-kw);
+}
+
+.ra-enumMember,
+.ra-const,
+.ra-static {
+  color: var(--ra-const);
+}
+
+.ra-string {
+  color: var(--ra-string);
+}
+
+.ra-comment {
+  color: var(--ra-comment);
+}
+
+.ra-number {
+  color: var(--ra-number);
+}
+
+.ra-lifetime {
+  color: var(--ra-lifetime);
+  font-style: italic;
+}
+
+/* rust-analyzer convention: mutable bindings are underlined. */
+.ra-mod-mutable {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Identifiers in the source panes are click-to-jump (rust-analyzer). */
+.source-well span[data-b]:hover {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .tok-kw {
@@ -1973,6 +2207,16 @@ select {
   font-size: 10.5px;
   color: var(--text3);
   word-break: break-all;
+}
+
+/* Out-of-map target: clickable, but muted so in-map jumps stay the accent. */
+.call-target a.def-jump {
+  color: var(--text3);
+  border-bottom: 1px dotted currentColor;
+}
+
+.call-target a.def-jump:hover {
+  color: var(--text);
 }
 
 .call-target .reason {

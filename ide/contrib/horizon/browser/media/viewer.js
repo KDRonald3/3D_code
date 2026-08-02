@@ -1637,7 +1637,8 @@
         : ".") +
       ` Dropped: ${summary.external_dropped ?? 0} external, ` +
       `${summary.constructor_dropped ?? 0} constructor, ` +
-      `${summary.associated_dropped ?? 0} associated.`;
+      `${summary.associated_dropped ?? 0} associated, ` +
+      `${summary.local_dropped ?? 0} closure/binding.`;
     els.archSticky.hidden = nFiles === 0;
 
     els.canvasEmpty.hidden = nFiles > 0;
@@ -1766,9 +1767,23 @@
     return null;
   }
 
-  function renderTokens(tokens) {
+  const utf8Encoder = new TextEncoder();
+
+  /**
+   * Render `[text, class]` token pairs. When `source` carries the file path and
+   * the slice's base byte offset, each non-blank span is stamped with its
+   * absolute UTF-8 byte offset so the rust-analyzer hover bridge can map it
+   * back to a file position.
+   * @param {[string, string][]} tokens
+   * @param {{filePath?: string, baseByte?: number}} [source]
+   */
+  function renderTokens(tokens, source) {
     const pre = document.createElement("pre");
     pre.className = "source-well";
+    const track =
+      source && source.filePath && typeof source.baseByte === "number";
+    if (track) pre.dataset.raFile = source.filePath;
+    let byte = track ? source.baseByte : 0;
     const code = document.createElement("code");
     for (const pair of tokens || []) {
       const text = Array.isArray(pair) ? String(pair[0] ?? "") : "";
@@ -1776,6 +1791,8 @@
       const span = document.createElement("span");
       span.className = cls ? `tok-${cls}` : "tok";
       span.textContent = text;
+      if (track && text.trim()) span.dataset.b = String(byte);
+      if (track) byte += utf8Encoder.encode(text).length;
       code.appendChild(span);
     }
     pre.appendChild(code);
@@ -1810,10 +1827,10 @@
     btn.hidden = height <= SOURCE_CLAMP_PX + 2;
   }
 
-  function renderSourceFrame(tokens) {
+  function renderSourceFrame(tokens, source) {
     const frame = document.createElement("div");
     frame.className = "source-frame";
-    frame.appendChild(renderTokens(tokens));
+    frame.appendChild(renderTokens(tokens, source));
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1840,7 +1857,10 @@
     const metaEl = host._metaEl;
     if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
     if (state === "served") {
-      host.appendChild(renderSourceFrame(detail.tokens));
+      const frame = renderSourceFrame(detail.tokens, detail.source);
+      host.appendChild(frame);
+      const well = frame.querySelector(".source-well");
+      if (well && detail.source) void applyRaSemantics(well, detail.source);
       return;
     }
     const banner = document.createElement("div");
@@ -1853,6 +1873,581 @@
     if (state === "error" && detail.message) banner.textContent = detail.message;
     host.appendChild(banner);
   }
+
+  // --- Hover preview for the Inspector's Functions list --------------------
+  // Hovering a function shows its body without changing the selection. Tokens
+  // come from the same /api/source path the Inspector uses, so the highlighting
+  // is identical and the content hash still guards against a stale map.
+  const FN_PREVIEW_DELAY_MS = 320;
+  /** Below this the gutter is too narrow to render anything readable. */
+  const FN_PREVIEW_MIN_PX = 140;
+  const fnPreviewCache = new Map();
+  let fnPreviewEl = null;
+  let fnPreviewTimer = null;
+  let fnPreviewGen = 0;
+
+  function ensureFnPreviewEl() {
+    if (fnPreviewEl) return fnPreviewEl;
+    fnPreviewEl = document.createElement("div");
+    fnPreviewEl.className = "fn-preview";
+    fnPreviewEl.hidden = true;
+    // The Inspector sits inside gesture-bearing chrome; the popover must never
+    // read as a selection, pan or drag.
+    fnPreviewEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    // Must live inside `.app`: every theme token (--panel, --border, --tok-*) is
+    // declared on `.app[data-theme]`, so a document.body child renders with a
+    // transparent background and uncoloured source. `.app` sets no transform, so
+    // position: fixed still resolves against the viewport.
+    (document.querySelector(".app") || document.body).appendChild(fnPreviewEl);
+    return fnPreviewEl;
+  }
+
+  function hideFnPreview() {
+    fnPreviewGen++;
+    if (fnPreviewTimer) {
+      clearTimeout(fnPreviewTimer);
+      fnPreviewTimer = null;
+    }
+    if (fnPreviewEl) fnPreviewEl.hidden = true;
+  }
+
+  /** True when the anchor row is actually visible in its scroll container. */
+  function anchorOnScreen(anchor) {
+    const a = anchor.getBoundingClientRect();
+    return a.bottom > 0 && a.top < window.innerHeight && a.width > 0 && a.height > 0;
+  }
+
+  function positionFnPreview(anchor) {
+    const el = ensureFnPreviewEl();
+    el.hidden = false;
+    el.style.maxWidth = "";
+    const a = anchor.getBoundingClientRect();
+
+    // Float over the canvas, never over the layers tree: the tree is the user's
+    // place-marker and covering it defeats the point of previewing in place.
+    const aside = document.getElementById("left-aside");
+    const asideRect = aside ? aside.getBoundingClientRect() : null;
+    const minLeft = asideRect && asideRect.width > 0 ? asideRect.right + 8 : 8;
+
+    // Fit the gutter between the layers tree and the hovered row, so the peek
+    // covers neither the tree nor the Functions list it belongs to. Re-measure:
+    // constraining the width reflows the source and changes the height.
+    const gutter = Math.max(0, a.left - 12 - minLeft);
+    if (gutter < FN_PREVIEW_MIN_PX) {
+      // Too little room to show anything readable without covering the list.
+      el.hidden = true;
+      return;
+    }
+    // Always fit the gutter. Leaving the width unclamped lets the stylesheet's
+    // max-width win and push the peek back across the Functions list.
+    el.style.maxWidth = `${gutter}px`;
+    const p = el.getBoundingClientRect();
+
+    const left = Math.max(minLeft, a.left - p.width - 12);
+
+    let top = a.top;
+    if (top + p.height > window.innerHeight - 8) {
+      top = Math.max(8, window.innerHeight - p.height - 8);
+    }
+    el.style.left = `${Math.max(minLeft, left)}px`;
+    el.style.top = `${Math.max(8, top)}px`;
+  }
+
+  async function loadFnPreview(file, fn) {
+    const key = `${file.path}:${fn.byte_start ?? 0}:${fn.byte_end ?? 0}:${file.content_hash || ""}`;
+    if (fnPreviewCache.has(key)) return fnPreviewCache.get(key);
+    const req = {
+      path: String(file.path || ""),
+      byteStart: fn.byte_start ?? 0,
+      byteEnd: fn.byte_end ?? 0,
+      expectedHash: file.content_hash || "",
+    };
+    let result;
+    if (IDE_MODE && Bridge) {
+      const body = await Bridge.requestSource(req);
+      result =
+        body && Array.isArray(body.tokens)
+          ? { tokens: body.tokens }
+          : { error: (body && (body.message || body.error)) || "unavailable" };
+    } else {
+      const params = new URLSearchParams({
+        path: req.path,
+        byte_start: String(req.byteStart),
+        byte_end: String(req.byteEnd),
+        expected_hash: req.expectedHash,
+      });
+      const res = await fetch(`/api/source?${params}`);
+      const body = await res.json().catch(() => ({}));
+      result =
+        res.ok && Array.isArray(body.tokens)
+          ? { tokens: body.tokens }
+          : { error: body.message || body.error || `source request failed (${res.status})` };
+    }
+    // Only memoize successes: a transient sidecar outage must not stick.
+    if (!result.error) fnPreviewCache.set(key, result);
+    return result;
+  }
+
+  function setFnPreviewMessage(anchor, title, message) {
+    const el = ensureFnPreviewEl();
+    el.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "fn-preview-head";
+    head.textContent = title;
+    const body = document.createElement("div");
+    body.className = "fn-preview-message";
+    body.textContent = message;
+    el.append(head, body);
+    positionFnPreview(anchor);
+  }
+
+  function attachFnPreview(btn, file, fn) {
+    const name = fn.name || "function";
+    const open = async () => {
+      // A row scrolled out of the list has no sensible anchor; showing anyway
+      // parks the popover in a corner with nothing to point at.
+      if (!anchorOnScreen(btn)) return;
+      const gen = ++fnPreviewGen;
+      const early = sourceUnavailableReason(fn, file);
+      if (early) {
+        setFnPreviewMessage(btn, name, SOURCE_MESSAGES[early] || "Source unavailable.");
+        return;
+      }
+      setFnPreviewMessage(btn, name, "Loading source…");
+      try {
+        const result = await loadFnPreview(file, fn);
+        if (gen !== fnPreviewGen) return;
+        if (result.error) {
+          setFnPreviewMessage(btn, name, result.error);
+          return;
+        }
+        const el = ensureFnPreviewEl();
+        el.replaceChildren();
+        const head = document.createElement("div");
+        head.className = "fn-preview-head";
+        head.textContent = `${name} · ${lineSpanFromTokens(fn.line, result.tokens)}`;
+        const peekSource = {
+          filePath: file.path,
+          baseByte: fn.byte_start ?? 0,
+          byteEnd: fn.byte_end ?? 0,
+        };
+        const well = renderTokens(result.tokens, peekSource);
+        el.append(head, well);
+        positionFnPreview(btn);
+        void applyRaSemantics(well, peekSource);
+      } catch (e) {
+        if (gen !== fnPreviewGen) return;
+        setFnPreviewMessage(btn, name, String((e && e.message) || e));
+      }
+    };
+    btn.addEventListener("mouseenter", () => {
+      if (fnPreviewTimer) clearTimeout(fnPreviewTimer);
+      fnPreviewTimer = setTimeout(open, FN_PREVIEW_DELAY_MS);
+    });
+    btn.addEventListener("mouseleave", hideFnPreview);
+    // Keyboard parity: tabbing the list previews too.
+    btn.addEventListener("focus", open);
+    btn.addEventListener("blur", hideFnPreview);
+  }
+
+  // A popover anchored to viewport coordinates goes stale the moment anything
+  // scrolls or the selection re-renders the Inspector.
+  window.addEventListener("scroll", hideFnPreview, true);
+  window.addEventListener("resize", hideFnPreview);
+
+  // --- rust-analyzer hover in the Inspector source pane --------------------
+  // Spans rendered with byte offsets ask the host what rust-analyzer knows at
+  // that position, mirroring editor hover. IDE-only: the standalone viewer has
+  // no host to ask.
+  const RA_HOVER_DELAY_MS = 350;
+  const raHoverCache = new Map();
+  let raHoverEl = null;
+  let raHoverTimer = null;
+  let raHoverGen = 0;
+
+  function ensureRaHoverEl() {
+    if (raHoverEl) return raHoverEl;
+    raHoverEl = document.createElement("div");
+    raHoverEl.className = "ra-hover";
+    raHoverEl.hidden = true;
+    // Inside .app so the theme tokens (--panel/--border/--tok) resolve.
+    (document.querySelector(".app") || document.body).appendChild(raHoverEl);
+    return raHoverEl;
+  }
+
+  function hideRaHover() {
+    raHoverGen++;
+    if (raHoverTimer) {
+      clearTimeout(raHoverTimer);
+      raHoverTimer = null;
+    }
+    if (raHoverEl) raHoverEl.hidden = true;
+  }
+
+  const RUST_KEYWORDS = new Set([
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn",
+    "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
+    "let", "loop", "macro_rules", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+    "true", "type", "union", "unsafe", "use", "where", "while",
+  ]);
+  const RUST_PRIMITIVES = new Set([
+    "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize",
+    "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
+  ]);
+
+  /**
+   * Regex-lexed Rust for the hover card's code blocks. Signatures and doc
+   * examples only — the Inspector's own panes get real semantic tokens, but
+   * hover markdown arrives as text with nothing to anchor tokens to.
+   */
+  function highlightRust(code) {
+    const frag = document.createDocumentFragment();
+    const rx = /\/\/[^\n]*|r#*"[\s\S]*?"#*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^\\'])'|'[A-Za-z_]\w*|\d[\d_]*(?:\.[\d_]+)?(?:[iu](?:8|16|32|64|128|size)|f32|f64)?|[A-Za-z_]\w*|[\s\S]/g;
+    let plain = "";
+    const flushPlain = () => {
+      if (plain) frag.appendChild(document.createTextNode(plain));
+      plain = "";
+    };
+    let prevWord = "";
+    let m;
+    while ((m = rx.exec(code))) {
+      const t = m[0];
+      const isWord = /^[A-Za-z_]\w*$/.test(t);
+      let cls = null;
+      if (t.startsWith("//")) cls = "ra-comment";
+      else if (t.startsWith('"') || t.startsWith("r#") || t.startsWith('r"')) cls = "ra-string";
+      else if (t[0] === "'" && t.length >= 3 && t.endsWith("'")) cls = "ra-string";
+      else if (t[0] === "'") cls = "ra-lifetime";
+      else if (/^\d/.test(t)) cls = "ra-number";
+      else if (isWord) {
+        const rest = code.slice(rx.lastIndex);
+        if (RUST_KEYWORDS.has(t)) cls = "ra-keyword";
+        else if (RUST_PRIMITIVES.has(t)) cls = "ra-builtinType";
+        else if (prevWord === "fn") cls = "ra-function";
+        else if (/^[A-Z]/.test(t)) cls = "ra-struct";
+        else if (/^\s*\(/.test(rest)) cls = "ra-function";
+        else if (rest.startsWith("!")) cls = "ra-macro";
+        else cls = "ra-variable";
+      }
+      if (isWord) prevWord = t;
+      else if (t.trim()) prevWord = "";
+      if (cls) {
+        flushPlain();
+        const span = document.createElement("span");
+        span.className = `ra-tok ${cls}`;
+        span.textContent = t;
+        frag.appendChild(span);
+      } else {
+        plain += t;
+      }
+    }
+    flushPlain();
+    return frag;
+  }
+
+  /**
+   * Inline markdown into `el`: `code`, **bold**, *italic*. Links (including
+   * the command: URIs rust-analyzer emits) cannot navigate from this card —
+   * only their text is kept.
+   */
+  function renderInlineMarkdown(el, text) {
+    const src = String(text)
+      .replace(/\[([^\]]+)\]\(([^)]*)\)/g, "$1")
+      // Shortcut / intra-doc references ("[try_exists()]") — keep the text.
+      .replace(/\[([^[\]]+)\](?!\()/g, "$1");
+    const rx = /(`[^`]+`)|(\*\*[^*]+\*\*)|((?<=^|[\s(])_[^_\s](?:[^_]*[^_\s])?_(?=[\s).,;:!?]|$)|\*[^*\s](?:[^*]*[^*\s])?\*)/g;
+    let last = 0;
+    let m;
+    while ((m = rx.exec(src))) {
+      if (m.index > last) el.appendChild(document.createTextNode(src.slice(last, m.index)));
+      if (m[1]) {
+        const code = document.createElement("code");
+        code.textContent = m[1].slice(1, -1);
+        el.appendChild(code);
+      } else if (m[2]) {
+        const strong = document.createElement("strong");
+        strong.textContent = m[2].slice(2, -2);
+        el.appendChild(strong);
+      } else {
+        const em = document.createElement("em");
+        em.textContent = m[3].slice(1, -1);
+        el.appendChild(em);
+      }
+      last = m.index + m[0].length;
+    }
+    if (last < src.length) el.appendChild(document.createTextNode(src.slice(last)));
+  }
+
+  /**
+   * Markdown for rust-analyzer hover blocks, editor-hover style: highlighted
+   * fenced code, paragraphs re-joined across soft-wrapped lines (so links and
+   * emphasis spanning lines still parse), headings, bullet lists, dividers.
+   */
+  function renderRaMarkdown(blocks) {
+    const root = document.createElement("div");
+    root.className = "ra-hover-body";
+    for (const block of blocks) {
+      const lines = String(block).replace(/\r\n/g, "\n").split("\n");
+      let para = [];
+      let list = null;
+      const flushPara = () => {
+        if (!para.length) return;
+        const p = document.createElement("p");
+        p.className = "ra-hover-text";
+        renderInlineMarkdown(p, para.join(" "));
+        root.appendChild(p);
+        para = [];
+      };
+      const flushList = () => {
+        if (list) root.appendChild(list);
+        list = null;
+      };
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        const fence = line.match(/^\s*```(\w*)/);
+        if (fence) {
+          flushPara();
+          flushList();
+          const buf = [];
+          i++;
+          while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+          i++;
+          const codeText = buf.join("\n");
+          if (codeText.trim()) {
+            const pre = document.createElement("pre");
+            pre.className = "ra-hover-code";
+            const lang = (fence[1] || "rust").toLowerCase();
+            if (lang === "rust" || lang === "rs") pre.appendChild(highlightRust(codeText));
+            else pre.textContent = codeText;
+            root.appendChild(pre);
+          }
+          continue;
+        }
+        if (/^\s*([-*_]){3,}\s*$/.test(line)) {
+          flushPara();
+          flushList();
+          const hr = document.createElement("div");
+          hr.className = "ra-hover-sep";
+          root.appendChild(hr);
+          i++;
+          continue;
+        }
+        const heading = line.match(/^\s*#{1,6}\s+(.*)$/);
+        if (heading) {
+          flushPara();
+          flushList();
+          const h = document.createElement("p");
+          h.className = "ra-hover-heading";
+          renderInlineMarkdown(h, heading[1]);
+          root.appendChild(h);
+          i++;
+          continue;
+        }
+        const item = line.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/);
+        if (item) {
+          flushPara();
+          if (!list) {
+            list = document.createElement("ul");
+            list.className = "ra-hover-list";
+          }
+          const li = document.createElement("li");
+          renderInlineMarkdown(li, item[1] ? `${item[1]}. ${item[2]}` : item[2]);
+          list.appendChild(li);
+          i++;
+          continue;
+        }
+        if (!line.trim()) {
+          flushPara();
+          flushList();
+          i++;
+          continue;
+        }
+        // Reference-link definitions carry no prose — drop them.
+        if (/^\s*\[[^\]]+\]:\s+\S+/.test(line)) {
+          i++;
+          continue;
+        }
+        // Markdown soft wrap: adjacent non-blank lines are one paragraph.
+        para.push(line.trim());
+        i++;
+      }
+      flushPara();
+      flushList();
+    }
+    return root;
+  }
+
+  function positionRaHover(anchor) {
+    const el = ensureRaHoverEl();
+    el.hidden = false;
+    const a = anchor.getBoundingClientRect();
+    const p = el.getBoundingClientRect();
+    // Above the token, editor-style; below when there is no headroom.
+    let top = a.top - p.height - 8;
+    if (top < 8) top = Math.min(a.bottom + 8, window.innerHeight - p.height - 8);
+    let left = Math.min(a.left, window.innerWidth - p.width - 8);
+    el.style.left = `${Math.max(8, left)}px`;
+    el.style.top = `${Math.max(8, top)}px`;
+  }
+
+  // --- rust-analyzer semantic styling ---------------------------------------
+  // The sidecar's lexical classes are a rough cut; when rust-analyzer is up we
+  // overlay its semantic token types onto the same spans. Sidecar tokens lex
+  // identifiers whole, so byte-start alignment identifies the span to recolor;
+  // anything unmatched keeps the lexical color.
+  const raSemanticCache = new Map();
+
+  async function applyRaSemantics(pre, source) {
+    if (!(IDE_MODE && Bridge && Bridge.requestSemanticTokens)) return;
+    if (!source || !source.filePath || typeof source.byteEnd !== "number") return;
+    const key = `${source.filePath}:${source.baseByte}:${source.byteEnd}`;
+    try {
+      let res = raSemanticCache.get(key);
+      if (!res) {
+        res = await Bridge.requestSemanticTokens({
+          filePath: source.filePath,
+          byteStart: source.baseByte,
+          byteEnd: source.byteEnd,
+        });
+        // Cache answers only — "no_tokens" while indexing must not stick.
+        if (res && Array.isArray(res.tokens) && res.tokens.length) {
+          raSemanticCache.set(key, res);
+        }
+      }
+      if (!(res && Array.isArray(res.tokens) && res.tokens.length)) return;
+      if (!pre.isConnected) return;
+      const byStart = new Map(res.tokens.map((t) => [t.b, t]));
+      for (const span of pre.querySelectorAll("span[data-b]")) {
+        const t = byStart.get(Number(span.dataset.b));
+        if (!t) continue;
+        span.classList.add("ra-tok", `ra-${t.t}`);
+        if (t.m && t.m.includes("mutable")) span.classList.add("ra-mod-mutable");
+        if (t.m && t.m.includes("unsafe")) span.classList.add("ra-mod-unsafe");
+      }
+      pre.classList.add("ra-styled");
+    } catch (_) {
+      /* keep sidecar styling */
+    }
+  }
+
+  function attachRaHoverHandlers() {
+    if (!(IDE_MODE && Bridge && Bridge.requestHover)) return;
+    document.addEventListener("mouseover", (ev) => {
+      const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
+      if (!span) return;
+      const pre = span.closest(".source-well");
+      const filePath = pre && pre.dataset ? pre.dataset.raFile : null;
+      if (!filePath) return;
+      if (raHoverTimer) clearTimeout(raHoverTimer);
+      const gen = ++raHoverGen;
+      raHoverTimer = setTimeout(async () => {
+        const byteOffset = Number(span.dataset.b);
+        const key = `${filePath}:${byteOffset}`;
+        try {
+          let result = raHoverCache.get(key);
+          if (!result) {
+            result = await Bridge.requestHover({ filePath, byteOffset });
+            // Only memoize answers: "no_hover" while rust-analyzer is still
+            // indexing must not stick.
+            if (result && Array.isArray(result.contents) && result.contents.length) {
+              raHoverCache.set(key, result);
+            }
+          }
+          if (gen !== raHoverGen) return;
+          if (!(result && Array.isArray(result.contents) && result.contents.length)) return;
+          const el = ensureRaHoverEl();
+          el.replaceChildren(renderRaMarkdown(result.contents));
+          positionRaHover(span);
+        } catch (_) {
+          /* quiet: hover must never raise errors at the user */
+        }
+      }, RA_HOVER_DELAY_MS);
+    });
+    document.addEventListener("mouseout", (ev) => {
+      const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
+      if (span) hideRaHover();
+    });
+    window.addEventListener("scroll", hideRaHover, true);
+  }
+  attachRaHoverHandlers();
+
+  // --- rust-analyzer click-to-jump in the source panes ----------------------
+  // Clicking an identifier in a source pane jumps like the editor: a
+  // definition inside the map selects that function in Horizon; anything else
+  // opens the editor at the rust-analyzer definition. The panes are read-only,
+  // so a plain click is free for this; a drag-selection never triggers it.
+
+  /** Map function whose span in `relPath` contains the definition target. */
+  function fnIdAt(relPath, byteOffset, line) {
+    if (!relPath) return null;
+    const norm = (p) =>
+      String(p || "").replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+    // The host answers workspace-relative; the map may store absolute paths
+    // (or vice versa) — same file when one is a /-bounded suffix of the other.
+    const samePath = (a, b) =>
+      a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+    const wanted = norm(relPath);
+    for (const [id, entry] of fnIndex) {
+      if (!samePath(norm(entry.file && entry.file.path), wanted)) continue;
+      const fn = entry.fn || {};
+      const hasBytes =
+        typeof byteOffset === "number" &&
+        typeof fn.byte_start === "number" &&
+        typeof fn.byte_end === "number" &&
+        fn.byte_end > fn.byte_start;
+      if (hasBytes) {
+        if (byteOffset >= fn.byte_start && byteOffset < fn.byte_end) return id;
+      } else if (typeof line === "number" && fn.line === line) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  function attachRaJumpHandlers() {
+    if (!(IDE_MODE && Bridge && Bridge.requestDefinitionAt)) return;
+    // Capture phase: a click on source text is a jump gesture and nothing
+    // else — left to bubble, it reaches the canvas / Inspector chrome and
+    // re-selects the enclosing file node.
+    document.addEventListener("click", async (ev) => {
+      if (ev.button !== 0 || ev.shiftKey || ev.altKey) return;
+      const span =
+        ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
+      if (!span) return;
+      const pre = span.closest(".source-well");
+      const filePath = pre && pre.dataset ? pre.dataset.raFile : null;
+      if (!filePath) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return; // selecting text, not jumping
+      ev.preventDefault();
+      ev.stopPropagation();
+      const byteOffset = Number(span.dataset.b);
+      hideRaHover();
+      try {
+        const res = await Bridge.requestDefinitionAt({ filePath, byteOffset });
+        const target = res && res.target;
+        if (!target) return; // punctuation, literals, still indexing — stay put
+        hideFnPreview();
+        const inMap = fnIdAt(target.path, target.byteOffset, target.line);
+        if (inMap) {
+          selectFunction(inMap, { reveal: true, push: true });
+          return;
+        }
+        Bridge.openDefinition({
+          filePath,
+          callPath: null,
+          line: null,
+          byteStart: byteOffset,
+          byteEnd: byteOffset,
+        });
+      } catch (_) {
+        /* quiet like hover — never raise errors from a stray click */
+      }
+    }, true);
+  }
+  attachRaJumpHandlers();
 
   async function fetchSourceInto(host, file, fn) {
     const filePath = String(file.path || "");
@@ -1884,7 +2479,7 @@
         if (gen !== sourceFetchGen) return;
         if (body && Array.isArray(body.tokens)) {
           meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
-          setSourceHost(host, "served", { meta, tokens: body.tokens });
+          setSourceHost(host, "served", { meta, tokens: body.tokens, source: { filePath, baseByte: start, byteEnd: end } });
           return;
         }
         const err = (body && body.error) || "error";
@@ -1924,7 +2519,7 @@
       const body = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(body.tokens)) {
         meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
-        setSourceHost(host, "served", { meta, tokens: body.tokens });
+        setSourceHost(host, "served", { meta, tokens: body.tokens, source: { filePath, baseByte: start, byteEnd: end } });
         return;
       }
       const err = body.error || "error";
@@ -1952,12 +2547,44 @@
     a.textContent = id;
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
+      hideFnPreview();
       selectFunction(id, { reveal: true, push: true });
+    });
+    // Call-site targets are map functions, so hovering one peeks its source
+    // exactly like a Functions-list row.
+    const entry = fnIndex.get(String(id));
+    if (entry) attachFnPreview(a, entry.file, entry.fn);
+    return a;
+  }
+
+  /**
+   * Link for a target the map cannot jump to: hand the call site's own
+   * position to the host, which asks rust-analyzer for the definition.
+   * IDE-only — the standalone viewer has no host to ask.
+   */
+  function defLink(label, site, file) {
+    if (!(IDE_MODE && Bridge && Bridge.openDefinition && site && file && file.path)) {
+      return null;
+    }
+    const a = document.createElement("a");
+    a.href = "#";
+    a.className = "raw-id def-jump";
+    a.title = "Not in the map — go to definition (rust-analyzer)";
+    a.textContent = label;
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      Bridge.openDefinition({
+        filePath: file.path,
+        callPath: site.call_path || null,
+        line: site.line ?? null,
+        byteStart: site.byte_start ?? null,
+        byteEnd: site.byte_end ?? null,
+      });
     });
     return a;
   }
 
-  function renderTargetEl(target) {
+  function renderTargetEl(target, site, file) {
     const wrap = document.createElement("div");
     wrap.className = "call-target";
     if (!target || !target.kind) {
@@ -1969,11 +2596,15 @@
       wrap.appendChild(document.createTextNode("→ "));
       if (fnIndex.has(id)) wrap.appendChild(jumpLink(id));
       else {
-        const span = document.createElement("span");
-        span.className = "raw-id";
-        span.title = "No matching function in this map";
-        span.textContent = id;
-        wrap.appendChild(span);
+        const jump = defLink(id, site, file);
+        if (jump) wrap.appendChild(jump);
+        else {
+          const span = document.createElement("span");
+          span.className = "raw-id";
+          span.title = "No matching function in this map";
+          span.textContent = id;
+          wrap.appendChild(span);
+        }
       }
       return wrap;
     }
@@ -1992,7 +2623,8 @@
       for (const raw of candidates) {
         const id = String(raw);
         const li = document.createElement("li");
-        if (fnIndex.has(id)) li.appendChild(jumpLink(id));
+        const candidateJump = fnIndex.has(id) ? jumpLink(id) : defLink(id, site, file);
+        if (candidateJump) li.appendChild(candidateJump);
         else {
           const span = document.createElement("span");
           span.className = "raw-id";
@@ -2013,6 +2645,12 @@
         el.textContent = reason;
         wrap.appendChild(el);
       }
+      // The map cannot name the target, but rust-analyzer at the call site can.
+      const jump = defLink("go to definition", site, file);
+      if (jump) {
+        wrap.appendChild(document.createTextNode(" "));
+        wrap.appendChild(jump);
+      }
       return wrap;
     }
     wrap.innerHTML = `<span class="raw-id">${escapeHtml(JSON.stringify(target))}</span>`;
@@ -2028,7 +2666,7 @@
     );
   }
 
-  function renderCallSites(sites) {
+  function renderCallSites(sites, file) {
     const list = document.createElement("ul");
     list.className = "call-list";
     for (const site of sites || []) {
@@ -2063,7 +2701,7 @@
 
       li.appendChild(line);
       li.appendChild(path);
-      li.appendChild(renderTargetEl(site.target));
+      li.appendChild(renderTargetEl(site.target, site, file));
       list.appendChild(li);
     }
     return list;
@@ -2822,7 +3460,8 @@
     const droppedExt = summary.external_dropped ?? 0;
     const droppedCtor = summary.constructor_dropped ?? 0;
     const droppedAssoc = summary.associated_dropped ?? 0;
-    const droppedTotal = droppedExt + droppedCtor + droppedAssoc;
+    const droppedLocal = summary.local_dropped ?? 0;
+    const droppedTotal = droppedExt + droppedCtor + droppedAssoc + droppedLocal;
 
     if (banner) {
       banner.hidden = false;
@@ -2842,7 +3481,7 @@
       }
       const dropText =
         droppedTotal > 0
-          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated — deliberate exclusions, not resolution failures.`
+          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated, ${droppedLocal} closure/binding — deliberate exclusions, not resolution failures.`
           : `No deliberate drops in this map summary.`;
       banner.innerHTML =
         `<div>${escapeHtml(head)}</div>` +
@@ -3133,7 +3772,7 @@
         root.appendChild(
           makeSection(
             "Call sites · references",
-            renderCallSites(sites),
+            renderCallSites(sites, fnEntry.file),
             `${sites.length}`
           )
         );
@@ -3167,9 +3806,11 @@
         btn.innerHTML =
           `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
           `<span class="fn-list-meta">L${fn.line}</span>`;
-        btn.addEventListener("click", () =>
-          selectFunction(fn.id, { reveal: false, push: true })
-        );
+        btn.addEventListener("click", () => {
+          hideFnPreview();
+          selectFunction(fn.id, { reveal: false, push: true });
+        });
+        attachFnPreview(btn, node.file, fn);
         li.appendChild(btn);
         ul.appendChild(li);
       }
@@ -3186,7 +3827,7 @@
       root.appendChild(
         makeSection(
           "Module-level call sites",
-          renderCallSites(modSites),
+          renderCallSites(modSites, node.file),
           `${modSites.length}`
         )
       );

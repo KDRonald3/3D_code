@@ -24,6 +24,8 @@ export const HORIZON_CMD_HIDE = 'horizon.map.hide';
 export const HORIZON_CMD_CHOOSE_FOLDER = 'horizon.map.chooseFolder';
 /** Trigger suggest in the active Inspection editor (informational completions). */
 export const HORIZON_CMD_TRIGGER_INSPECT_SUGGEST = 'horizon.inspection.triggerSuggest';
+/** Explicit opt-in to the inspection editor; Map selection never opens it. */
+export const HORIZON_CMD_OPEN_SELECTED_FUNCTION = 'horizon.inspection.openSelectedFunction';
 
 /** Context key: an Inspection editor is the active text editor. */
 export const HORIZON_INSPECTION_ACTIVE_CONTEXT = 'horizon.inspection.active';
@@ -50,6 +52,33 @@ export type WebviewToHostMessage =
 		type: 'selectFile';
 		fileId: string | null;
 		filePath?: string | null;
+	}
+	| {
+		type: 'openDefinition';
+		filePath: string | null;
+		callPath?: string | null;
+		line?: number | null;
+		byteStart?: number | null;
+		byteEnd?: number | null;
+	}
+	| {
+		type: 'hoverRequest';
+		requestId: string;
+		filePath: string | null;
+		byteOffset: number | null;
+	}
+	| {
+		type: 'definitionAtRequest';
+		requestId: string;
+		filePath: string | null;
+		byteOffset: number | null;
+	}
+	| {
+		type: 'semanticTokensRequest';
+		requestId: string;
+		filePath: string | null;
+		byteStart: number | null;
+		byteEnd: number | null;
 	}
 	| { type: 'openMapJson' }
 	| { type: 'chooseFolder' }
@@ -85,6 +114,31 @@ export type HostToWebviewMessage =
 		error?: string;
 		errorKind?: string;
 		message?: string;
+	}
+	| {
+		type: 'hoverResult';
+		requestId: string;
+		/** Markdown blocks from the hover providers (rust-analyzer). */
+		contents?: string[];
+		error?: string;
+	}
+	| {
+		type: 'definitionAtResult';
+		requestId: string;
+		/**
+		 * Where the definition lives. `path` is workspace-relative (forward
+		 * slashes) when the target is inside the workspace, else null — the
+		 * webview only needs it to recognise in-map functions.
+		 */
+		target?: { path: string | null; line: number; byteOffset: number | null };
+		error?: string;
+	}
+	| {
+		type: 'semanticTokensResult';
+		requestId: string;
+		/** Absolute UTF-8 byte start, byte length, token type, modifiers. */
+		tokens?: { b: number; l: number; t: string; m?: string[] }[];
+		error?: string;
 	}
 	| { type: 'error'; message: string };
 

@@ -30,7 +30,8 @@ import './media/horizonSidebar.css';
  */
 export class HorizonSidebarView extends ViewPane {
 
-	static readonly ID = 'workbench.view.horizon';
+	/** Must differ from the container id (`workbench.view.horizon`), which owns the open command. */
+	static readonly ID = 'workbench.view.horizon.main';
 	static readonly TITLE: ILocalizedString = localize2('horizonSidebar', 'Horizon');
 
 	private _folderLabel: HTMLElement | undefined;
