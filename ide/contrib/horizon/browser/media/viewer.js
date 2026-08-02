@@ -1766,9 +1766,23 @@
     return null;
   }
 
-  function renderTokens(tokens) {
+  const utf8Encoder = new TextEncoder();
+
+  /**
+   * Render `[text, class]` token pairs. When `source` carries the file path and
+   * the slice's base byte offset, each non-blank span is stamped with its
+   * absolute UTF-8 byte offset so the rust-analyzer hover bridge can map it
+   * back to a file position.
+   * @param {[string, string][]} tokens
+   * @param {{filePath?: string, baseByte?: number}} [source]
+   */
+  function renderTokens(tokens, source) {
     const pre = document.createElement("pre");
     pre.className = "source-well";
+    const track =
+      source && source.filePath && typeof source.baseByte === "number";
+    if (track) pre.dataset.raFile = source.filePath;
+    let byte = track ? source.baseByte : 0;
     const code = document.createElement("code");
     for (const pair of tokens || []) {
       const text = Array.isArray(pair) ? String(pair[0] ?? "") : "";
@@ -1776,6 +1790,8 @@
       const span = document.createElement("span");
       span.className = cls ? `tok-${cls}` : "tok";
       span.textContent = text;
+      if (track && text.trim()) span.dataset.b = String(byte);
+      if (track) byte += utf8Encoder.encode(text).length;
       code.appendChild(span);
     }
     pre.appendChild(code);
@@ -1810,10 +1826,10 @@
     btn.hidden = height <= SOURCE_CLAMP_PX + 2;
   }
 
-  function renderSourceFrame(tokens) {
+  function renderSourceFrame(tokens, source) {
     const frame = document.createElement("div");
     frame.className = "source-frame";
-    frame.appendChild(renderTokens(tokens));
+    frame.appendChild(renderTokens(tokens, source));
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1840,7 +1856,10 @@
     const metaEl = host._metaEl;
     if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
     if (state === "served") {
-      host.appendChild(renderSourceFrame(detail.tokens));
+      const frame = renderSourceFrame(detail.tokens, detail.source);
+      host.appendChild(frame);
+      const well = frame.querySelector(".source-well");
+      if (well && detail.source) void applyRaSemantics(well, detail.source);
       return;
     }
     const banner = document.createElement("div");
@@ -2006,8 +2025,15 @@
         const head = document.createElement("div");
         head.className = "fn-preview-head";
         head.textContent = `${name} · ${lineSpanFromTokens(fn.line, result.tokens)}`;
-        el.append(head, renderTokens(result.tokens));
+        const peekSource = {
+          filePath: file.path,
+          baseByte: fn.byte_start ?? 0,
+          byteEnd: fn.byte_end ?? 0,
+        };
+        const well = renderTokens(result.tokens, peekSource);
+        el.append(head, well);
         positionFnPreview(btn);
+        void applyRaSemantics(well, peekSource);
       } catch (e) {
         if (gen !== fnPreviewGen) return;
         setFnPreviewMessage(btn, name, String((e && e.message) || e));
@@ -2027,6 +2053,174 @@
   // scrolls or the selection re-renders the Inspector.
   window.addEventListener("scroll", hideFnPreview, true);
   window.addEventListener("resize", hideFnPreview);
+
+  // --- rust-analyzer hover in the Inspector source pane --------------------
+  // Spans rendered with byte offsets ask the host what rust-analyzer knows at
+  // that position, mirroring editor hover. IDE-only: the standalone viewer has
+  // no host to ask.
+  const RA_HOVER_DELAY_MS = 350;
+  const raHoverCache = new Map();
+  let raHoverEl = null;
+  let raHoverTimer = null;
+  let raHoverGen = 0;
+
+  function ensureRaHoverEl() {
+    if (raHoverEl) return raHoverEl;
+    raHoverEl = document.createElement("div");
+    raHoverEl.className = "ra-hover";
+    raHoverEl.hidden = true;
+    // Inside .app so the theme tokens (--panel/--border/--tok) resolve.
+    (document.querySelector(".app") || document.body).appendChild(raHoverEl);
+    return raHoverEl;
+  }
+
+  function hideRaHover() {
+    raHoverGen++;
+    if (raHoverTimer) {
+      clearTimeout(raHoverTimer);
+      raHoverTimer = null;
+    }
+    if (raHoverEl) raHoverEl.hidden = true;
+  }
+
+  /**
+   * Minimal markdown for rust-analyzer hover blocks: fenced code becomes a
+   * highlighted-ish <pre>, `inline code` becomes <code>, --- a divider,
+   * everything else escaped text.
+   */
+  function renderRaMarkdown(blocks) {
+    const root = document.createElement("div");
+    root.className = "ra-hover-body";
+    for (const block of blocks) {
+      const parts = String(block).split(/```(?:rust)?\n?/);
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        if (!part.trim()) continue;
+        if (i % 2 === 1) {
+          const pre = document.createElement("pre");
+          pre.className = "ra-hover-code";
+          pre.textContent = part.replace(/\n$/, "");
+          root.appendChild(pre);
+        } else {
+          for (const line of part.split("\n")) {
+            if (!line.trim()) continue;
+            if (/^\s*-{3,}\s*$/.test(line)) {
+              const hr = document.createElement("div");
+              hr.className = "ra-hover-sep";
+              root.appendChild(hr);
+              continue;
+            }
+            const p = document.createElement("p");
+            p.className = "ra-hover-text";
+            // Markdown links (rust-analyzer emits command: URIs) cannot work
+            // inside this card — keep just the text.
+            const plain = line.replace(/\[([^\]]+)\]\(([^)]*)\)/g, "$1");
+            const withCode = escapeHtml(plain).replace(
+              /`([^`]+)`/g,
+              "<code>$1</code>"
+            );
+            p.innerHTML = withCode;
+            root.appendChild(p);
+          }
+        }
+      }
+    }
+    return root;
+  }
+
+  function positionRaHover(anchor) {
+    const el = ensureRaHoverEl();
+    el.hidden = false;
+    const a = anchor.getBoundingClientRect();
+    const p = el.getBoundingClientRect();
+    // Above the token, editor-style; below when there is no headroom.
+    let top = a.top - p.height - 8;
+    if (top < 8) top = Math.min(a.bottom + 8, window.innerHeight - p.height - 8);
+    let left = Math.min(a.left, window.innerWidth - p.width - 8);
+    el.style.left = `${Math.max(8, left)}px`;
+    el.style.top = `${Math.max(8, top)}px`;
+  }
+
+  // --- rust-analyzer semantic styling ---------------------------------------
+  // The sidecar's lexical classes are a rough cut; when rust-analyzer is up we
+  // overlay its semantic token types onto the same spans. Sidecar tokens lex
+  // identifiers whole, so byte-start alignment identifies the span to recolor;
+  // anything unmatched keeps the lexical color.
+  const raSemanticCache = new Map();
+
+  async function applyRaSemantics(pre, source) {
+    if (!(IDE_MODE && Bridge && Bridge.requestSemanticTokens)) return;
+    if (!source || !source.filePath || typeof source.byteEnd !== "number") return;
+    const key = `${source.filePath}:${source.baseByte}:${source.byteEnd}`;
+    try {
+      let res = raSemanticCache.get(key);
+      if (!res) {
+        res = await Bridge.requestSemanticTokens({
+          filePath: source.filePath,
+          byteStart: source.baseByte,
+          byteEnd: source.byteEnd,
+        });
+        // Cache answers only — "no_tokens" while indexing must not stick.
+        if (res && Array.isArray(res.tokens) && res.tokens.length) {
+          raSemanticCache.set(key, res);
+        }
+      }
+      if (!(res && Array.isArray(res.tokens) && res.tokens.length)) return;
+      if (!pre.isConnected) return;
+      const byStart = new Map(res.tokens.map((t) => [t.b, t]));
+      for (const span of pre.querySelectorAll("span[data-b]")) {
+        const t = byStart.get(Number(span.dataset.b));
+        if (!t) continue;
+        span.classList.add("ra-tok", `ra-${t.t}`);
+        if (t.m && t.m.includes("mutable")) span.classList.add("ra-mod-mutable");
+        if (t.m && t.m.includes("unsafe")) span.classList.add("ra-mod-unsafe");
+      }
+      pre.classList.add("ra-styled");
+    } catch (_) {
+      /* keep sidecar styling */
+    }
+  }
+
+  function attachRaHoverHandlers() {
+    if (!(IDE_MODE && Bridge && Bridge.requestHover)) return;
+    document.addEventListener("mouseover", (ev) => {
+      const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
+      if (!span) return;
+      const pre = span.closest(".source-well");
+      const filePath = pre && pre.dataset ? pre.dataset.raFile : null;
+      if (!filePath) return;
+      if (raHoverTimer) clearTimeout(raHoverTimer);
+      const gen = ++raHoverGen;
+      raHoverTimer = setTimeout(async () => {
+        const byteOffset = Number(span.dataset.b);
+        const key = `${filePath}:${byteOffset}`;
+        try {
+          let result = raHoverCache.get(key);
+          if (!result) {
+            result = await Bridge.requestHover({ filePath, byteOffset });
+            // Only memoize answers: "no_hover" while rust-analyzer is still
+            // indexing must not stick.
+            if (result && Array.isArray(result.contents) && result.contents.length) {
+              raHoverCache.set(key, result);
+            }
+          }
+          if (gen !== raHoverGen) return;
+          if (!(result && Array.isArray(result.contents) && result.contents.length)) return;
+          const el = ensureRaHoverEl();
+          el.replaceChildren(renderRaMarkdown(result.contents));
+          positionRaHover(span);
+        } catch (_) {
+          /* quiet: hover must never raise errors at the user */
+        }
+      }, RA_HOVER_DELAY_MS);
+    });
+    document.addEventListener("mouseout", (ev) => {
+      const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
+      if (span) hideRaHover();
+    });
+    window.addEventListener("scroll", hideRaHover, true);
+  }
+  attachRaHoverHandlers();
 
   async function fetchSourceInto(host, file, fn) {
     const filePath = String(file.path || "");
@@ -2058,7 +2252,7 @@
         if (gen !== sourceFetchGen) return;
         if (body && Array.isArray(body.tokens)) {
           meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
-          setSourceHost(host, "served", { meta, tokens: body.tokens });
+          setSourceHost(host, "served", { meta, tokens: body.tokens, source: { filePath, baseByte: start, byteEnd: end } });
           return;
         }
         const err = (body && body.error) || "error";
@@ -2098,7 +2292,7 @@
       const body = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(body.tokens)) {
         meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
-        setSourceHost(host, "served", { meta, tokens: body.tokens });
+        setSourceHost(host, "served", { meta, tokens: body.tokens, source: { filePath, baseByte: start, byteEnd: end } });
         return;
       }
       const err = body.error || "error";
@@ -2126,12 +2320,44 @@
     a.textContent = id;
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
+      hideFnPreview();
       selectFunction(id, { reveal: true, push: true });
+    });
+    // Call-site targets are map functions, so hovering one peeks its source
+    // exactly like a Functions-list row.
+    const entry = fnIndex.get(String(id));
+    if (entry) attachFnPreview(a, entry.file, entry.fn);
+    return a;
+  }
+
+  /**
+   * Link for a target the map cannot jump to: hand the call site's own
+   * position to the host, which asks rust-analyzer for the definition.
+   * IDE-only — the standalone viewer has no host to ask.
+   */
+  function defLink(label, site, file) {
+    if (!(IDE_MODE && Bridge && Bridge.openDefinition && site && file && file.path)) {
+      return null;
+    }
+    const a = document.createElement("a");
+    a.href = "#";
+    a.className = "raw-id def-jump";
+    a.title = "Not in the map — go to definition (rust-analyzer)";
+    a.textContent = label;
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      Bridge.openDefinition({
+        filePath: file.path,
+        callPath: site.call_path || null,
+        line: site.line ?? null,
+        byteStart: site.byte_start ?? null,
+        byteEnd: site.byte_end ?? null,
+      });
     });
     return a;
   }
 
-  function renderTargetEl(target) {
+  function renderTargetEl(target, site, file) {
     const wrap = document.createElement("div");
     wrap.className = "call-target";
     if (!target || !target.kind) {
@@ -2143,11 +2369,15 @@
       wrap.appendChild(document.createTextNode("→ "));
       if (fnIndex.has(id)) wrap.appendChild(jumpLink(id));
       else {
-        const span = document.createElement("span");
-        span.className = "raw-id";
-        span.title = "No matching function in this map";
-        span.textContent = id;
-        wrap.appendChild(span);
+        const jump = defLink(id, site, file);
+        if (jump) wrap.appendChild(jump);
+        else {
+          const span = document.createElement("span");
+          span.className = "raw-id";
+          span.title = "No matching function in this map";
+          span.textContent = id;
+          wrap.appendChild(span);
+        }
       }
       return wrap;
     }
@@ -2166,7 +2396,8 @@
       for (const raw of candidates) {
         const id = String(raw);
         const li = document.createElement("li");
-        if (fnIndex.has(id)) li.appendChild(jumpLink(id));
+        const candidateJump = fnIndex.has(id) ? jumpLink(id) : defLink(id, site, file);
+        if (candidateJump) li.appendChild(candidateJump);
         else {
           const span = document.createElement("span");
           span.className = "raw-id";
@@ -2187,6 +2418,12 @@
         el.textContent = reason;
         wrap.appendChild(el);
       }
+      // The map cannot name the target, but rust-analyzer at the call site can.
+      const jump = defLink("go to definition", site, file);
+      if (jump) {
+        wrap.appendChild(document.createTextNode(" "));
+        wrap.appendChild(jump);
+      }
       return wrap;
     }
     wrap.innerHTML = `<span class="raw-id">${escapeHtml(JSON.stringify(target))}</span>`;
@@ -2202,7 +2439,7 @@
     );
   }
 
-  function renderCallSites(sites) {
+  function renderCallSites(sites, file) {
     const list = document.createElement("ul");
     list.className = "call-list";
     for (const site of sites || []) {
@@ -2237,7 +2474,7 @@
 
       li.appendChild(line);
       li.appendChild(path);
-      li.appendChild(renderTargetEl(site.target));
+      li.appendChild(renderTargetEl(site.target, site, file));
       list.appendChild(li);
     }
     return list;
@@ -3307,7 +3544,7 @@
         root.appendChild(
           makeSection(
             "Call sites · references",
-            renderCallSites(sites),
+            renderCallSites(sites, fnEntry.file),
             `${sites.length}`
           )
         );
@@ -3362,7 +3599,7 @@
       root.appendChild(
         makeSection(
           "Module-level call sites",
-          renderCallSites(modSites),
+          renderCallSites(modSites, node.file),
           `${modSites.length}`
         )
       );

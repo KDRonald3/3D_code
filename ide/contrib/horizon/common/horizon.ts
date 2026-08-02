@@ -53,6 +53,27 @@ export type WebviewToHostMessage =
 		fileId: string | null;
 		filePath?: string | null;
 	}
+	| {
+		type: 'openDefinition';
+		filePath: string | null;
+		callPath?: string | null;
+		line?: number | null;
+		byteStart?: number | null;
+		byteEnd?: number | null;
+	}
+	| {
+		type: 'hoverRequest';
+		requestId: string;
+		filePath: string | null;
+		byteOffset: number | null;
+	}
+	| {
+		type: 'semanticTokensRequest';
+		requestId: string;
+		filePath: string | null;
+		byteStart: number | null;
+		byteEnd: number | null;
+	}
 	| { type: 'openMapJson' }
 	| { type: 'chooseFolder' }
 	| {
@@ -87,6 +108,20 @@ export type HostToWebviewMessage =
 		error?: string;
 		errorKind?: string;
 		message?: string;
+	}
+	| {
+		type: 'hoverResult';
+		requestId: string;
+		/** Markdown blocks from the hover providers (rust-analyzer). */
+		contents?: string[];
+		error?: string;
+	}
+	| {
+		type: 'semanticTokensResult';
+		requestId: string;
+		/** Absolute UTF-8 byte start, byte length, token type, modifiers. */
+		tokens?: { b: number; l: number; t: string; m?: string[] }[];
+		error?: string;
 	}
 	| { type: 'error'; message: string };
 

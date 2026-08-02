@@ -194,6 +194,42 @@ function Repair-HorizonWorkbenchCsp {
     }
 }
 
+function Ensure-HorizonRustAnalyzer {
+    param($Roots, [string[]]$ExtraArgs)
+    # rust-analyzer is not bundled: a fresh product has an empty extensions dir,
+    # so hover / go-to-definition / semantic highlighting are silently absent.
+    # Install it from Open VSX (product.json gallery) on first launch.
+    $extDir = Join-Path $env:USERPROFILE ".horizon-ide\extensions"
+    $extDirArgs = @()
+    if ($ExtraArgs) {
+        for ($i = 0; $i -lt $ExtraArgs.Count; $i++) {
+            $arg = $ExtraArgs[$i]
+            if ($arg -like "--extensions-dir=*") {
+                $extDir = $arg.Substring("--extensions-dir=".Length).Trim('"')
+                $extDirArgs = @("--extensions-dir", $extDir)
+            } elseif ($arg -eq "--extensions-dir" -and $i + 1 -lt $ExtraArgs.Count) {
+                $extDir = $ExtraArgs[$i + 1]
+                $extDirArgs = @("--extensions-dir", $extDir)
+            }
+        }
+    }
+    if ((Test-Path $extDir) -and (Get-ChildItem $extDir -Directory -Filter "rust-lang.rust-analyzer-*" -ErrorAction SilentlyContinue)) {
+        Write-HorizonInfo "rust-analyzer present in $extDir"
+        return
+    }
+    $codeBat = Join-Path $Roots.CodeOssDir "scripts\code.bat"
+    Write-HorizonInfo "installing rust-lang.rust-analyzer (first launch) -> $extDir"
+    Push-Location $Roots.CodeOssDir
+    try {
+        & $codeBat --install-extension rust-lang.rust-analyzer @extDirArgs | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-HorizonWarn "rust-analyzer install failed (offline?) - hover/definitions/semantic highlighting unavailable until installed"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Assert-HorizonWindowsPrereqs {
     if (-not (Test-HorizonCommand "git")) {
         Throw-Horizon "Git is required. Install from https://git-scm.com/download/win"
@@ -649,6 +685,7 @@ Export-ModuleMember -Function @(
     "Resolve-HorizonServerBinary",
     "Test-HorizonWindowsBuildTools",
     "Get-HorizonVisualStudioInstallPath",
+    "Ensure-HorizonRustAnalyzer",
     "Repair-HorizonPreinstallVs2026",
     "Repair-HorizonWorkbenchCsp",
     "Resolve-HorizonNodeGyp",

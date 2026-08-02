@@ -239,6 +239,49 @@ export class HorizonMapEditorPane extends EditorPane {
 				// here stole focus from the Map and fired a notification per click.
 				// Opening code stays tied to selecting a *function*.
 				break;
+			case 'hoverRequest': {
+				try {
+					const contents = await this._inspectionService.hoverAt(msg.filePath, msg.byteOffset ?? null);
+					this.post(contents && contents.length
+						? { type: 'hoverResult', requestId: msg.requestId, contents }
+						: { type: 'hoverResult', requestId: msg.requestId, error: 'no_hover' });
+				} catch (err) {
+					this.post({
+						type: 'hoverResult',
+						requestId: msg.requestId,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+				break;
+			}
+			case 'semanticTokensRequest': {
+				try {
+					const tokens = await this._inspectionService.semanticTokensFor(
+						msg.filePath,
+						msg.byteStart ?? null,
+						msg.byteEnd ?? null
+					);
+					this.post(tokens && tokens.length
+						? { type: 'semanticTokensResult', requestId: msg.requestId, tokens }
+						: { type: 'semanticTokensResult', requestId: msg.requestId, error: 'no_tokens' });
+				} catch (err) {
+					this.post({
+						type: 'semanticTokensResult',
+						requestId: msg.requestId,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+				break;
+			}
+			case 'openDefinition':
+				await this._inspectionService.openDefinitionAt({
+					filePath: msg.filePath,
+					callPath: msg.callPath ?? null,
+					line: msg.line ?? null,
+					byteStart: msg.byteStart ?? null,
+					byteEnd: msg.byteEnd ?? null,
+				});
+				break;
 			case 'openMapJson':
 				await this.openMapJson();
 				break;

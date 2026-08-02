@@ -232,6 +232,21 @@ else:
 PY
 }
 
+# rust-analyzer is not bundled: a fresh product has an empty extensions dir, so
+# hover / go-to-definition / semantic highlighting are silently absent. Install
+# from Open VSX (product.json gallery) on first launch.
+horizon_ensure_rust_analyzer() {
+  local ext_dir="${HOME}/.horizon-ide/extensions"
+  if compgen -G "${ext_dir}/rust-lang.rust-analyzer-*" > /dev/null 2>&1; then
+    horizon_info "rust-analyzer present in ${ext_dir}"
+    return 0
+  fi
+  horizon_info "installing rust-lang.rust-analyzer (first launch) -> ${ext_dir}"
+  if ! (cd "${HORIZON_CODE_OSS_DIR}" && ./scripts/code.sh --install-extension rust-lang.rust-analyzer); then
+    horizon_warn "rust-analyzer install failed (offline?) — hover/definitions/semantic highlighting unavailable until installed"
+  fi
+}
+
 horizon_sync_extension() {
   # DEPRECATED: never copy the extension package into Code-OSS — it conflicts
   # with the built-in workbench contrib (duplicate commands / viewlet ids).

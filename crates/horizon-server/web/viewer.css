@@ -1901,6 +1901,17 @@ select {
   word-break: break-all;
 }
 
+/* Out-of-map target: clickable, but muted so in-map jumps stay the accent.
+   (def-jump links are emitted by the IDE viewer only; kept for parity.) */
+.call-target a.def-jump {
+  color: var(--text3);
+  border-bottom: 1px dotted currentColor;
+}
+
+.call-target a.def-jump:hover {
+  color: var(--text);
+}
+
 .call-target .reason {
   display: block;
   margin-top: 3px;

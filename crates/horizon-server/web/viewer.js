@@ -1739,9 +1739,23 @@
     return null;
   }
 
-  function renderTokens(tokens) {
+  const utf8Encoder = new TextEncoder();
+
+  /**
+   * Render `[text, class]` token pairs. When `source` carries the file path and
+   * the slice's base byte offset, each non-blank span is stamped with its
+   * absolute UTF-8 byte offset. (The IDE viewer uses this for the
+   * rust-analyzer hover bridge; kept in step here for fork parity.)
+   * @param {[string, string][]} tokens
+   * @param {{filePath?: string, baseByte?: number}} [source]
+   */
+  function renderTokens(tokens, source) {
     const pre = document.createElement("pre");
     pre.className = "source-well";
+    const track =
+      source && source.filePath && typeof source.baseByte === "number";
+    if (track) pre.dataset.raFile = source.filePath;
+    let byte = track ? source.baseByte : 0;
     const code = document.createElement("code");
     for (const pair of tokens || []) {
       const text = Array.isArray(pair) ? String(pair[0] ?? "") : "";
@@ -1749,6 +1763,8 @@
       const span = document.createElement("span");
       span.className = cls ? `tok-${cls}` : "tok";
       span.textContent = text;
+      if (track && text.trim()) span.dataset.b = String(byte);
+      if (track) byte += utf8Encoder.encode(text).length;
       code.appendChild(span);
     }
     pre.appendChild(code);
@@ -1783,10 +1799,10 @@
     btn.hidden = height <= SOURCE_CLAMP_PX + 2;
   }
 
-  function renderSourceFrame(tokens) {
+  function renderSourceFrame(tokens, source) {
     const frame = document.createElement("div");
     frame.className = "source-frame";
-    frame.appendChild(renderTokens(tokens));
+    frame.appendChild(renderTokens(tokens, source));
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1813,7 +1829,7 @@
     const metaEl = host._metaEl;
     if (metaEl && detail.meta != null) metaEl.textContent = detail.meta;
     if (state === "served") {
-      host.appendChild(renderSourceFrame(detail.tokens));
+      host.appendChild(renderSourceFrame(detail.tokens, detail.source));
       return;
     }
     const banner = document.createElement("div");
@@ -2011,7 +2027,7 @@
       const body = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(body.tokens)) {
         meta = `${name} · ${lineSpanFromTokens(fn.line, body.tokens)}`;
-        setSourceHost(host, "served", { meta, tokens: body.tokens });
+        setSourceHost(host, "served", { meta, tokens: body.tokens, source: { filePath, baseByte: start } });
         return;
       }
       const err = body.error || "error";
@@ -2039,8 +2055,13 @@
     a.textContent = id;
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
+      hideFnPreview();
       selectFunction(id, { reveal: true, push: true });
     });
+    // Call-site targets are map functions, so hovering one peeks its source
+    // exactly like a Functions-list row.
+    const entry = fnIndex.get(String(id));
+    if (entry) attachFnPreview(a, entry.file, entry.fn);
     return a;
   }
 

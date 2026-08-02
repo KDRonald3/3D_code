@@ -54,6 +54,8 @@ Ensure-HorizonSidecar -Roots $Roots
 
 Initialize-HorizonNode
 
+Ensure-HorizonRustAnalyzer -Roots $Roots -ExtraArgs $ExtraArgs
+
 $codeBat = Join-Path $Roots.CodeOssDir "scripts\code.bat"
 Write-HorizonInfo "launching built Horizon IDE ($codeBat)"
 if ($env:HORIZON_SIDECAR_URL) {

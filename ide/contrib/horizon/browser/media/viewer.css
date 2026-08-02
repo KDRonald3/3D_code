@@ -1831,6 +1831,149 @@ select {
   max-height: 260px;
 }
 
+/*
+ * rust-analyzer hover card for Inspector source spans — mirrors the editor's
+ * hover: signature in a code block, docs below. Viewport-anchored like
+ * .fn-preview and dismissed on scroll.
+ */
+.ra-hover {
+  position: fixed;
+  z-index: 70;
+  max-width: min(640px, 58vw);
+  max-height: 45vh;
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.ra-hover[hidden] {
+  display: none;
+}
+
+.ra-hover-code {
+  margin: 0 0 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--tok);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ra-hover-text {
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+
+.ra-hover-text code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--tok);
+}
+
+.ra-hover-sep {
+  margin: 7px 0;
+  border-top: 1px solid var(--border);
+}
+
+/*
+ * rust-analyzer semantic token colors (VS Code Dark+/Light+ approximations).
+ * Overlaid onto sidecar lexical spans when the semantic bridge answers;
+ * unmatched spans keep their lexical color.
+ */
+.app[data-theme="dark"] {
+  --ra-fn: #dcdcaa;
+  --ra-type: #4ec9b0;
+  --ra-var: #9cdcfe;
+  --ra-kw: #569cd6;
+  --ra-const: #4fc1ff;
+  --ra-string: #ce9178;
+  --ra-comment: #6a9955;
+  --ra-number: #b5cea8;
+  --ra-lifetime: #569cd6;
+}
+
+.app[data-theme="light"] {
+  --ra-fn: #795e26;
+  --ra-type: #267f99;
+  --ra-var: #001080;
+  --ra-kw: #0000ff;
+  --ra-const: #0070c1;
+  --ra-string: #a31515;
+  --ra-comment: #008000;
+  --ra-number: #098658;
+  --ra-lifetime: #0000ff;
+}
+
+.source-well .ra-function,
+.source-well .ra-method,
+.source-well .ra-macro,
+.source-well .ra-macroBang,
+.source-well .ra-derive {
+  color: var(--ra-fn);
+}
+
+.source-well .ra-struct,
+.source-well .ra-enum,
+.source-well .ra-union,
+.source-well .ra-typeAlias,
+.source-well .ra-trait,
+.source-well .ra-interface,
+.source-well .ra-class,
+.source-well .ra-builtinType,
+.source-well .ra-typeParameter,
+.source-well .ra-namespace,
+.source-well .ra-type {
+  color: var(--ra-type);
+}
+
+.source-well .ra-variable,
+.source-well .ra-parameter,
+.source-well .ra-property {
+  color: var(--ra-var);
+}
+
+.source-well .ra-keyword,
+.source-well .ra-selfKeyword,
+.source-well .ra-selfTypeKeyword {
+  color: var(--ra-kw);
+}
+
+.source-well .ra-enumMember,
+.source-well .ra-const,
+.source-well .ra-static {
+  color: var(--ra-const);
+}
+
+.source-well .ra-string {
+  color: var(--ra-string);
+}
+
+.source-well .ra-comment {
+  color: var(--ra-comment);
+}
+
+.source-well .ra-number {
+  color: var(--ra-number);
+}
+
+.source-well .ra-lifetime {
+  color: var(--ra-lifetime);
+  font-style: italic;
+}
+
+/* rust-analyzer convention: mutable bindings are underlined. */
+.source-well .ra-mod-mutable {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .tok-kw {
   color: var(--tok-kw);
 }
@@ -2029,6 +2172,16 @@ select {
   font-size: 10.5px;
   color: var(--text3);
   word-break: break-all;
+}
+
+/* Out-of-map target: clickable, but muted so in-map jumps stay the accent. */
+.call-target a.def-jump {
+  color: var(--text3);
+  border-bottom: 1px dotted currentColor;
+}
+
+.call-target a.def-jump:hover {
+  color: var(--text);
 }
 
 .call-target .reason {
