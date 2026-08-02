@@ -80,9 +80,9 @@ Sync-HorizonContrib -Roots $Roots -Mode $mode
 
 Write-HorizonInfo "bootstrap complete"
 Write-Host ""
-Write-Host "Next (one path → full product with Horizon built in):"
-Write-Host "  .\ide\scripts\windows\Build.ps1      # sync contrib + gulp compile-client → out\"
+Write-Host "Next (one path -> full product with Horizon built in):"
+Write-Host "  .\ide\scripts\windows\Build.ps1      # sync contrib + gulp compile-client -> out\"
 Write-Host "  .\ide\scripts\windows\Run.ps1 [workspace]"
 Write-Host "  .\ide\scripts\windows\Dev.ps1 [workspace]   # fast: sync + compile-client + run"
 Write-Host ""
-Write-Host "If native Windows compile is too heavy, use WSL2 — see ide\WINDOWS.md"
+Write-Host "If native Windows compile is too heavy, use WSL2 - see ide\WINDOWS.md"

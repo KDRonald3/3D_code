@@ -3,7 +3,7 @@
 # Before launch:
 #   - Re-apply product overlay (branding)
 #   - If contrib sources are newer than out\, auto sync + gulp compile-client
-#   - Start / attach horizon-server sidecar (URL → ide\.cache\horizon-sidecar.url)
+#   - Start / attach horizon-server sidecar (URL -> ide\.cache\horizon-sidecar.url)
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
@@ -27,7 +27,7 @@ Run:
   .\ide\scripts\windows\Build.ps1
 Then re-run .\ide\scripts\windows\Run.ps1
 
-Or use WSL2 — see ide\WINDOWS.md
+Or use WSL2 - see ide\WINDOWS.md
 "@
 }
 
@@ -35,13 +35,13 @@ Ensure-HorizonProductOverlay -Roots $Roots
 
 $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
 if (Test-HorizonContribOutStale -Roots $Roots) {
-    Write-HorizonWarn "contrib newer than out\ — syncing and running gulp compile-client"
+    Write-HorizonWarn "contrib newer than out\ - syncing and running gulp compile-client"
     Sync-HorizonContrib -Roots $Roots -Mode $mode
     Invoke-HorizonCompileClient -Roots $Roots
 } else {
     Sync-HorizonContrib -Roots $Roots -Mode $mode
     if (-not (Test-Path (Get-HorizonContribOutJs -Roots $Roots))) {
-        Write-HorizonWarn "Horizon contrib JS missing under out\ — compiling client"
+        Write-HorizonWarn "Horizon contrib JS missing under out\ - compiling client"
         Invoke-HorizonCompileClient -Roots $Roots
     }
 }

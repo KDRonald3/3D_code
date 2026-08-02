@@ -1,4 +1,4 @@
-# Fast iteration on Windows: sync contrib → gulp compile-client → run.
+# Fast iteration on Windows: sync contrib -> gulp compile-client -> run.
 # Use after editing ide\contrib\horizon\ when a full Build already exists.
 [CmdletBinding()]
 param(

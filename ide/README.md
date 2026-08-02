@@ -47,13 +47,15 @@ Inside the IDE you get:
 
 | Requirement | Notes |
 |---|---|
-| **Linux x64** or **Windows** | Linux: bash scripts. Windows: PowerShell under [`scripts/windows/`](scripts/windows/) |
+| **Linux x64** or **Windows** | Linux: bash scripts. Windows: PowerShell under [`scripts/windows/`](scripts/windows/) — see **[`WINDOWS.md`](WINDOWS.md)** |
 | **Node.js ≥ 22.15.1** | Upstream Code-OSS rejects older 22.x; [nvm](https://github.com/nvm-sh/nvm) on Linux / official installer on Windows |
 | **npm** | Bundled with Node; yarn is not supported by modern vscode |
 | **Git** | Shallow clone of `microsoft/vscode` |
 | **Build tools** | Linux: `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev`. Windows: **Visual Studio 2026** (preferred) or 2022 + **Desktop development with C++** |
 | **Rust / Cargo** (analyse) | Needed for `horizon-server` sidecar |
 | **RAM / disk** | Full compile wants ~8–15 GB RAM and several GB under `ide/code-oss/` |
+
+Optional for the Electron GUI on Linux: `libnss3`, `libgbm1`, `libgtk-3-0`, `libasound2t64`, and a display (`DISPLAY` or `xvfb-run`).
 
 Pinned upstream ref: [`product/vscode-ref.txt`](product/vscode-ref.txt) (override with `HORIZON_VSCODE_REF`).
 

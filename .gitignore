@@ -23,6 +23,9 @@
 # Compiled report; the .tex source is tracked instead
 /docs/horizon-report.pdf
 
+# Map produced by a local sidecar analyse run (GET /api/map)
+/horizon-map.json
+
 # Horizon IDE — Code-OSS checkout, caches, and local build artifacts
 /ide/code-oss/
 /ide/vendor/

@@ -3,13 +3,13 @@
 # Always:
 #   1. Re-apply product.json overlay (branding)
 #   2. Patch VS 2026 into Code-OSS preinstall.js
-#   3. Sync ide\contrib\horizon → code-oss\src\vs\workbench\contrib\horizon
+#   3. Sync ide\contrib\horizon -> code-oss\src\vs\workbench\contrib\horizon
 #   4. npm ci when needed
 #   5. Compile so Horizon TS lands in out\ (Map buttons, analyse, folder picker)
 #
 # Compile mode ($env:HORIZON_COMPILE_MODE):
-#   client (default) — npx gulp compile-client (workbench src → out/, includes contrib)
-#   full — npm run compile (client + extensions; heavier / flakier)
+#   client (default) - npx gulp compile-client (workbench src -> out/, includes contrib)
+#   full - npm run compile (client + extensions; heavier / flakier)
 #
 # After a successful build: .\ide\scripts\windows\Run.ps1
 [CmdletBinding()]
@@ -19,6 +19,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# npm writes warnings to stderr; do not treat native stderr as terminating errors (PS 7+).
+if (Test-Path variable:/PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 Import-Module "$PSScriptRoot\HorizonIde.psm1" -Force
 $Roots = Get-HorizonRoots
@@ -46,8 +50,25 @@ Push-Location $Roots.CodeOssDir
 try {
     $env:npm_config_fund = "false"
     $env:npm_config_audit = "false"
+    # Cursor/sandbox sometimes injects npm_config_devdir; strip unknown configs that spam stderr.
+    if ($env:npm_config_devdir) { Remove-Item Env:npm_config_devdir -ErrorAction SilentlyContinue }
     if (-not $env:NODE_OPTIONS) {
         $env:NODE_OPTIONS = "--max-old-space-size=8192"
+    }
+    # The Playwright browser download stalls behind many proxies and is not needed to build.
+    if (-not $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD) {
+        $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+    }
+    # npm's bundled node-gyp (<= 11.x) only knows Visual Studio up to 2022; VS 2026 needs node-gyp 12+.
+    if (-not $env:npm_config_node_gyp) {
+        $modernGyp = Resolve-HorizonNodeGyp
+        if ($modernGyp) {
+            $env:npm_config_node_gyp = $modernGyp
+            Write-HorizonInfo "npm_config_node_gyp -> $modernGyp"
+        }
+    }
+    if (-not $env:GYP_MSVS_VERSION -and $env:npm_config_msvs_version) {
+        $env:GYP_MSVS_VERSION = $env:npm_config_msvs_version
     }
 
     $needInstall = $false
@@ -61,12 +82,13 @@ try {
     }
 
     if ($needInstall) {
-        Write-HorizonInfo "installing npm dependencies (this takes a while)…"
+        Write-HorizonInfo "installing npm dependencies (this takes a while)..."
         if ((Test-Path "node_modules") -and -not (Test-Path "node_modules\gulp") -and -not (Test-Path "node_modules\.bin\gulp.cmd")) {
             Remove-Item -Recurse -Force "node_modules"
         }
         if (Test-Path "package-lock.json") {
-            npm ci --no-fund --no-audit
+            # npm.cmd, not npm: npm.ps1 throws under Set-StrictMode -Version Latest.
+            npm.cmd ci --no-fund --no-audit
             if ($LASTEXITCODE -ne 0) {
                 Throw-Horizon @"
 npm ci failed.
@@ -74,16 +96,16 @@ npm ci failed.
 Common Windows causes:
   - Missing Visual Studio 2026/2022 C++ tools (Desktop development with C++)
   - Node < 22.15.1
-  - Using yarn (unsupported — use npm)
+  - Using yarn (unsupported - use npm)
   - Path too long / antivirus locking node_modules
 
 See ide\WINDOWS.md
 "@
             }
         } else {
-            npm install --no-fund --no-audit
+            npm.cmd install --no-fund --no-audit
             if ($LASTEXITCODE -ne 0) {
-                Throw-Horizon "npm install failed — see errors above and ide\WINDOWS.md"
+                Throw-Horizon "npm install failed - see errors above and ide\WINDOWS.md"
             }
         }
     } else {
@@ -103,7 +125,7 @@ if (-not (Test-HorizonBuiltIn -Roots $Roots)) {
     Throw-Horizon "build finished but Horizon is not present under out\ (missing electron main or contrib JS)"
 }
 
-Write-HorizonInfo "build complete — Horizon Map contrib is compiled into out\"
+Write-HorizonInfo "build complete - Horizon Map contrib is compiled into out\"
 Write-Host ""
 Write-Host "Launch with:"
 Write-Host "  .\ide\scripts\windows\Run.ps1 [workspace-path]"

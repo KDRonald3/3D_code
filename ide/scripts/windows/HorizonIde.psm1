@@ -70,7 +70,13 @@ function Initialize-HorizonNode {
         }
         Write-HorizonWarn "Node.js v$ver is below 22.15.1; continuing because VSCODE_SKIP_NODE_VERSION_CHECK is set"
     }
-    Write-HorizonInfo "Node v$ver ($((Get-Command node).Source)), npm $(npm -v)"
+    if ($major -gt 22) {
+        # Node 24+ V8 headers demand C++20; pinned native deps (tree-sitter 0.22.x) still force /std:c++17.
+        Write-HorizonWarn "Node v$ver is newer than the Code-OSS pin (see ide\code-oss\.nvmrc). Native modules such as tree-sitter fail to compile on Node 24+ ('C++20 or later required'). Use Node 22.x."
+    }
+    # npm.ps1 (npm 10.x) reads $MyInvocation.Statement, which throws under Set-StrictMode -Version Latest.
+    $npmVersion = & npm.cmd -v
+    Write-HorizonInfo "Node v$ver ($((Get-Command node).Source)), npm $npmVersion"
 }
 
 function Test-HorizonWindowsBuildTools {
@@ -93,6 +99,24 @@ function Get-HorizonVisualStudioInstallPath {
         -property installationPath `
         -latest 2>$null
     if ($found) { return [string]$found }
+    return $null
+}
+
+function Resolve-HorizonNodeGyp {
+    # Returns a node-gyp >= 12 entry point (VS 2026 aware), or $null when only the bundled one exists.
+    $nodeDir = Split-Path -Parent (Get-Command node).Source
+    $candidates = @(
+        (Join-Path $nodeDir "node_modules\node-gyp\bin\node-gyp.js"),
+        (Join-Path $env:APPDATA "npm\node_modules\node-gyp\bin\node-gyp.js")
+    )
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path $candidate)) { continue }
+        $version = (& node $candidate --version 2>$null)
+        if (-not $version) { continue }
+        $major = 0
+        [void][int]::TryParse(($version -replace '^v', '' -split '\.')[0], [ref]$major)
+        if ($major -ge 12) { return $candidate }
+    }
     return $null
 }
 
@@ -137,7 +161,7 @@ Also accepted: Visual Studio 2022 Build Tools with the same workload.
 
 Or see: https://github.com/microsoft/vscode/wiki/How-to-Contribute#prerequisites
 
-If this is too heavy, use WSL2 instead — see ide\WINDOWS.md
+If this is too heavy, use WSL2 instead - see ide\WINDOWS.md
 "@
     }
     $vsPath = Get-HorizonVisualStudioInstallPath
@@ -145,14 +169,25 @@ If this is too heavy, use WSL2 instead — see ide\WINDOWS.md
         Write-HorizonInfo "MSVC toolchain: $vsPath"
         # Help older node-gyp / electron tooling that still keys off vs2022_install.
         if (-not $env:vs2022_install -and -not $env:vs2026_install) {
-            if ($vsPath -match '\\2026\\') {
+            # VS 2026 installs under ...\18\<edition>, not ...\2026\<edition>.
+            if ($vsPath -match '\\2026\\' -or $vsPath -match '\\18\\') {
                 $env:vs2026_install = $vsPath
-                # Some node-gyp versions only honor vs2022_install — point it at 2026 too.
+                # Some node-gyp versions only honor vs2022_install - point it at 2026 too.
                 $env:vs2022_install = $vsPath
                 Write-HorizonInfo "set vs2026_install / vs2022_install -> $vsPath"
             } elseif ($vsPath -match '\\2022\\') {
                 $env:vs2022_install = $vsPath
                 Write-HorizonInfo "set vs2022_install -> $vsPath"
+            }
+        }
+        if (-not $env:npm_config_msvs_version) {
+            if ($env:vs2026_install) {
+                $env:npm_config_msvs_version = "2026"
+            } elseif ($env:vs2022_install) {
+                $env:npm_config_msvs_version = "2022"
+            }
+            if ($env:npm_config_msvs_version) {
+                $env:GYP_MSVS_VERSION = $env:npm_config_msvs_version
             }
         }
     }
@@ -250,7 +285,7 @@ function Wire-HorizonContribImport {
         return
     }
 
-    $block = "`r`n// Horizon Map (built-in workbench contrib — not an extension)`r`n$importLine`r`n"
+    $block = "`r`n// Horizon Map (built-in workbench contrib - not an extension)`r`n$importLine`r`n"
     $contribHdr = $text.IndexOf("--- workbench contributions")
     $needle = "//#endregion"
     $idx = -1
@@ -286,7 +321,7 @@ function Wire-HorizonDesktopContribImport {
         Write-HorizonInfo "Horizon electron sidecar already registered in workbench.desktop.main.ts"
         return
     }
-    $block = "`r`n// Horizon Map sidecar (desktop spawn/attach — electron-browser)`r`n$importLine`r`n"
+    $block = "`r`n// Horizon Map sidecar (desktop spawn/attach - electron-browser)`r`n$importLine`r`n"
     $needle = "export { main }"
     $idx = $text.IndexOf($needle)
     if ($idx -lt 0) {
@@ -339,8 +374,9 @@ function Invoke-HorizonCompileClient {
     }
     Push-Location $Roots.CodeOssDir
     try {
-        Write-HorizonInfo "compiling client (npx gulp compile-client) — includes contrib/horizon → out\"
-        npx gulp compile-client
+        Write-HorizonInfo "compiling client (npx gulp compile-client) - includes contrib/horizon -> out\"
+        # .cmd, not the PowerShell shim: npx.ps1 throws under Set-StrictMode -Version Latest.
+        npx.cmd gulp compile-client
         if ($LASTEXITCODE -ne 0) {
             Throw-Horizon "gulp compile-client failed"
         }
@@ -362,8 +398,8 @@ function Invoke-HorizonCompileFull {
     }
     Push-Location $Roots.CodeOssDir
     try {
-        Write-HorizonInfo "compiling Code-OSS (npm run compile — full client + extensions)…"
-        npm run compile
+        Write-HorizonInfo "compiling Code-OSS (npm run compile - full client + extensions)..."
+        npm.cmd run compile
         if ($LASTEXITCODE -ne 0) {
             Throw-Horizon "npm run compile failed. Tip: default Build uses compile-client (HORIZON_COMPILE_MODE=client)."
         }
@@ -409,7 +445,7 @@ function Ensure-HorizonContribCompiled {
     param($Roots)
     $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
     if (Test-HorizonContribOutStale -Roots $Roots) {
-        Write-HorizonWarn "contrib sources newer than out/ (or contrib JS missing) — sync + compile-client"
+        Write-HorizonWarn "contrib sources newer than out/ (or contrib JS missing) - sync + compile-client"
         Sync-HorizonContrib -Roots $Roots -Mode $mode
         Invoke-HorizonCompileClient -Roots $Roots
     } else {
@@ -495,7 +531,7 @@ function Ensure-HorizonSidecar {
 
     $bin = Resolve-HorizonServerBinary -Roots $Roots
     if (-not $bin) {
-        Write-HorizonWarn "horizon-server not found — Map analyse needs: cargo build -p horizon-server --release"
+        Write-HorizonWarn "horizon-server not found - Map analyse needs: cargo build -p horizon-server --release"
         Write-HorizonWarn "or .\ide\scripts\windows\Run-Sidecar.ps1 (writes $($Roots.SidecarUrlFile))"
         return
     }
@@ -516,7 +552,7 @@ function Ensure-HorizonSidecar {
 
     for ($i = 0; $i -lt 50; $i++) {
         if ($proc.HasExited) {
-            Write-HorizonWarn "sidecar exited early — see $($Roots.SidecarLogFile) / $errLog"
+            Write-HorizonWarn "sidecar exited early - see $($Roots.SidecarLogFile) / $errLog"
             return
         }
         if (Test-Path $Roots.SidecarLogFile) {
@@ -533,7 +569,7 @@ function Ensure-HorizonSidecar {
         }
         Start-Sleep -Milliseconds 100
     }
-    Write-HorizonWarn "sidecar started (pid=$($proc.Id)) but URL not seen yet — check $($Roots.SidecarLogFile)"
+    Write-HorizonWarn "sidecar started (pid=$($proc.Id)) but URL not seen yet - check $($Roots.SidecarLogFile)"
 }
 
 Export-ModuleMember -Function @(
@@ -563,5 +599,6 @@ Export-ModuleMember -Function @(
     "Test-HorizonWindowsBuildTools",
     "Get-HorizonVisualStudioInstallPath",
     "Repair-HorizonPreinstallVs2026",
+    "Resolve-HorizonNodeGyp",
     "Test-HorizonCommand"
 )
