@@ -22,3 +22,14 @@
 
 # Compiled report; the .tex source is tracked instead
 /docs/horizon-report.pdf
+
+# Horizon IDE — Code-OSS checkout, caches, and local build artifacts
+/ide/code-oss/
+/ide/vendor/
+/ide/.cache/
+/ide/**/node_modules/
+/ide/**/out/
+# Ship compiled horizon-map so vendor sync can activate without a local tsc.
+!/ide/extensions/horizon-map/out/
+!/ide/extensions/horizon-map/out/**
+/ide/**/*.vsix

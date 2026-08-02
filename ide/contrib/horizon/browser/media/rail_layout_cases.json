@@ -1,0 +1,197 @@
+{
+  "description": "Shared fixture table for rail aggressor arithmetic. Exercised by Rust (rail_layout tests) and by HorizonViewer.runRailFixtureTable in the browser. Single source of expected values — both implementations must match.",
+  "left_min": 180,
+  "right_min": 240,
+  "cases": [
+    {
+      "name": "right_idle_defaults",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 316,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 236,
+      "expect_right": 316
+    },
+    {
+      "name": "right_grow_to_canvas_zero",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 1364,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 236,
+      "expect_right": 1364
+    },
+    {
+      "name": "right_squeeze_left_to_min",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 1420,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 180,
+      "expect_right": 1420
+    },
+    {
+      "name": "right_hard_stop_past_max",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 2000,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 180,
+      "expect_right": 1420
+    },
+    {
+      "name": "right_restore_home_at_canvas_zero",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 1364,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 236,
+      "expect_right": 1364
+    },
+    {
+      "name": "right_shrink_opens_one_canvas_px",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 1363,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 236,
+      "expect_right": 1363
+    },
+    {
+      "name": "right_with_left_collapsed",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 800,
+      "other_open": false,
+      "other_home": 236,
+      "expect_left": 0,
+      "expect_right": 800
+    },
+    {
+      "name": "right_clamped_to_min",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 10,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 236,
+      "expect_right": 240
+    },
+    {
+      "name": "right_narrow_window_zero_canvas",
+      "side": "right",
+      "workspace": 500,
+      "desired": 400,
+      "other_open": true,
+      "other_home": 236,
+      "expect_left": 180,
+      "expect_right": 320
+    },
+    {
+      "name": "left_idle_defaults",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 236,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 236,
+      "expect_right": 316
+    },
+    {
+      "name": "left_grow_to_canvas_zero",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 1284,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 1284,
+      "expect_right": 316
+    },
+    {
+      "name": "left_squeeze_right_to_min",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 1360,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 1360,
+      "expect_right": 240
+    },
+    {
+      "name": "left_hard_stop_past_max",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 2000,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 1360,
+      "expect_right": 240
+    },
+    {
+      "name": "left_restore_home_at_canvas_zero",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 1284,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 1284,
+      "expect_right": 316
+    },
+    {
+      "name": "left_with_right_collapsed",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 900,
+      "other_open": false,
+      "other_home": 316,
+      "expect_left": 900,
+      "expect_right": 0
+    },
+    {
+      "name": "left_clamped_to_min",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 10,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 180,
+      "expect_right": 316
+    },
+    {
+      "name": "left_mid_squeeze_partial",
+      "side": "left",
+      "workspace": 1600,
+      "desired": 1300,
+      "other_open": true,
+      "other_home": 316,
+      "expect_left": 1300,
+      "expect_right": 300
+    },
+    {
+      "name": "right_remembered_home_200",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 1420,
+      "other_open": true,
+      "other_home": 200,
+      "expect_left": 180,
+      "expect_right": 1420
+    },
+    {
+      "name": "right_restore_custom_home_200",
+      "side": "right",
+      "workspace": 1600,
+      "desired": 1400,
+      "other_open": true,
+      "other_home": 200,
+      "expect_left": 200,
+      "expect_right": 1400
+    }
+  ]
+}
