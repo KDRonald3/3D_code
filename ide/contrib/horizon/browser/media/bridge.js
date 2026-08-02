@@ -32,6 +32,9 @@
   /** @type {Map<string, {resolve: Function, reject: Function, timer: number}>} */
   const pendingSemantic = new Map();
 
+  /** @type {Map<string, {resolve: Function, reject: Function, timer: number}>} */
+  const pendingDefinition = new Map();
+
   /** @type {null | ((result: object) => void)} */
   let analyseWaiter = null;
 
@@ -74,6 +77,15 @@
       if (pending) {
         clearTimeout(pending.timer);
         pendingSemantic.delete(String(msg.requestId));
+        pending.resolve(msg);
+      }
+    }
+
+    if (msg.type === "definitionAtResult" && msg.requestId) {
+      const pending = pendingDefinition.get(String(msg.requestId));
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingDefinition.delete(String(msg.requestId));
         pending.resolve(msg);
       }
     }
@@ -211,6 +223,31 @@
         pendingHover.set(requestId, { resolve, reject, timer });
         post({
           type: "hoverRequest",
+          requestId,
+          filePath: String(req.filePath || ""),
+          byteOffset: Number(req.byteOffset) || 0,
+        });
+      });
+    },
+
+    /**
+     * Ask the host where the definition of the symbol at a byte offset lives,
+     * without opening anything. Resolves to { target?: {path, line,
+     * byteOffset}, error?: string } — `path` is workspace-relative or null.
+     * @param {{filePath: string, byteOffset: number}} req
+     * @param {number} [timeoutMs]
+     * @returns {Promise<object>}
+     */
+    requestDefinitionAt(req, timeoutMs = 10000) {
+      const requestId = `def-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingDefinition.delete(requestId);
+          reject(new Error("definition request timed out"));
+        }, timeoutMs);
+        pendingDefinition.set(requestId, { resolve, reject, timer });
+        post({
+          type: "definitionAtRequest",
           requestId,
           filePath: String(req.filePath || ""),
           byteOffset: Number(req.byteOffset) || 0,

@@ -68,6 +68,12 @@ export type WebviewToHostMessage =
 		byteOffset: number | null;
 	}
 	| {
+		type: 'definitionAtRequest';
+		requestId: string;
+		filePath: string | null;
+		byteOffset: number | null;
+	}
+	| {
 		type: 'semanticTokensRequest';
 		requestId: string;
 		filePath: string | null;
@@ -114,6 +120,17 @@ export type HostToWebviewMessage =
 		requestId: string;
 		/** Markdown blocks from the hover providers (rust-analyzer). */
 		contents?: string[];
+		error?: string;
+	}
+	| {
+		type: 'definitionAtResult';
+		requestId: string;
+		/**
+		 * Where the definition lives. `path` is workspace-relative (forward
+		 * slashes) when the target is inside the workspace, else null — the
+		 * webview only needs it to recognise in-map functions.
+		 */
+		target?: { path: string | null; line: number; byteOffset: number | null };
 		error?: string;
 	}
 	| {

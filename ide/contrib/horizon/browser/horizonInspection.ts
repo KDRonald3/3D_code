@@ -94,6 +94,17 @@ export interface IHorizonInspectionService {
 	hoverAt(filePath: string | null, byteOffset: number | null): Promise<string[] | undefined>;
 
 	/**
+	 * Where the definition of the symbol at a UTF-8 byte offset lives, without
+	 * opening anything. `path` is workspace-relative (forward slashes) when the
+	 * target is in the workspace, else null. Quiet like hoverAt — the webview
+	 * uses this to decide between an in-map jump and `openDefinitionAt`.
+	 */
+	definitionAt(
+		filePath: string | null,
+		byteOffset: number | null
+	): Promise<{ path: string | null; line: number; byteOffset: number | null } | undefined>;
+
+	/**
 	 * rust-analyzer semantic tokens covering `[byteStart, byteEnd)` of a
 	 * workspace file, as absolute UTF-8 byte ranges. Quiet like hoverAt.
 	 */
@@ -362,6 +373,82 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 				}
 			}
 			return undefined;
+		} finally {
+			ref.dispose();
+		}
+	}
+
+	async definitionAt(
+		filePath: string | null,
+		byteOffset: number | null
+	): Promise<{ path: string | null; line: number; byteOffset: number | null } | undefined> {
+		if (!filePath || typeof byteOffset !== 'number' || byteOffset < 0) {
+			return undefined;
+		}
+		const uri = await this.resolveWorkspaceFile(filePath, true);
+		if (!uri) {
+			return undefined;
+		}
+		const ref = await this.textModelService.createModelReference(uri);
+		try {
+			const model = ref.object.textEditorModel;
+			const raw = await this.fileService.readFile(uri);
+			const pos = clampPosition(byteOffsetToPosition(raw.value.buffer, byteOffset), model);
+
+			let providers = this.languageFeaturesService.definitionProvider.ordered(model);
+			if (!providers.length) {
+				await timeout(2000);
+				providers = this.languageFeaturesService.definitionProvider.ordered(model);
+			}
+			let target: { uri: URI; range: IRange } | undefined;
+			for (const provider of providers) {
+				try {
+					const result = await provider.provideDefinition(
+						model,
+						new Position(pos.lineNumber, pos.column),
+						CancellationToken.None
+					);
+					target = firstDefinitionLocation(result ?? undefined);
+					if (target) {
+						break;
+					}
+				} catch (err) {
+					console.warn('[Horizon] definition provider failed', err);
+				}
+			}
+			if (!target) {
+				return undefined;
+			}
+
+			// Providers may return URIs with different drive-letter casing than the
+			// workspace folder (`c:/…` vs `C:/…`); compare case-insensitively.
+			let relPath: string | null = null;
+			let targetByte: number | null = null;
+			const targetPath = target.uri.scheme === Schemas.file ? target.uri.path : null;
+			if (targetPath) {
+				for (const f of this.workspaceService.getWorkspace().folders) {
+					if (f.uri.scheme !== Schemas.file) {
+						continue;
+					}
+					const base = f.uri.path.replace(/\/+$/, '');
+					if (targetPath.toLowerCase().startsWith(base.toLowerCase() + '/')) {
+						relPath = targetPath.slice(base.length + 1);
+						break;
+					}
+				}
+			}
+			if (relPath) {
+				try {
+					const targetRaw = await this.fileService.readFile(target.uri);
+					targetByte = positionToByteOffset(targetRaw.value.buffer, {
+						lineNumber: target.range.startLineNumber,
+						column: target.range.startColumn,
+					});
+				} catch {
+					// in-map matching degrades to path+line; the open fallback still works
+				}
+			}
+			return { path: relPath, line: target.range.startLineNumber, byteOffset: targetByte };
 		} finally {
 			ref.dispose();
 		}
@@ -948,6 +1035,26 @@ export function byteOffsetToPosition(
 /** Bytes `s` occupies in UTF-8 — matches the map's byte-offset space. */
 function utf8ByteLength(s: string): number {
 	return new TextEncoder().encode(s).length;
+}
+
+/** Inverse of `byteOffsetToPosition`: 1-based (line, UTF-16 column) → UTF-8 byte offset. */
+export function positionToByteOffset(raw: Uint8Array, pos: IPosition): number {
+	let lineStart = 0;
+	let line = 1;
+	while (line < pos.lineNumber && lineStart < raw.length) {
+		const nl = raw.indexOf(0x0a, lineStart);
+		if (nl < 0) {
+			break;
+		}
+		lineStart = nl + 1;
+		line++;
+	}
+	let lineEnd = raw.indexOf(0x0a, lineStart);
+	if (lineEnd < 0) {
+		lineEnd = raw.length;
+	}
+	const lineText = new TextDecoder('utf-8').decode(raw.subarray(lineStart, lineEnd));
+	return lineStart + utf8ByteLength(lineText.substring(0, Math.max(0, pos.column - 1)));
 }
 
 /** Normalize a Definition result (Location | Location[] | LocationLink[]) to its first target. */

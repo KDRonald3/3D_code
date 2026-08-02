@@ -1882,6 +1882,32 @@ select {
   border-top: 1px solid var(--border);
 }
 
+.ra-hover-heading {
+  margin: 6px 0 2px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--tok);
+}
+
+.ra-hover-list {
+  margin: 4px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text2);
+}
+
+.ra-hover-list code,
+.ra-hover-heading code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--tok);
+}
+
+.ra-hover-text strong {
+  color: var(--tok);
+}
+
 /*
  * rust-analyzer semantic token colors (VS Code Dark+/Light+ approximations).
  * Overlaid onto sidecar lexical spans when the semantic bridge answers;
@@ -1911,65 +1937,74 @@ select {
   --ra-lifetime: #0000ff;
 }
 
-.source-well .ra-function,
-.source-well .ra-method,
-.source-well .ra-macro,
-.source-well .ra-macroBang,
-.source-well .ra-derive {
+/* Unprefixed on purpose: the same palette colors the Inspector's source
+ * panes and the hover card's code blocks (which live outside .source-well). */
+.ra-function,
+.ra-method,
+.ra-macro,
+.ra-macroBang,
+.ra-derive {
   color: var(--ra-fn);
 }
 
-.source-well .ra-struct,
-.source-well .ra-enum,
-.source-well .ra-union,
-.source-well .ra-typeAlias,
-.source-well .ra-trait,
-.source-well .ra-interface,
-.source-well .ra-class,
-.source-well .ra-builtinType,
-.source-well .ra-typeParameter,
-.source-well .ra-namespace,
-.source-well .ra-type {
+.ra-struct,
+.ra-enum,
+.ra-union,
+.ra-typeAlias,
+.ra-trait,
+.ra-interface,
+.ra-class,
+.ra-builtinType,
+.ra-typeParameter,
+.ra-namespace,
+.ra-type {
   color: var(--ra-type);
 }
 
-.source-well .ra-variable,
-.source-well .ra-parameter,
-.source-well .ra-property {
+.ra-variable,
+.ra-parameter,
+.ra-property {
   color: var(--ra-var);
 }
 
-.source-well .ra-keyword,
-.source-well .ra-selfKeyword,
-.source-well .ra-selfTypeKeyword {
+.ra-keyword,
+.ra-selfKeyword,
+.ra-selfTypeKeyword {
   color: var(--ra-kw);
 }
 
-.source-well .ra-enumMember,
-.source-well .ra-const,
-.source-well .ra-static {
+.ra-enumMember,
+.ra-const,
+.ra-static {
   color: var(--ra-const);
 }
 
-.source-well .ra-string {
+.ra-string {
   color: var(--ra-string);
 }
 
-.source-well .ra-comment {
+.ra-comment {
   color: var(--ra-comment);
 }
 
-.source-well .ra-number {
+.ra-number {
   color: var(--ra-number);
 }
 
-.source-well .ra-lifetime {
+.ra-lifetime {
   color: var(--ra-lifetime);
   font-style: italic;
 }
 
 /* rust-analyzer convention: mutable bindings are underlined. */
-.source-well .ra-mod-mutable {
+.ra-mod-mutable {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Identifiers in the source panes are click-to-jump (rust-analyzer). */
+.source-well span[data-b]:hover {
+  cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
 }

@@ -254,6 +254,21 @@ export class HorizonMapEditorPane extends EditorPane {
 				}
 				break;
 			}
+			case 'definitionAtRequest': {
+				try {
+					const target = await this._inspectionService.definitionAt(msg.filePath, msg.byteOffset ?? null);
+					this.post(target
+						? { type: 'definitionAtResult', requestId: msg.requestId, target }
+						: { type: 'definitionAtResult', requestId: msg.requestId, error: 'no_definition' });
+				} catch (err) {
+					this.post({
+						type: 'definitionAtResult',
+						requestId: msg.requestId,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+				break;
+			}
 			case 'semanticTokensRequest': {
 				try {
 					const tokens = await this._inspectionService.semanticTokensFor(
