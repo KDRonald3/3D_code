@@ -64,6 +64,7 @@ fi
 # Always re-apply from the upstream backup so overlay is idempotent.
 cp "${HORIZON_CODE_OSS_DIR}/product.json.upstream" "${HORIZON_CODE_OSS_DIR}/product.json"
 horizon_apply_product_overlay
+horizon_patch_preinstall_vs2026
 
 # Sync first-class Map workbench contrib into the Code-OSS tree.
 SYNC_MODE="${HORIZON_CONTRIB_SYNC_MODE:-${HORIZON_EXTENSION_SYNC_MODE:-copy}}"
@@ -71,9 +72,9 @@ horizon_sync_contrib "${SYNC_MODE}"
 
 horizon_info "bootstrap complete"
 echo
-echo "Next:"
-echo "  ./ide/scripts/build.sh                 # full Code-OSS compile (required for product)"
-echo "  ./ide/scripts/run.sh [workspace]       # launch built Horizon IDE"
-echo "  ./ide/scripts/sync-contrib.sh          # re-sync contrib after editing"
+echo "Next (one path → full product with Horizon built in):"
+echo "  ./ide/scripts/build.sh                 # sync contrib + gulp compile-client → out/"
+echo "  ./ide/scripts/run.sh [workspace]       # launch (sidecar + Map chrome)"
+echo "  ./ide/scripts/dev.sh [workspace]       # fast: sync + compile-client + run"
 echo
 echo "Note: ./ide/scripts/dev-extension.sh is legacy (Extension Development Host) — not the product path."

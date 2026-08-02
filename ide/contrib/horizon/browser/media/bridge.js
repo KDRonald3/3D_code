@@ -159,6 +159,13 @@
     },
 
     /**
+     * Ask host to pick a different workspace / analyse root (IDE folder picker).
+     */
+    chooseFolder() {
+      post({ type: "chooseFolder" });
+    },
+
+    /**
      * Request a tokenized source slice for the Inspector preview.
      * W3/W4 may fulfill via sourceResult, or leave it unanswered (timeout).
      * Prefer selectFunction → Inspection canvas for rust-analyzer.

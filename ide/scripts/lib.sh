@@ -20,6 +20,16 @@ HORIZON_WORKBENCH_COMMON_MAIN="${HORIZON_CODE_OSS_DIR}/src/vs/workbench/workbenc
 HORIZON_EXTENSION_SRC="${HORIZON_IDE_ROOT}/extensions/horizon-map"
 HORIZON_EXTENSION_DST="${HORIZON_CODE_OSS_DIR}/extensions/horizon-map"
 HORIZON_PREBUILT_DIR="${HORIZON_IDE_ROOT}/.cache/prebuilt"
+# Sidecar listen URL written by run-sidecar / run.sh for IDE attach (gitignored under .cache/).
+# Canonical name: horizon-sidecar.url (also accept legacy sidecar.url when reading).
+HORIZON_SIDECAR_URL_FILE="${HORIZON_SIDECAR_URL_FILE:-${HORIZON_IDE_ROOT}/.cache/horizon-sidecar.url}"
+HORIZON_SIDECAR_PID_FILE="${HORIZON_SIDECAR_PID_FILE:-${HORIZON_IDE_ROOT}/.cache/horizon-sidecar.pid}"
+HORIZON_SIDECAR_LOG_FILE="${HORIZON_SIDECAR_LOG_FILE:-${HORIZON_IDE_ROOT}/.cache/horizon-sidecar.log}"
+HORIZON_WORKBENCH_DESKTOP_MAIN="${HORIZON_CODE_OSS_DIR}/src/vs/workbench/workbench.desktop.main.ts"
+# Compile mode for build.sh / compile helpers: client (default) | full
+# client = npx gulp compile-client (workbench src → out/, includes contrib/horizon)
+# full   = npm run compile (client + extensions; heavier / flakier)
+HORIZON_COMPILE_MODE="${HORIZON_COMPILE_MODE:-client}"
 
 # Pinned upstream tag/commit (override with HORIZON_VSCODE_REF).
 if [[ -n "${HORIZON_VSCODE_REF:-}" ]]; then
@@ -140,46 +150,42 @@ print(f"applied product overlay -> {vendor_path}")
 PY
 }
 
-horizon_sync_extension() {
-  local mode="${1:-copy}" # copy | link
-  local src="${HORIZON_EXTENSION_SRC}"
-  local dst="${HORIZON_EXTENSION_DST}"
-
-  [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS checkout missing at ${HORIZON_CODE_OSS_DIR} (run bootstrap first)"
-  [[ -d "${HORIZON_CODE_OSS_DIR}/extensions" ]] || horizon_die "Code-OSS extensions/ missing"
-
-  if [[ ! -d "${src}" ]]; then
-    horizon_warn "deprecated extension source missing: ${src}; skipping extension sync"
+# Upstream vscode 1.105.x preinstall only auto-detects VS 2019/2022.
+# Prefer VS 2026 when present (current Windows toolchain).
+horizon_patch_preinstall_vs2026() {
+  local preinstall="${HORIZON_CODE_OSS_DIR}/build/npm/preinstall.js"
+  [[ -f "${preinstall}" ]] || {
+    horizon_warn "preinstall.js missing; skipping VS 2026 toolchain patch"
     return 0
-  fi
+  }
+  python3 - "${preinstall}" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "const supportedVersions = ['2022', '2019'];"
+new = "const supportedVersions = ['2026', '2022', '2019'];"
+if "['2026'" in text or '["2026"' in text:
+    print(f"VS 2026 already accepted in {path}")
+elif old in text:
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print(f"patched {path} to accept Visual Studio 2026")
+else:
+    print(f"warning: could not locate supportedVersions in {path}; leave unchanged", file=sys.stderr)
+    sys.exit(0)
+PY
+}
 
-  horizon_warn "horizon-map extension sync is legacy — product surface is ide/contrib/horizon (workbench contrib)"
-
-  mkdir -p "$(dirname "${dst}")"
+horizon_sync_extension() {
+  # DEPRECATED: never copy the extension package into Code-OSS — it conflicts
+  # with the built-in workbench contrib (duplicate commands / viewlet ids).
+  local dst="${HORIZON_EXTENSION_DST}"
+  horizon_warn "horizon-map extension sync is disabled — product surface is ide/contrib/horizon"
   if [[ -e "${dst}" || -L "${dst}" ]]; then
     rm -rf "${dst}"
+    horizon_info "removed leftover ${dst}"
   fi
-
-  case "${mode}" in
-    link)
-      ln -s "${src}" "${dst}"
-      horizon_info "linked ${src} -> ${dst} (legacy)"
-      ;;
-    copy|*)
-      if command -v rsync >/dev/null 2>&1; then
-        mkdir -p "${dst}"
-        rsync -a --delete \
-          --exclude node_modules \
-          --exclude .git \
-          "${src}/" "${dst}/"
-      else
-        mkdir -p "${dst}"
-        cp -a "${src}/." "${dst}/"
-        rm -rf "${dst}/node_modules" 2>/dev/null || true
-      fi
-      horizon_info "copied ${src} -> ${dst} (legacy)"
-      ;;
-  esac
+  return 0
 }
 
 # Sync ide/contrib/horizon into Code-OSS workbench contrib and register the import.
@@ -225,6 +231,7 @@ horizon_sync_contrib() {
   esac
 
   horizon_wire_contrib_import
+  horizon_wire_desktop_contrib_import
 }
 
 # Ensure workbench.common.main.ts imports the Horizon Map contribution.
@@ -263,6 +270,51 @@ else:
     text = text[:idx] + block + "\n" + text[idx:]
     path.write_text(text, encoding="utf-8")
 print(f"wired Horizon contrib import -> {path}")
+PY
+}
+
+# Ensure workbench.desktop.main.ts imports the Horizon electron-browser sidecar contribution.
+# Skips cleanly when electron-browser sources are not present yet.
+horizon_wire_desktop_contrib_import() {
+  local main_ts="${HORIZON_WORKBENCH_DESKTOP_MAIN}"
+  local marker="contrib/horizon/electron-browser/horizon.contribution"
+  local import_line="import './contrib/horizon/electron-browser/horizon.contribution.js';"
+  local entry_src="${HORIZON_CONTRIB_SRC}/electron-browser/horizon.contribution.ts"
+  local entry_dst="${HORIZON_CONTRIB_DST}/electron-browser/horizon.contribution.ts"
+
+  if [[ ! -f "${entry_src}" && ! -f "${entry_dst}" ]]; then
+    horizon_info "no electron-browser horizon contribution yet; skip desktop import wire"
+    return 0
+  fi
+
+  [[ -f "${main_ts}" ]] || {
+    horizon_warn "missing ${main_ts}; skip desktop contrib wire"
+    return 0
+  }
+
+  if grep -qF "${marker}" "${main_ts}"; then
+    horizon_info "Horizon electron sidecar already registered in workbench.desktop.main.ts"
+    return 0
+  fi
+
+  python3 - "${main_ts}" "${import_line}" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+import_line = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+block = (
+    "\n// Horizon Map sidecar (desktop spawn/attach — electron-browser)\n"
+    f"{import_line}\n"
+)
+needle = "export { main }"
+idx = text.find(needle)
+if idx == -1:
+    path.write_text(text.rstrip() + "\n" + block, encoding="utf-8")
+else:
+    text = text[:idx] + block + "\n" + text[idx:]
+    path.write_text(text, encoding="utf-8")
+print(f"wired Horizon desktop contrib import -> {path}")
 PY
 }
 
@@ -440,5 +492,237 @@ horizon_code_oss_built() {
   [[ -f "${HORIZON_CODE_OSS_DIR}/out/main.js" ]] \
     || [[ -f "${HORIZON_CODE_OSS_DIR}/out/vs/code/electron-main/main.js" ]] \
     || return 1
+  return 0
+}
+
+# Compiled Horizon contrib JS under out/ (produced by gulp compile-client / compile).
+horizon_contrib_out_js() {
+  echo "${HORIZON_CODE_OSS_DIR}/out/vs/workbench/contrib/horizon/browser/horizon.contribution.js"
+}
+
+# True when Electron main + Horizon contrib JS are present under out/.
+horizon_horizon_built_in() {
+  horizon_code_oss_built || return 1
+  [[ -f "$(horizon_contrib_out_js)" ]] || return 1
+  return 0
+}
+
+# Re-apply product.json overlay from upstream backup (idempotent branding).
+horizon_ensure_product_overlay() {
+  if [[ -f "${HORIZON_CODE_OSS_DIR}/product.json.upstream" ]]; then
+    cp "${HORIZON_CODE_OSS_DIR}/product.json.upstream" "${HORIZON_CODE_OSS_DIR}/product.json"
+  fi
+  horizon_apply_product_overlay
+}
+
+# Compile workbench TypeScript (src → out/), including contrib/horizon.
+# Prefer this over full `npm run compile` for product iteration — extensions
+# compile is heavier and more failure-prone; the Map lives in the client tree.
+horizon_compile_client() {
+  [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS missing; run ./ide/scripts/bootstrap.sh first"
+  [[ -d "${HORIZON_CODE_OSS_DIR}/node_modules" ]] || horizon_die "node_modules missing; run ./ide/scripts/build.sh first (npm ci)"
+  horizon_setup_node
+  export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}"
+  (
+    cd "${HORIZON_CODE_OSS_DIR}"
+    horizon_info "compiling client (npx gulp compile-client) — includes contrib/horizon → out/"
+    npx gulp compile-client
+  ) || horizon_die "gulp compile-client failed"
+  local out_js
+  out_js="$(horizon_contrib_out_js)"
+  [[ -f "${out_js}" ]] || horizon_die "compile-client finished but Horizon contrib JS missing: ${out_js} (did sync-contrib run? re-run ./ide/scripts/build.sh)"
+  horizon_info "Horizon contrib compiled -> ${out_js}"
+}
+
+# Full upstream compile (client + extensions). Use HORIZON_COMPILE_MODE=full.
+horizon_compile_full() {
+  [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS missing; run ./ide/scripts/bootstrap.sh first"
+  horizon_setup_node
+  export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}"
+  (
+    cd "${HORIZON_CODE_OSS_DIR}"
+    horizon_info "compiling Code-OSS (npm run compile — full client + extensions)…"
+    npm run compile
+  ) || horizon_die "npm run compile failed (tip: default build uses HORIZON_COMPILE_MODE=client)"
+  local out_js
+  out_js="$(horizon_contrib_out_js)"
+  [[ -f "${out_js}" ]] || horizon_die "full compile finished but Horizon contrib JS missing: ${out_js}"
+}
+
+# Dispatch compile by HORIZON_COMPILE_MODE (client|full). Default: client.
+horizon_compile_code_oss() {
+  local mode="${HORIZON_COMPILE_MODE:-client}"
+  case "${mode}" in
+    client|compile-client)
+      horizon_compile_client
+      ;;
+    full|all)
+      horizon_compile_full
+      ;;
+    *)
+      horizon_die "unknown HORIZON_COMPILE_MODE='${mode}' (use client or full)"
+      ;;
+  esac
+  if ! horizon_code_oss_built; then
+    horizon_die "compile finished but electron main entry is missing under out/"
+  fi
+}
+
+# Return 0 when contrib sources are newer than compiled out/ JS (or out JS missing).
+horizon_contrib_out_stale() {
+  local out_js src
+  out_js="$(horizon_contrib_out_js)"
+  src="${HORIZON_CONTRIB_SRC}"
+  [[ -d "${src}" ]] || return 0
+  python3 - "${src}" "${out_js}" <<'PY'
+import sys
+from pathlib import Path
+src, out_js = Path(sys.argv[1]), Path(sys.argv[2])
+if not out_js.is_file():
+    sys.exit(0)  # stale / missing
+out_mtime = out_js.stat().st_mtime
+suffixes = {".ts", ".js", ".css", ".html", ".json", ".svg", ".png", ".woff", ".woff2"}
+newest = 0.0
+for p in src.rglob("*"):
+    if not p.is_file() or p.suffix.lower() not in suffixes:
+        continue
+    try:
+        newest = max(newest, p.stat().st_mtime)
+    except OSError:
+        pass
+sys.exit(0 if newest > out_mtime else 1)
+PY
+}
+
+# Sync contrib + compile-client when out/ is missing or older than sources.
+horizon_ensure_contrib_compiled() {
+  local mode="${HORIZON_CONTRIB_SYNC_MODE:-copy}"
+  if horizon_contrib_out_stale; then
+    horizon_warn "contrib sources newer than out/ (or contrib JS missing) — sync + compile-client"
+    horizon_sync_contrib "${mode}"
+    horizon_compile_client
+  else
+    horizon_info "Horizon contrib out/ is up to date"
+  fi
+}
+
+horizon_sidecar_url_healthy() {
+  local url="${1:-}"
+  [[ -n "${url}" ]] || return 1
+  url="${url%/}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 2 "${url}/api/health" >/dev/null 2>&1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O - --timeout=2 "${url}/api/health" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+horizon_read_sidecar_url_file() {
+  local candidates=("${HORIZON_SIDECAR_URL_FILE}" "${HORIZON_IDE_ROOT}/.cache/sidecar.url")
+  local f url
+  for f in "${candidates[@]}"; do
+    [[ -f "${f}" ]] || continue
+    url="$(tr -d '[:space:]' < "${f}" | head -n1)"
+    if [[ "${url}" == http://127.0.0.1:* || "${url}" == http://localhost:* || "${url}" == http://[::1]:* ]]; then
+      echo "${url%/}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+horizon_write_sidecar_url_file() {
+  local url="${1%/}"
+  mkdir -p "$(dirname "${HORIZON_SIDECAR_URL_FILE}")"
+  printf '%s\n' "${url}" > "${HORIZON_SIDECAR_URL_FILE}"
+  horizon_info "wrote sidecar URL -> ${HORIZON_SIDECAR_URL_FILE} (${url})"
+}
+
+# Resolve horizon-server binary (same search order as run-sidecar.sh).
+horizon_find_sidecar_bin() {
+  if [[ -n "${HORIZON_SERVER_PATH:-}" ]]; then
+    if [[ -x "${HORIZON_SERVER_PATH}" ]]; then
+      echo "${HORIZON_SERVER_PATH}"
+      return 0
+    fi
+    return 1
+  fi
+  local release debug
+  release="${HORIZON_REPO_ROOT}/target/release/horizon-server"
+  debug="${HORIZON_REPO_ROOT}/target/debug/horizon-server"
+  if [[ -x "${release}" ]]; then
+    echo "${release}"
+    return 0
+  fi
+  if [[ -x "${debug}" ]]; then
+    echo "${debug}"
+    return 0
+  fi
+  if command -v horizon-server >/dev/null 2>&1; then
+    command -v horizon-server
+    return 0
+  fi
+  return 1
+}
+
+# Ensure a loopback sidecar is reachable; start one in background if needed.
+# Coordinates via ide/.cache/horizon-sidecar.url (also written by run-sidecar.sh).
+# Best-effort: missing binary only warns so the IDE can still launch.
+horizon_ensure_sidecar() {
+  local url=""
+  if [[ -n "${HORIZON_SIDECAR_URL:-}" ]]; then
+    url="${HORIZON_SIDECAR_URL%/}"
+    if horizon_sidecar_url_healthy "${url}"; then
+      horizon_write_sidecar_url_file "${url}"
+      export HORIZON_SIDECAR_URL="${url}"
+      horizon_info "using existing HORIZON_SIDECAR_URL=${url}"
+      return 0
+    fi
+    horizon_warn "HORIZON_SIDECAR_URL=${url} failed /api/health; will try URL file or spawn"
+  fi
+
+  if url="$(horizon_read_sidecar_url_file)"; then
+    if horizon_sidecar_url_healthy "${url}"; then
+      export HORIZON_SIDECAR_URL="${url}"
+      horizon_info "attached sidecar from ${HORIZON_SIDECAR_URL_FILE} (${url})"
+      return 0
+    fi
+    horizon_warn "stale sidecar URL file (${url}); starting a new sidecar if possible"
+  fi
+
+  local bin=""
+  if ! bin="$(horizon_find_sidecar_bin)"; then
+    horizon_warn "horizon-server not found — Map analyse needs: cargo build -p horizon-server --release"
+    horizon_warn "or ./ide/scripts/run-sidecar.sh (writes ${HORIZON_SIDECAR_URL_FILE})"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${HORIZON_SIDECAR_LOG_FILE}")"
+  : > "${HORIZON_SIDECAR_LOG_FILE}"
+  horizon_info "starting sidecar in background: ${bin}"
+  # Detach so IDE exit does not kill analyse immediately; URL file is the handoff.
+  nohup "${bin}" --no-open >>"${HORIZON_SIDECAR_LOG_FILE}" 2>&1 &
+  local pid=$!
+  echo "${pid}" > "${HORIZON_SIDECAR_PID_FILE}"
+
+  local i line
+  for i in $(seq 1 50); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      horizon_warn "sidecar exited early — see ${HORIZON_SIDECAR_LOG_FILE}"
+      return 0
+    fi
+    line="$(grep -E '^http://(127\.0\.0\.1|localhost|\[::1\]):[0-9]+/?$' "${HORIZON_SIDECAR_LOG_FILE}" 2>/dev/null | head -n1 || true)"
+    if [[ -n "${line}" ]]; then
+      url="${line%/}"
+      horizon_write_sidecar_url_file "${url}"
+      export HORIZON_SIDECAR_URL="${url}"
+      horizon_info "sidecar ready pid=${pid} ${url}"
+      return 0
+    fi
+    sleep 0.1
+  done
+  horizon_warn "sidecar started (pid=${pid}) but URL not seen yet — check ${HORIZON_SIDECAR_LOG_FILE}"
   return 0
 }

@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
-# Build: install deps and compile Code-OSS enough to launch via scripts/code.sh.
-# Primary product path — Map lives in workbench contrib/horizon (synced here).
+# Build Horizon IDE: sync contrib, install deps, compile client into out/.
+#
+# Always:
+#   1. Re-apply product.json overlay (branding)
+#   2. Patch VS 2026 into Code-OSS preinstall.js (Windows toolchain)
+#   3. Sync ide/contrib/horizon → code-oss/src/vs/workbench/contrib/horizon
+#   4. npm ci when needed
+#   5. Compile so Horizon TS lands in out/ (Map buttons, analyse, folder picker)
+#
+# Compile mode (HORIZON_COMPILE_MODE):
+#   client (default) — `npx gulp compile-client`
+#       Compiles workbench src → out/, including contrib/horizon.
+#       Prefer this: full `npm run compile` also builds extensions and is flakier.
+#   full — `npm run compile` (client + extensions)
+#
+# After a successful build, `./ide/scripts/run.sh` launches the full product.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,6 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 horizon_info "Horizon IDE build"
 horizon_detect_platform >/dev/null
 horizon_info "platform: ${HORIZON_OS}-${HORIZON_ARCH}"
+horizon_info "compile mode: ${HORIZON_COMPILE_MODE:-client}"
 
 [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS missing; run ./ide/scripts/bootstrap.sh first"
 [[ -f "${HORIZON_CODE_OSS_DIR}/package.json" ]] || horizon_die "Code-OSS package.json missing"
@@ -19,11 +34,9 @@ if [[ "${HORIZON_OS}" == "linux" ]]; then
   horizon_require_linux_build_deps
 fi
 
-# Re-apply product overlay + contrib sync so rebuilds stay branded.
-if [[ -f "${HORIZON_CODE_OSS_DIR}/product.json.upstream" ]]; then
-  cp "${HORIZON_CODE_OSS_DIR}/product.json.upstream" "${HORIZON_CODE_OSS_DIR}/product.json"
-fi
-horizon_apply_product_overlay
+# --- Product surface: brand + toolchain patch + always sync contrib -----------
+horizon_ensure_product_overlay
+horizon_patch_preinstall_vs2026
 horizon_sync_contrib "${HORIZON_CONTRIB_SYNC_MODE:-copy}"
 
 cd "${HORIZON_CODE_OSS_DIR}"
@@ -56,23 +69,20 @@ else
   horizon_info "node_modules present; skipping npm ci (set HORIZON_FORCE_NPM_CI=1 to reinstall)"
 fi
 
-# Compile client + extensions. Full gulp compile is the standard from-source path.
-horizon_info "compiling Code-OSS (npm run compile)…"
-export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}"
-if ! npm run compile; then
-  horizon_warn "full compile failed or was interrupted"
-  echo
-  echo "Fix compile errors, then re-run. Map UI lives in ide/contrib/horizon (synced into"
-  echo "src/vs/workbench/contrib/horizon). Do not use the deprecated extension EDH path as the product."
-  exit 1
-fi
+# Default: compile-client so contrib/horizon TypeScript is emitted under out/.
+# Full compile: HORIZON_COMPILE_MODE=full ./ide/scripts/build.sh
+horizon_compile_code_oss
 
 [[ -f scripts/code.sh ]] || horizon_die "scripts/code.sh missing from Code-OSS tree"
-if [[ ! -f out/main.js && ! -f out/vs/code/electron-main/main.js ]]; then
-  horizon_die "compile finished but electron main entry is missing under out/"
+if ! horizon_horizon_built_in; then
+  horizon_die "build finished but Horizon is not present under out/ (missing electron main or contrib JS)"
 fi
 
-horizon_info "build complete"
+horizon_info "build complete — Horizon Map contrib is compiled into out/"
 echo
 echo "Launch with:"
 echo "  ./ide/scripts/run.sh [workspace-path]"
+echo
+echo "Fast iteration after editing ide/contrib/horizon:"
+echo "  ./ide/scripts/dev.sh [workspace-path]   # sync + compile-client + run"
+echo "  # or: HORIZON_COMPILE_MODE=full ./ide/scripts/build.sh   # full npm run compile"
