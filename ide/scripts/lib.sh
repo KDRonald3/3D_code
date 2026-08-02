@@ -140,6 +140,32 @@ print(f"applied product overlay -> {vendor_path}")
 PY
 }
 
+# Upstream vscode 1.105.x preinstall only auto-detects VS 2019/2022.
+# Prefer VS 2026 when present (current Windows toolchain).
+horizon_patch_preinstall_vs2026() {
+  local preinstall="${HORIZON_CODE_OSS_DIR}/build/npm/preinstall.js"
+  [[ -f "${preinstall}" ]] || {
+    horizon_warn "preinstall.js missing; skipping VS 2026 toolchain patch"
+    return 0
+  }
+  python3 - "${preinstall}" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "const supportedVersions = ['2022', '2019'];"
+new = "const supportedVersions = ['2026', '2022', '2019'];"
+if "['2026'" in text or '["2026"' in text:
+    print(f"VS 2026 already accepted in {path}")
+elif old in text:
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print(f"patched {path} to accept Visual Studio 2026")
+else:
+    print(f"warning: could not locate supportedVersions in {path}; leave unchanged", file=sys.stderr)
+    sys.exit(0)
+PY
+}
+
 horizon_sync_extension() {
   local mode="${1:-copy}" # copy | link
   local src="${HORIZON_EXTENSION_SRC}"

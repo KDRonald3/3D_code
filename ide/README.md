@@ -9,18 +9,18 @@ See [`docs/requirements/ide-mvp-plan.md`](../docs/requirements/ide-mvp-plan.md).
 
 | Requirement | Notes |
 |---|---|
-| **Linux x64** (primary) | Scripts detect OS/arch; macOS/Windows may work with upstream vscode tooling |
-| **Node.js ≥ 22.15.1** | Upstream Code-OSS rejects older 22.x; use [nvm](https://github.com/nvm-sh/nvm). Scripts prepend `nvm which 22` onto `PATH` so shims like `/exec-daemon/node` do not win |
+| **Linux x64** or **Windows** | Linux: bash scripts. Windows: PowerShell scripts in [`scripts/windows/`](scripts/windows/) — see **[`WINDOWS.md`](WINDOWS.md)** |
+| **Node.js ≥ 22.15.1** | Upstream Code-OSS rejects older 22.x; use [nvm](https://github.com/nvm-sh/nvm) on Linux / official installer on Windows |
 | **npm** | Bundled with Node; yarn is not supported by modern vscode |
 | **Git** | Shallow clone of `microsoft/vscode` |
-| **Build tools** (full compile) | `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev` (Debian/Ubuntu) |
+| **Build tools** (full compile) | Linux: `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev`. Windows: VS 2022 Build Tools + **Desktop development with C++** |
 | **RAM / disk** | Full compile wants ~8–15 GB RAM and several GB under `ide/code-oss/` |
 
-Optional for Electron GUI: `libnss3`, `libgbm1`, `libgtk-3-0`, `libasound2t64`, and a display (`DISPLAY` or `xvfb-run`).
+Optional for Electron GUI on Linux: `libnss3`, `libgbm1`, `libgtk-3-0`, `libasound2t64`, and a display (`DISPLAY` or `xvfb-run`).
 
 Pinned upstream ref: [`product/vscode-ref.txt`](product/vscode-ref.txt) (override with `HORIZON_VSCODE_REF`).
 
-## Quick start (product path)
+## Quick start (Linux / WSL)
 
 ```bash
 ./ide/scripts/bootstrap.sh   # shallow-clone → ide/code-oss/, brand, sync contrib/horizon
@@ -28,6 +28,19 @@ Pinned upstream ref: [`product/vscode-ref.txt`](product/vscode-ref.txt) (overrid
 ./ide/scripts/run.sh         # launch built Horizon IDE
 ./ide/scripts/run.sh /path/to/workspace
 ```
+
+## Quick start (Windows)
+
+Use PowerShell — do **not** rely on the `.sh` scripts on native Windows:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\ide\scripts\windows\Bootstrap.ps1
+.\ide\scripts\windows\Build.ps1
+.\ide\scripts\windows\Run.ps1 .
+```
+
+Full Windows prerequisites, failure checklist, and WSL2 fallback: **[`WINDOWS.md`](WINDOWS.md)**.
 
 Map commands inside the IDE (Command Palette):
 
@@ -52,13 +65,12 @@ ide/
     vscode-ref.txt         # pinned microsoft/vscode tag
     branding/              # icon placeholders (see branding/README.md)
   scripts/
-    bootstrap.sh           # clone + brand + sync contrib
-    build.sh               # npm install + compile
-    run.sh                 # launch built Horizon IDE (forked product)
-    sync-contrib.sh        # copy/link contrib into code-oss workbench
-    sync-extension.sh      # LEGACY — deprecated extension package
-    dev-extension.sh       # LEGACY — Extension Development Host (not product)
-    lib.sh                 # shared helpers
+    bootstrap.sh / build.sh / run.sh / sync-contrib.sh   # Linux / WSL product path
+    windows/             # Windows PowerShell: Bootstrap / Build / Run / Sync-Contrib / Run-Sidecar
+    sync-extension.sh    # LEGACY — deprecated extension package
+    dev-extension.sh     # LEGACY — Extension Development Host (not product)
+    lib.sh               # shared helpers (bash)
+  WINDOWS.md             # Windows prerequisites + troubleshooting
   extensions/horizon-map/  # DEPRECATED as product — see DEPRECATED.md
   code-oss/                # gitignored Code-OSS checkout (created by bootstrap)
   patches/                 # optional patches
