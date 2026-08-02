@@ -80,6 +80,40 @@ function Test-HorizonWindowsBuildTools {
     return [bool]$found
 }
 
+function Get-HorizonVisualStudioInstallPath {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { return $null }
+    $found = & $vswhere -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath `
+        -latest 2>$null
+    if ($found) { return [string]$found }
+    return $null
+}
+
+function Repair-HorizonPreinstallVs2026 {
+    param($Roots)
+    $preinstall = Join-Path $Roots.CodeOssDir "build\npm\preinstall.js"
+    if (-not (Test-Path $preinstall)) {
+        Write-HorizonWarn "preinstall.js missing; skipping VS 2026 toolchain patch"
+        return
+    }
+    $text = [System.IO.File]::ReadAllText($preinstall)
+    $old = "const supportedVersions = ['2022', '2019'];"
+    $new = "const supportedVersions = ['2026', '2022', '2019'];"
+    if ($text.Contains("['2026'") -or $text.Contains('["2026"')) {
+        Write-HorizonInfo "VS 2026 already accepted in preinstall.js"
+        return
+    }
+    if ($text.Contains($old)) {
+        $text = $text.Replace($old, $new)
+        [System.IO.File]::WriteAllText($preinstall, $text, [System.Text.UTF8Encoding]::new($false))
+        Write-HorizonInfo "patched preinstall.js to accept Visual Studio 2026"
+    } else {
+        Write-HorizonWarn "could not locate supportedVersions in preinstall.js; leave unchanged"
+    }
+}
+
 function Assert-HorizonWindowsPrereqs {
     if (-not (Test-HorizonCommand "git")) {
         Throw-Horizon "Git is required. Install from https://git-scm.com/download/win"
@@ -89,15 +123,33 @@ function Assert-HorizonWindowsPrereqs {
     }
     if (-not (Test-HorizonWindowsBuildTools)) {
         Throw-Horizon @"
-Visual Studio 2022 C++ build tools are required to compile Code-OSS on Windows.
+A Visual C++ toolchain is required to compile Code-OSS on Windows.
 
-Install 'Build Tools for Visual Studio 2022' with workload:
+Prefer: Visual Studio 2026 (or Build Tools) with workload
   Desktop development with C++
+
+Also accepted: Visual Studio 2022 Build Tools with the same workload.
 
 Or see: https://github.com/microsoft/vscode/wiki/How-to-Contribute#prerequisites
 
 If this is too heavy, use WSL2 instead — see ide\WINDOWS.md
 "@
+    }
+    $vsPath = Get-HorizonVisualStudioInstallPath
+    if ($vsPath) {
+        Write-HorizonInfo "MSVC toolchain: $vsPath"
+        # Help older node-gyp / electron tooling that still keys off vs2022_install.
+        if (-not $env:vs2022_install -and -not $env:vs2026_install) {
+            if ($vsPath -match '\\2026\\') {
+                $env:vs2026_install = $vsPath
+                # Some node-gyp versions only honor vs2022_install — point it at 2026 too.
+                $env:vs2022_install = $vsPath
+                Write-HorizonInfo "set vs2026_install / vs2022_install -> $vsPath"
+            } elseif ($vsPath -match '\\2022\\') {
+                $env:vs2022_install = $vsPath
+                Write-HorizonInfo "set vs2022_install -> $vsPath"
+            }
+        }
     }
     Write-HorizonInfo "Windows build prerequisites look present (Git, Python, MSVC)"
 }
@@ -229,5 +281,7 @@ Export-ModuleMember -Function @(
     "Wire-HorizonContribImport",
     "Test-HorizonCodeOssBuilt",
     "Test-HorizonWindowsBuildTools",
+    "Get-HorizonVisualStudioInstallPath",
+    "Repair-HorizonPreinstallVs2026",
     "Test-HorizonCommand"
 )

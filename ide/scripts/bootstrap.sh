@@ -64,6 +64,7 @@ fi
 # Always re-apply from the upstream backup so overlay is idempotent.
 cp "${HORIZON_CODE_OSS_DIR}/product.json.upstream" "${HORIZON_CODE_OSS_DIR}/product.json"
 horizon_apply_product_overlay
+horizon_patch_preinstall_vs2026
 
 # Sync first-class Map workbench contrib into the Code-OSS tree.
 SYNC_MODE="${HORIZON_CONTRIB_SYNC_MODE:-${HORIZON_EXTENSION_SYNC_MODE:-copy}}"

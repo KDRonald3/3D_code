@@ -13,7 +13,7 @@ See [`docs/requirements/ide-mvp-plan.md`](../docs/requirements/ide-mvp-plan.md).
 | **Node.js ≥ 22.15.1** | Upstream Code-OSS rejects older 22.x; use [nvm](https://github.com/nvm-sh/nvm) on Linux / official installer on Windows |
 | **npm** | Bundled with Node; yarn is not supported by modern vscode |
 | **Git** | Shallow clone of `microsoft/vscode` |
-| **Build tools** (full compile) | Linux: `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev`. Windows: VS 2022 Build Tools + **Desktop development with C++** |
+| **Build tools** (full compile) | Linux: `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev`. Windows: **Visual Studio 2026** (preferred) or 2022 Build Tools + **Desktop development with C++** |
 | **RAM / disk** | Full compile wants ~8–15 GB RAM and several GB under `ide/code-oss/` |
 
 Optional for Electron GUI on Linux: `libnss3`, `libgbm1`, `libgtk-3-0`, `libasound2t64`, and a display (`DISPLAY` or `xvfb-run`).

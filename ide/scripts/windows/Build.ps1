@@ -27,6 +27,7 @@ if (Test-Path $upstream) {
     Copy-Item $upstream $codeProduct -Force
 }
 Merge-HorizonProductOverlay -Roots $Roots
+Repair-HorizonPreinstallVs2026 -Roots $Roots
 $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
 Sync-HorizonContrib -Roots $Roots -Mode $mode
 

@@ -16,9 +16,11 @@ Compiling Code-OSS from source is heavy on every OS. Windows additionally requir
 | **Node.js ≥ 22.15.1** | https://nodejs.org/ (LTS 22.x). Close/reopen PowerShell after install. |
 | **Git for Windows** | https://git-scm.com/download/win |
 | **Python 3** | On PATH as `python`. Enable “Add python.exe to PATH” in the installer. |
-| **VS 2022 Build Tools** | Install [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) with workload **Desktop development with C++** |
+| **Visual Studio 2026** (preferred) or **2022** | Install Build Tools / Community with workload **Desktop development with C++**. VS 2026 is current; 2022 still works. |
 | **Rust / Cargo** (sidecar) | https://rustup.rs — needed for `horizon-server` analyse |
 | **RAM / disk** | ~8–15 GB RAM free during compile; several GB under `ide\code-oss\` |
+
+`Bootstrap.ps1` / `Build.ps1` patch Code-OSS `preinstall.js` so the pinned vscode **1.105.x** tree accepts **VS 2026** (upstream that pin only listed 2019/2022). They also set `vs2026_install` / `vs2022_install` from `vswhere` when needed for older node-gyp.
 
 Upstream reference: [VS Code How to Contribute — Prerequisites](https://github.com/microsoft/vscode/wiki/How-to-Contribute#prerequisites).
 
