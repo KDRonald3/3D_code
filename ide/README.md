@@ -5,55 +5,85 @@ Rust free-function map as a **built-in workbench EditorPane** (not a VS Code ext
 
 See [`docs/requirements/ide-mvp-plan.md`](../docs/requirements/ide-mvp-plan.md).
 
-## Prerequisites
+## One path: bootstrap → build → run
 
-| Requirement | Notes |
-|---|---|
-| **Linux x64** or **Windows** | Linux: bash scripts. Windows: PowerShell scripts in [`scripts/windows/`](scripts/windows/) — see **[`WINDOWS.md`](WINDOWS.md)** |
-| **Node.js ≥ 22.15.1** | Upstream Code-OSS rejects older 22.x; use [nvm](https://github.com/nvm-sh/nvm) on Linux / official installer on Windows |
-| **npm** | Bundled with Node; yarn is not supported by modern vscode |
-| **Git** | Shallow clone of `microsoft/vscode` |
-| **Build tools** (full compile) | Linux: `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev`. Windows: **Visual Studio 2026** (preferred) or 2022 Build Tools + **Desktop development with C++** |
-| **RAM / disk** | Full compile wants ~8–15 GB RAM and several GB under `ide/code-oss/` |
+That sequence produces a **full Horizon IDE** with Map chrome (activity bar / status bar /
+editor title buttons), auto-analyse wiring, folder picker, and contrib compiled into `out/`.
 
-Optional for Electron GUI on Linux: `libnss3`, `libgbm1`, `libgtk-3-0`, `libasound2t64`, and a display (`DISPLAY` or `xvfb-run`).
-
-Pinned upstream ref: [`product/vscode-ref.txt`](product/vscode-ref.txt) (override with `HORIZON_VSCODE_REF`).
-
-## Quick start (Linux / WSL)
+### Linux / WSL
 
 ```bash
-./ide/scripts/bootstrap.sh   # shallow-clone → ide/code-oss/, brand, sync contrib/horizon
-./ide/scripts/build.sh       # npm ci + npm run compile  (long-running / heavy)
-./ide/scripts/run.sh         # launch built Horizon IDE
+./ide/scripts/bootstrap.sh          # shallow-clone → ide/code-oss/, brand, sync contrib
+./ide/scripts/build.sh              # sync contrib + npm ci + gulp compile-client
+./ide/scripts/run.sh                # overlay + freshness check + sidecar + launch
 ./ide/scripts/run.sh /path/to/workspace
+
+# Fast iteration after editing ide/contrib/horizon (requires a prior build):
+./ide/scripts/dev.sh /path/to/workspace
+# or: make ide-dev
 ```
 
-## Quick start (Windows)
-
-Use PowerShell — do **not** rely on the `.sh` scripts on native Windows:
+### Windows (PowerShell)
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\ide\scripts\windows\Bootstrap.ps1
 .\ide\scripts\windows\Build.ps1
 .\ide\scripts\windows\Run.ps1 .
+
+# Fast iteration:
+.\ide\scripts\windows\Dev.ps1 .
 ```
 
-Full Windows prerequisites, failure checklist, and WSL2 fallback: **[`WINDOWS.md`](WINDOWS.md)**.
+Full Windows prerequisites and troubleshooting: **[`WINDOWS.md`](WINDOWS.md)**.
 
-Map commands inside the IDE (Command Palette):
+Inside the IDE you get:
 
-- **Horizon: Open Horizon Map** (`horizon.map.open`)
-- **Horizon: Toggle Horizon Map** (`horizon.map.toggle`)
-- **Horizon: Analyse Workspace** (`horizon.map.analyse`)
+- **Horizon** activity-bar + status-bar + editor-title buttons (Open Map / Analyse / folder)
+- Auto-analyse of the active Horizon folder on workspace open
+- Folder picker (workspace folders or Browse…) — not JSON upload as the primary path
 
-Re-sync the workbench contrib after editing it:
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| **Linux x64** or **Windows** | Linux: bash scripts. Windows: PowerShell under [`scripts/windows/`](scripts/windows/) |
+| **Node.js ≥ 22.15.1** | Upstream Code-OSS rejects older 22.x; [nvm](https://github.com/nvm-sh/nvm) on Linux / official installer on Windows |
+| **npm** | Bundled with Node; yarn is not supported by modern vscode |
+| **Git** | Shallow clone of `microsoft/vscode` |
+| **Build tools** | Linux: `build-essential`, `python3`, `pkg-config`, `libx11-dev`, `libxkbfile-dev`, `libsecret-1-dev`, `libkrb5-dev`. Windows: **Visual Studio 2026** (preferred) or 2022 + **Desktop development with C++** |
+| **Rust / Cargo** (analyse) | Needed for `horizon-server` sidecar |
+| **RAM / disk** | Full compile wants ~8–15 GB RAM and several GB under `ide/code-oss/` |
+
+Pinned upstream ref: [`product/vscode-ref.txt`](product/vscode-ref.txt) (override with `HORIZON_VSCODE_REF`).
+
+## What `build` does
+
+Every `build.sh` / `Build.ps1` run:
+
+1. Re-applies [`product/product.json`](product/product.json) branding overlay
+2. Patches Code-OSS `preinstall.js` to accept **VS 2026** (Windows toolchain)
+3. **Always** syncs `ide/contrib/horizon` → `ide/code-oss/src/vs/workbench/contrib/horizon`
+4. Runs `npm ci` when `node_modules` is missing/incomplete
+5. Compiles the client so Horizon TypeScript lands in `out/`
+
+**Compile mode** (`HORIZON_COMPILE_MODE`):
+
+| Value | Command | When |
+|---|---|---|
+| `client` (**default**) | `npx gulp compile-client` | Product path — compiles workbench `src` → `out/`, including contrib |
+| `full` | `npm run compile` | Client + extensions; heavier and more failure-prone |
 
 ```bash
-./ide/scripts/sync-contrib.sh        # copy into ide/code-oss/src/vs/workbench/contrib/horizon/
-./ide/scripts/sync-contrib.sh link   # symlink for live edits inside a built IDE
+HORIZON_COMPILE_MODE=full ./ide/scripts/build.sh   # optional full compile
 ```
+
+## What `run` does
+
+1. Re-applies the product overlay
+2. If `ide/contrib/horizon` is newer than `out/.../horizon.contribution.js`, auto **sync + compile-client**
+3. Starts or attaches `horizon-server` (URL written to `ide/.cache/sidecar.url`, exported as `HORIZON_SIDECAR_URL`)
+4. Launches `scripts/code.sh` / `code.bat`
 
 ## Layout
 
@@ -63,31 +93,16 @@ ide/
   product/
     product.json           # Horizon branding + Open VSX gallery overlay
     vscode-ref.txt         # pinned microsoft/vscode tag
-    branding/              # icon placeholders (see branding/README.md)
+    branding/              # icon placeholders
   scripts/
-    bootstrap.sh / build.sh / run.sh / sync-contrib.sh   # Linux / WSL product path
-    windows/             # Windows PowerShell: Bootstrap / Build / Run / Sync-Contrib / Run-Sidecar
-    sync-extension.sh    # LEGACY — deprecated extension package
-    dev-extension.sh     # LEGACY — Extension Development Host (not product)
-    lib.sh               # shared helpers (bash)
-  WINDOWS.md             # Windows prerequisites + troubleshooting
-  extensions/horizon-map/  # DEPRECATED as product — see DEPRECATED.md
+    bootstrap.sh / build.sh / run.sh / dev.sh / sync-contrib.sh / run-sidecar.sh
+    windows/               # Bootstrap / Build / Run / Dev / Sync-Contrib / Run-Sidecar
+    lib.sh                 # shared helpers (bash)
+  WINDOWS.md
+  extensions/horizon-map/  # DEPRECATED as product
   code-oss/                # gitignored Code-OSS checkout (created by bootstrap)
-  patches/                 # optional patches
+  .cache/                  # gitignored (sidecar.url, prebuilt editor, …)
 ```
-
-## Product branding
-
-`bootstrap.sh` / `build.sh` merge [`product/product.json`](product/product.json) on top of stock Code-OSS `product.json`:
-
-| Field | Value |
-|---|---|
-| Display name | **Horizon IDE** |
-| `applicationName` | `horizon-ide` |
-| `dataFolderName` | `.horizon-ide` |
-| Marketplace | Open VSX (Microsoft Marketplace disabled) |
-
-The Map is **built into** the workbench (`contrib/horizon`), not installed as an extension.
 
 ## Environment knobs
 
@@ -96,26 +111,34 @@ The Map is **built into** the workbench (`contrib/horizon`), not installed as an
 | `HORIZON_VSCODE_REF` | Tag/commit to clone (default from `product/vscode-ref.txt`) |
 | `HORIZON_VSCODE_REPO` | Git remote (default `https://github.com/microsoft/vscode.git`) |
 | `HORIZON_CONTRIB_SYNC_MODE` | `copy` (default) or `link` for contrib sync |
+| `HORIZON_COMPILE_MODE` | `client` (default, gulp compile-client) or `full` (npm run compile) |
 | `HORIZON_FORCE_NPM_CI=1` | Force `npm ci` even if `node_modules` exists |
-| `HORIZON_SERVER_PATH` | Absolute path to `horizon-server` for the IDE sidecar / `run-sidecar.sh` |
-| `HORIZON_SIDECAR_URL` | Attach IDE/preview to a running server (`http://127.0.0.1:PORT`) |
+| `HORIZON_SERVER_PATH` | Absolute path to `horizon-server` |
+| `HORIZON_SIDECAR_URL` | Attach to a running server (`http://127.0.0.1:PORT`) |
+| `HORIZON_SIDECAR_URL_FILE` | Default `ide/.cache/sidecar.url` — written by run / run-sidecar |
 | `VSCODE_SKIP_NODE_VERSION_CHECK=1` | Bypass upstream Node version gate (not recommended) |
 | `NODE_OPTIONS` | Defaults to `--max-old-space-size=8192` during compile |
 
 ## Sidecar (map analyse)
 
 ```bash
-./ide/scripts/run-sidecar.sh          # prefer target/release/horizon-server
-curl -s http://127.0.0.1:PORT/api/health
-export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT   # optional attach mode for the IDE
+cargo build -p horizon-server --release
+./ide/scripts/run-sidecar.sh          # writes ide/.cache/sidecar.url
+# run.sh also auto-starts the sidecar when a binary is available
 ```
 
-Workbench contrib analyse wiring is W4; until then the Map EditorPane loads media and
-accepts bridge messages, with analyse stubbed to a clear notification.
+## Makefile shortcuts (Linux / WSL)
+
+```bash
+make ide-bootstrap
+make ide-build
+make ide-run
+make ide-dev
+```
 
 ## Build notes
 
 - First `build.sh` downloads Electron and compiles the workbench; expect **tens of minutes**.
 - Headless agents: use `xvfb-run ./ide/scripts/run.sh` for a smoke launch.
-- Map EditorPane sources: `ide/contrib/horizon/` (see its README).
-- `./ide/scripts/dev-extension.sh` is **legacy** and must not be presented as the product path.
+- Map sources: `ide/contrib/horizon/` (see its README).
+- `./ide/scripts/dev-extension.sh` is **legacy** — not the product path.

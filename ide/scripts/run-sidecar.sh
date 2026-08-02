@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Run horizon-server on loopback for manual IDE / preview testing (W4).
+# Run horizon-server on loopback for IDE / manual testing.
 #
 # Prefers target/release/horizon-server, then target/debug, then
 # `cargo run -p horizon-server`. Always passes --no-open.
+#
+# Writes the listen URL to ide/.cache/sidecar.url so ./ide/scripts/run.sh
+# (and the workbench contrib) can attach via HORIZON_SIDECAR_URL.
 #
 # Usage:
 #   ./ide/scripts/run-sidecar.sh
 #   ./ide/scripts/run-sidecar.sh --map /path/to/map.json
 #
 # Env:
-#   HORIZON_SERVER_PATH  Absolute path to a horizon-server binary (overrides search)
-#   HORIZON_SIDECAR_URL  Printed after start so you can export it for the IDE:
-#                        export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT
+#   HORIZON_SERVER_PATH     Absolute path to a horizon-server binary
+#   HORIZON_SIDECAR_URL_FILE  Override URL file path (default ide/.cache/sidecar.url)
 #
 # Health: GET http://127.0.0.1:PORT/api/health → {"ok":true}
 # Analyse: POST /api/analyse  {"path":"/abs/workspace"}
@@ -25,46 +27,38 @@ REPO_ROOT="${HORIZON_REPO_ROOT}"
 EXTRA_ARGS=("$@")
 
 pick_binary() {
-  if [[ -n "${HORIZON_SERVER_PATH:-}" ]]; then
-    if [[ -x "${HORIZON_SERVER_PATH}" ]]; then
-      echo "${HORIZON_SERVER_PATH}"
-      return 0
-    fi
-    horizon_die "HORIZON_SERVER_PATH is set but not executable: ${HORIZON_SERVER_PATH}"
-  fi
+  horizon_find_sidecar_bin
+}
 
-  local release debug
-  release="${REPO_ROOT}/target/release/horizon-server"
-  debug="${REPO_ROOT}/target/debug/horizon-server"
-
-  if [[ -x "${release}" ]]; then
-    echo "${release}"
-    return 0
+write_url_from_line() {
+  local line="$1"
+  if [[ "${line}" =~ ^http://(127\.0\.0\.1|localhost|\[::1\]):[0-9]+/?$ ]]; then
+    horizon_write_sidecar_url_file "${line}"
+    echo "export HORIZON_SIDECAR_URL=${line%/}" >&2
   fi
-  if [[ -x "${debug}" ]]; then
-    echo "${debug}"
-    return 0
-  fi
-
-  if command -v horizon-server >/dev/null 2>&1; then
-    command -v horizon-server
-    return 0
-  fi
-
-  return 1
 }
 
 horizon_info "Horizon sidecar (loopback only, --no-open)"
+horizon_info "URL file: ${HORIZON_SIDECAR_URL_FILE}"
 
 BIN=""
 if BIN="$(pick_binary)"; then
   horizon_info "using binary: ${BIN}"
-  # Print URL on stdout; keep server in foreground for Ctrl-C.
-  # Capture the first line (listen URL) while still streaming output.
-  exec "${BIN}" --no-open "${EXTRA_ARGS[@]}"
+  # Stream output; capture first listen URL into the shared URL file.
+  mkdir -p "$(dirname "${HORIZON_SIDECAR_URL_FILE}")"
+  "${BIN}" --no-open "${EXTRA_ARGS[@]}" 2>&1 | while IFS= read -r line || [[ -n "${line}" ]]; do
+    printf '%s\n' "${line}"
+    write_url_from_line "${line}" || true
+  done
+  exit "${PIPESTATUS[0]:-0}"
 fi
 
 horizon_info "no built binary found; falling back to: cargo run -p horizon-server -- --no-open"
 horizon_info "(tip: cargo build -p horizon-server --release for faster restarts)"
 cd "${REPO_ROOT}"
-exec cargo run -p horizon-server -- --no-open "${EXTRA_ARGS[@]}"
+mkdir -p "$(dirname "${HORIZON_SIDECAR_URL_FILE}")"
+cargo run -p horizon-server -- --no-open "${EXTRA_ARGS[@]}" 2>&1 | while IFS= read -r line || [[ -n "${line}" ]]; do
+  printf '%s\n' "${line}"
+  write_url_from_line "${line}" || true
+done
+exit "${PIPESTATUS[0]:-0}"

@@ -20,3 +20,4 @@ esac
 
 [[ -d "${HORIZON_CODE_OSS_DIR}" ]] || horizon_die "Code-OSS missing; run ./ide/scripts/bootstrap.sh first"
 horizon_sync_contrib "${MODE}"
+horizon_info "done — run ./ide/scripts/build.sh or ./ide/scripts/dev.sh (gulp compile-client) so out/ picks up changes"
