@@ -1630,7 +1630,8 @@
         : ".") +
       ` Dropped: ${summary.external_dropped ?? 0} external, ` +
       `${summary.constructor_dropped ?? 0} constructor, ` +
-      `${summary.associated_dropped ?? 0} associated.`;
+      `${summary.associated_dropped ?? 0} associated, ` +
+      `${summary.local_dropped ?? 0} closure/binding.`;
     els.archSticky.hidden = nFiles === 0;
 
     els.canvasEmpty.hidden = nFiles > 0;
@@ -2930,7 +2931,8 @@
     const droppedExt = summary.external_dropped ?? 0;
     const droppedCtor = summary.constructor_dropped ?? 0;
     const droppedAssoc = summary.associated_dropped ?? 0;
-    const droppedTotal = droppedExt + droppedCtor + droppedAssoc;
+    const droppedLocal = summary.local_dropped ?? 0;
+    const droppedTotal = droppedExt + droppedCtor + droppedAssoc + droppedLocal;
 
     if (banner) {
       banner.hidden = false;
@@ -2950,7 +2952,7 @@
       }
       const dropText =
         droppedTotal > 0
-          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated — deliberate exclusions, not resolution failures.`
+          ? `Dropped from the map (not listed): ${droppedExt} external, ${droppedCtor} constructor, ${droppedAssoc} associated, ${droppedLocal} closure/binding — deliberate exclusions, not resolution failures.`
           : `No deliberate drops in this map summary.`;
       banner.innerHTML =
         `<div>${escapeHtml(head)}</div>` +
