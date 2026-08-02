@@ -3,7 +3,7 @@
 # Before launch:
 #   - Re-apply product overlay (branding)
 #   - If contrib sources are newer than out\, auto sync + gulp compile-client
-#   - Start / attach horizon-server sidecar (URL → ide\.cache\sidecar.url)
+#   - Start / attach horizon-server sidecar (URL → ide\.cache\horizon-sidecar.url)
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]

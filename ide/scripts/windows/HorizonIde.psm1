@@ -24,10 +24,11 @@ function Get-HorizonRoots {
         ContribSrc    = Join-Path $ide "contrib\horizon"
         ContribDst    = Join-Path $ide "code-oss\src\vs\workbench\contrib\horizon"
         WorkbenchMain = Join-Path $ide "code-oss\src\vs\workbench\workbench.common.main.ts"
+        WorkbenchDesktopMain = Join-Path $ide "code-oss\src\vs\workbench\workbench.desktop.main.ts"
         CacheDir      = Join-Path $ide ".cache"
-        SidecarUrlFile = if ($env:HORIZON_SIDECAR_URL_FILE) { $env:HORIZON_SIDECAR_URL_FILE } else { Join-Path $ide ".cache\sidecar.url" }
-        SidecarPidFile = if ($env:HORIZON_SIDECAR_PID_FILE) { $env:HORIZON_SIDECAR_PID_FILE } else { Join-Path $ide ".cache\sidecar.pid" }
-        SidecarLogFile = if ($env:HORIZON_SIDECAR_LOG_FILE) { $env:HORIZON_SIDECAR_LOG_FILE } else { Join-Path $ide ".cache\sidecar.log" }
+        SidecarUrlFile = if ($env:HORIZON_SIDECAR_URL_FILE) { $env:HORIZON_SIDECAR_URL_FILE } else { Join-Path $ide ".cache\horizon-sidecar.url" }
+        SidecarPidFile = if ($env:HORIZON_SIDECAR_PID_FILE) { $env:HORIZON_SIDECAR_PID_FILE } else { Join-Path $ide ".cache\horizon-sidecar.pid" }
+        SidecarLogFile = if ($env:HORIZON_SIDECAR_LOG_FILE) { $env:HORIZON_SIDECAR_LOG_FILE } else { Join-Path $ide ".cache\horizon-sidecar.log" }
         VscodeRef     = $ref
         VscodeRepo    = if ($env:HORIZON_VSCODE_REPO) { $env:HORIZON_VSCODE_REPO } else { "https://github.com/microsoft/vscode.git" }
     }
@@ -233,6 +234,7 @@ function Sync-HorizonContrib {
     }
 
     Wire-HorizonContribImport -Roots $Roots
+    Wire-HorizonDesktopContribImport -Roots $Roots
 }
 
 function Wire-HorizonContribImport {
@@ -262,6 +264,38 @@ function Wire-HorizonContribImport {
     }
     [System.IO.File]::WriteAllText($mainTs, $text, [System.Text.UTF8Encoding]::new($false))
     Write-HorizonInfo "wired Horizon contrib import -> $mainTs"
+}
+
+function Wire-HorizonDesktopContribImport {
+    param($Roots)
+    $entrySrc = Join-Path $Roots.ContribSrc "electron-browser\horizon.contribution.ts"
+    $entryDst = Join-Path $Roots.ContribDst "electron-browser\horizon.contribution.ts"
+    if (-not (Test-Path $entrySrc) -and -not (Test-Path $entryDst)) {
+        Write-HorizonInfo "no electron-browser horizon contribution yet; skip desktop import wire"
+        return
+    }
+    $mainTs = $Roots.WorkbenchDesktopMain
+    if (-not $mainTs -or -not (Test-Path $mainTs)) {
+        Write-HorizonWarn "missing workbench.desktop.main.ts; skip desktop contrib wire"
+        return
+    }
+    $marker = "contrib/horizon/electron-browser/horizon.contribution"
+    $importLine = "import './contrib/horizon/electron-browser/horizon.contribution.js';"
+    $text = [System.IO.File]::ReadAllText($mainTs)
+    if ($text.Contains($marker)) {
+        Write-HorizonInfo "Horizon electron sidecar already registered in workbench.desktop.main.ts"
+        return
+    }
+    $block = "`r`n// Horizon Map sidecar (desktop spawn/attach — electron-browser)`r`n$importLine`r`n"
+    $needle = "export { main }"
+    $idx = $text.IndexOf($needle)
+    if ($idx -lt 0) {
+        $text = $text.TrimEnd() + "`r`n" + $block
+    } else {
+        $text = $text.Substring(0, $idx) + $block + "`r`n" + $text.Substring($idx)
+    }
+    [System.IO.File]::WriteAllText($mainTs, $text, [System.Text.UTF8Encoding]::new($false))
+    Write-HorizonInfo "wired Horizon desktop contrib import -> $mainTs"
 }
 
 function Test-HorizonCodeOssBuilt {
@@ -397,11 +431,16 @@ function Test-HorizonSidecarUrlHealthy {
 
 function Read-HorizonSidecarUrlFile {
     param($Roots)
-    $f = $Roots.SidecarUrlFile
-    if (-not (Test-Path $f)) { return $null }
-    $url = ((Get-Content -Raw $f) -split "\r?\n" | Select-Object -First 1).Trim()
-    if ($url -match '^http://(127\.0\.0\.1|localhost|\[::1\]):\d+/?$') {
-        return $url.TrimEnd("/")
+    $candidates = @(
+        $Roots.SidecarUrlFile,
+        (Join-Path $Roots.IdeRoot ".cache\sidecar.url")
+    )
+    foreach ($f in $candidates) {
+        if (-not (Test-Path $f)) { continue }
+        $url = ((Get-Content -Raw $f) -split "\r?\n" | Select-Object -First 1).Trim()
+        if ($url -match '^http://(127\.0\.0\.1|localhost|\[::1\]):\d+/?$') {
+            return $url.TrimEnd("/")
+        }
     }
     return $null
 }
@@ -508,6 +547,7 @@ Export-ModuleMember -Function @(
     "Ensure-HorizonProductOverlay",
     "Sync-HorizonContrib",
     "Wire-HorizonContribImport",
+    "Wire-HorizonDesktopContribImport",
     "Test-HorizonCodeOssBuilt",
     "Test-HorizonBuiltIn",
     "Get-HorizonContribOutJs",

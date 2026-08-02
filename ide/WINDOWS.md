@@ -42,12 +42,12 @@ $env:HORIZON_COMPILE_MODE = "full"
 
 # Sidecar (also auto-started by Run.ps1 when horizon-server.exe exists)
 cargo build -p horizon-server --release
-.\ide\scripts\windows\Run-Sidecar.ps1    # writes ide\.cache\sidecar.url
+.\ide\scripts\windows\Run-Sidecar.ps1    # writes ide\.cache\horizon-sidecar.url
 ```
 
 Inside the IDE: activity-bar **Horizon**, status-bar **Horizon**, editor-title map/analyse — or Command Palette → **Horizon: Open Horizon Map**.
 
-`Build.ps1` **always** syncs `ide\contrib\horizon` and compiles it into `out\` (default `npx gulp compile-client`). `Run.ps1` re-applies the product overlay, recompiles if contrib sources are newer than `out\`, and starts/attaches the sidecar via `ide\.cache\sidecar.url`.
+`Build.ps1` **always** syncs `ide\contrib\horizon` and compiles it into `out\` (default `npx gulp compile-client`). `Run.ps1` re-applies the product overlay, recompiles if contrib sources are newer than `out\`, and starts/attaches the sidecar via `ide\.cache\horizon-sidecar.url`.
 
 ### Common native failures
 

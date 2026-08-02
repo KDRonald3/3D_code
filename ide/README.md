@@ -82,7 +82,7 @@ HORIZON_COMPILE_MODE=full ./ide/scripts/build.sh   # optional full compile
 
 1. Re-applies the product overlay
 2. If `ide/contrib/horizon` is newer than `out/.../horizon.contribution.js`, auto **sync + compile-client**
-3. Starts or attaches `horizon-server` (URL written to `ide/.cache/sidecar.url`, exported as `HORIZON_SIDECAR_URL`)
+3. Starts or attaches `horizon-server` (URL written to `ide/.cache/horizon-sidecar.url`, exported as `HORIZON_SIDECAR_URL`)
 4. Launches `scripts/code.sh` / `code.bat`
 
 ## Layout
@@ -101,7 +101,7 @@ ide/
   WINDOWS.md
   extensions/horizon-map/  # DEPRECATED as product
   code-oss/                # gitignored Code-OSS checkout (created by bootstrap)
-  .cache/                  # gitignored (sidecar.url, prebuilt editor, …)
+  .cache/                  # gitignored (horizon-sidecar.url, prebuilt editor, …)
 ```
 
 ## Environment knobs
@@ -115,7 +115,7 @@ ide/
 | `HORIZON_FORCE_NPM_CI=1` | Force `npm ci` even if `node_modules` exists |
 | `HORIZON_SERVER_PATH` | Absolute path to `horizon-server` |
 | `HORIZON_SIDECAR_URL` | Attach to a running server (`http://127.0.0.1:PORT`) |
-| `HORIZON_SIDECAR_URL_FILE` | Default `ide/.cache/sidecar.url` — written by run / run-sidecar |
+| `HORIZON_SIDECAR_URL_FILE` | Default `ide/.cache/horizon-sidecar.url` — written by run / run-sidecar |
 | `VSCODE_SKIP_NODE_VERSION_CHECK=1` | Bypass upstream Node version gate (not recommended) |
 | `NODE_OPTIONS` | Defaults to `--max-old-space-size=8192` during compile |
 
@@ -123,7 +123,7 @@ ide/
 
 ```bash
 cargo build -p horizon-server --release
-./ide/scripts/run-sidecar.sh          # writes ide/.cache/sidecar.url
+./ide/scripts/run-sidecar.sh          # writes ide/.cache/horizon-sidecar.url
 # run.sh also auto-starts the sidecar when a binary is available
 ```
 

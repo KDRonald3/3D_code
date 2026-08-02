@@ -21,9 +21,11 @@ HORIZON_EXTENSION_SRC="${HORIZON_IDE_ROOT}/extensions/horizon-map"
 HORIZON_EXTENSION_DST="${HORIZON_CODE_OSS_DIR}/extensions/horizon-map"
 HORIZON_PREBUILT_DIR="${HORIZON_IDE_ROOT}/.cache/prebuilt"
 # Sidecar listen URL written by run-sidecar / run.sh for IDE attach (gitignored under .cache/).
-HORIZON_SIDECAR_URL_FILE="${HORIZON_SIDECAR_URL_FILE:-${HORIZON_IDE_ROOT}/.cache/sidecar.url}"
-HORIZON_SIDECAR_PID_FILE="${HORIZON_SIDECAR_PID_FILE:-${HORIZON_IDE_ROOT}/.cache/sidecar.pid}"
-HORIZON_SIDECAR_LOG_FILE="${HORIZON_SIDECAR_LOG_FILE:-${HORIZON_IDE_ROOT}/.cache/sidecar.log}"
+# Canonical name: horizon-sidecar.url (also accept legacy sidecar.url when reading).
+HORIZON_SIDECAR_URL_FILE="${HORIZON_SIDECAR_URL_FILE:-${HORIZON_IDE_ROOT}/.cache/horizon-sidecar.url}"
+HORIZON_SIDECAR_PID_FILE="${HORIZON_SIDECAR_PID_FILE:-${HORIZON_IDE_ROOT}/.cache/horizon-sidecar.pid}"
+HORIZON_SIDECAR_LOG_FILE="${HORIZON_SIDECAR_LOG_FILE:-${HORIZON_IDE_ROOT}/.cache/horizon-sidecar.log}"
+HORIZON_WORKBENCH_DESKTOP_MAIN="${HORIZON_CODE_OSS_DIR}/src/vs/workbench/workbench.desktop.main.ts"
 # Compile mode for build.sh / compile helpers: client (default) | full
 # client = npx gulp compile-client (workbench src → out/, includes contrib/horizon)
 # full   = npm run compile (client + extensions; heavier / flakier)
@@ -259,6 +261,7 @@ horizon_sync_contrib() {
   esac
 
   horizon_wire_contrib_import
+  horizon_wire_desktop_contrib_import
 }
 
 # Ensure workbench.common.main.ts imports the Horizon Map contribution.
@@ -297,6 +300,51 @@ else:
     text = text[:idx] + block + "\n" + text[idx:]
     path.write_text(text, encoding="utf-8")
 print(f"wired Horizon contrib import -> {path}")
+PY
+}
+
+# Ensure workbench.desktop.main.ts imports the Horizon electron-browser sidecar contribution.
+# Skips cleanly when electron-browser sources are not present yet.
+horizon_wire_desktop_contrib_import() {
+  local main_ts="${HORIZON_WORKBENCH_DESKTOP_MAIN}"
+  local marker="contrib/horizon/electron-browser/horizon.contribution"
+  local import_line="import './contrib/horizon/electron-browser/horizon.contribution.js';"
+  local entry_src="${HORIZON_CONTRIB_SRC}/electron-browser/horizon.contribution.ts"
+  local entry_dst="${HORIZON_CONTRIB_DST}/electron-browser/horizon.contribution.ts"
+
+  if [[ ! -f "${entry_src}" && ! -f "${entry_dst}" ]]; then
+    horizon_info "no electron-browser horizon contribution yet; skip desktop import wire"
+    return 0
+  fi
+
+  [[ -f "${main_ts}" ]] || {
+    horizon_warn "missing ${main_ts}; skip desktop contrib wire"
+    return 0
+  }
+
+  if grep -qF "${marker}" "${main_ts}"; then
+    horizon_info "Horizon electron sidecar already registered in workbench.desktop.main.ts"
+    return 0
+  fi
+
+  python3 - "${main_ts}" "${import_line}" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+import_line = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+block = (
+    "\n// Horizon Map sidecar (desktop spawn/attach — electron-browser)\n"
+    f"{import_line}\n"
+)
+needle = "export { main }"
+idx = text.find(needle)
+if idx == -1:
+    path.write_text(text.rstrip() + "\n" + block, encoding="utf-8")
+else:
+    text = text[:idx] + block + "\n" + text[idx:]
+    path.write_text(text, encoding="utf-8")
+print(f"wired Horizon desktop contrib import -> {path}")
 PY
 }
 
@@ -512,8 +560,7 @@ horizon_compile_client() {
   ) || horizon_die "gulp compile-client failed"
   local out_js
   out_js="$(horizon_contrib_out_js)"
-  [[ -f "${out_js}" ]] || horizon_die "compile-client finished but Horizon contrib JS missing: ${out_js}
-Did sync-contrib run before compile? Re-run ./ide/scripts/build.sh"
+  [[ -f "${out_js}" ]] || horizon_die "compile-client finished but Horizon contrib JS missing: ${out_js} (did sync-contrib run? re-run ./ide/scripts/build.sh)"
   horizon_info "Horizon contrib compiled -> ${out_js}"
 }
 
@@ -526,8 +573,7 @@ horizon_compile_full() {
     cd "${HORIZON_CODE_OSS_DIR}"
     horizon_info "compiling Code-OSS (npm run compile — full client + extensions)…"
     npm run compile
-  ) || horizon_die "npm run compile failed
-Tip: default build uses compile-client only (HORIZON_COMPILE_MODE=client). Fix errors or retry."
+  ) || horizon_die "npm run compile failed (tip: default build uses HORIZON_COMPILE_MODE=client)"
   local out_js
   out_js="$(horizon_contrib_out_js)"
   [[ -f "${out_js}" ]] || horizon_die "full compile finished but Horizon contrib JS missing: ${out_js}"
@@ -604,12 +650,17 @@ horizon_sidecar_url_healthy() {
 }
 
 horizon_read_sidecar_url_file() {
-  local f="${HORIZON_SIDECAR_URL_FILE}"
-  [[ -f "${f}" ]] || return 1
-  local url
-  url="$(tr -d '[:space:]' < "${f}" | head -n1)"
-  [[ "${url}" == http://127.0.0.1:* || "${url}" == http://localhost:* || "${url}" == http://[::1]:* ]] || return 1
-  echo "${url%/}"
+  local candidates=("${HORIZON_SIDECAR_URL_FILE}" "${HORIZON_IDE_ROOT}/.cache/sidecar.url")
+  local f url
+  for f in "${candidates[@]}"; do
+    [[ -f "${f}" ]] || continue
+    url="$(tr -d '[:space:]' < "${f}" | head -n1)"
+    if [[ "${url}" == http://127.0.0.1:* || "${url}" == http://localhost:* || "${url}" == http://[::1]:* ]]; then
+      echo "${url%/}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 horizon_write_sidecar_url_file() {
@@ -647,7 +698,7 @@ horizon_find_sidecar_bin() {
 }
 
 # Ensure a loopback sidecar is reachable; start one in background if needed.
-# Coordinates via ide/.cache/sidecar.url (also written by run-sidecar.sh).
+# Coordinates via ide/.cache/horizon-sidecar.url (also written by run-sidecar.sh).
 # Best-effort: missing binary only warns so the IDE can still launch.
 horizon_ensure_sidecar() {
   local url=""

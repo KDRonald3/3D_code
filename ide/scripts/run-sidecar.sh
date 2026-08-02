@@ -4,7 +4,7 @@
 # Prefers target/release/horizon-server, then target/debug, then
 # `cargo run -p horizon-server`. Always passes --no-open.
 #
-# Writes the listen URL to ide/.cache/sidecar.url so ./ide/scripts/run.sh
+# Writes the listen URL to ide/.cache/horizon-sidecar.url so ./ide/scripts/run.sh
 # (and the workbench contrib) can attach via HORIZON_SIDECAR_URL.
 #
 # Usage:
@@ -13,7 +13,7 @@
 #
 # Env:
 #   HORIZON_SERVER_PATH     Absolute path to a horizon-server binary
-#   HORIZON_SIDECAR_URL_FILE  Override URL file path (default ide/.cache/sidecar.url)
+#   HORIZON_SIDECAR_URL_FILE  Override URL file path (default ide/.cache/horizon-sidecar.url)
 #
 # Health: GET http://127.0.0.1:PORT/api/health → {"ok":true}
 # Analyse: POST /api/analyse  {"path":"/abs/workspace"}

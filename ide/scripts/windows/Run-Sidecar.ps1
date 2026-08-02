@@ -1,5 +1,5 @@
 # Start horizon-server on loopback for Map analyse (Windows).
-# Writes the listen URL to ide\.cache\sidecar.url for Run.ps1 / IDE attach.
+# Writes the listen URL to ide\.cache\horizon-sidecar.url for Run.ps1 / IDE attach.
 [CmdletBinding()]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
