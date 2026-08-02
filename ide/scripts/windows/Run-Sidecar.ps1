@@ -29,7 +29,10 @@ if ($ExtraArgs) { $argList += $ExtraArgs }
 if ($bin) {
     Write-HorizonInfo "using binary: $bin"
     New-Item -ItemType Directory -Force -Path $Roots.CacheDir | Out-Null
-    & $bin @argList 2>&1 | ForEach-Object {
+    # No 2>&1: PowerShell 5.1 turns a native command's stderr into ErrorRecords, which
+    # $ErrorActionPreference='Stop' then makes fatal — one warning would kill the sidecar.
+    # The listen URL is printed on stdout, so stderr can go straight to the console.
+    & $bin @argList | ForEach-Object {
         $line = "$_"
         Write-Host $line
         Write-UrlFromLine $line
@@ -52,7 +55,8 @@ Write-HorizonInfo "no binary found; using cargo run -p horizon-server -- --no-op
 Push-Location $Roots.RepoRoot
 try {
     New-Item -ItemType Directory -Force -Path $Roots.CacheDir | Out-Null
-    cargo run -p horizon-server --release -- --no-open @ExtraArgs 2>&1 | ForEach-Object {
+    # No 2>&1 — see the note above; cargo is especially chatty on stderr.
+    cargo run -p horizon-server --release -- --no-open @ExtraArgs | ForEach-Object {
         $line = "$_"
         Write-Host $line
         Write-UrlFromLine $line

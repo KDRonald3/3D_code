@@ -21,7 +21,7 @@
 import { VSBuffer, encodeHex } from '../../../../base/common/buffer.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { basename, isEqual, isEqualOrParent, joinPath, resolvePath } from '../../../../base/common/resources.js';
+import { isEqual, isEqualOrParent, joinPath, resolvePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { IPosition } from '../../../../editor/common/core/position.js';
@@ -58,8 +58,15 @@ export interface IHorizonInspectionService {
 	/** Open / reveal a free function in a read-only editor on the real file URI. */
 	openInspection(payload: SelectFunctionPayload): Promise<void>;
 
-	/** Open a file read-only without a function range (file-card selection). */
-	openFileReadonly(filePath: string): Promise<void>;
+	/**
+	 * Record the Map's current function selection without opening anything.
+	 * Selecting in the Map is a browsing gesture; taking over the editor area
+	 * belongs to an explicit command.
+	 */
+	setPendingSelection(payload: SelectFunctionPayload | undefined): void;
+
+	/** Open the remembered selection — the explicit counterpart to the above. */
+	openPendingSelection(): Promise<void>;
 
 	/**
 	 * Trigger the suggest widget in the active inspection editor.
@@ -90,6 +97,8 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 	declare readonly _serviceBrand: undefined;
 
 	private session: InspectionSession | undefined;
+	/** Last function selected in the Map; opened only on explicit request. */
+	private pendingSelection: SelectFunctionPayload | undefined;
 	private readonly status: IStatusbarEntryAccessor;
 	private readonly inspectionActive: IContextKey<boolean>;
 	/** Document versions we last observed — used to undo sneaky edits. */
@@ -145,6 +154,24 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 		}));
 	}
 
+	setPendingSelection(payload: SelectFunctionPayload | undefined): void {
+		this.pendingSelection = payload;
+	}
+
+	async openPendingSelection(): Promise<void> {
+		if (!this.pendingSelection) {
+			this.notificationService.notify({
+				severity: Severity.Info,
+				message: localize(
+					'horizonInspectNoSelection',
+					"Horizon: select a function in the Map first, then run this command."
+				),
+			});
+			return;
+		}
+		await this.openInspection(this.pendingSelection);
+	}
+
 	async openInspection(payload: SelectFunctionPayload): Promise<void> {
 		const filePath = payload.filePath;
 		if (!filePath) {
@@ -180,20 +207,6 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 			functionName,
 			range,
 			preview: false,
-		});
-	}
-
-	async openFileReadonly(filePath: string): Promise<void> {
-		const uri = await this.resolveWorkspaceFile(filePath);
-		if (!uri) {
-			return;
-		}
-		const label = basename(uri);
-		await this.openReadonlyEditor(uri, {
-			functionId: null,
-			functionName: label,
-			range: undefined,
-			preview: true,
 		});
 	}
 

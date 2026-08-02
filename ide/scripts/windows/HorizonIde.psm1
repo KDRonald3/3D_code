@@ -143,6 +143,57 @@ function Repair-HorizonPreinstallVs2026 {
     }
 }
 
+function Repair-HorizonWorkbenchCsp {
+    param($Roots)
+    # Upstream workbench CSP allows only `'self' https: ws:` on connect-src, which blocks the
+    # loopback sidecar (http://127.0.0.1:PORT) that Horizon analyse depends on.
+    $htmlDir = Join-Path $Roots.CodeOssDir "src\vs\code\electron-browser\workbench"
+    $marker = "http://127.0.0.1:*"
+    foreach ($name in @("workbench.html", "workbench-dev.html")) {
+        $file = Join-Path $htmlDir $name
+        if (-not (Test-Path $file)) {
+            Write-HorizonWarn "$name missing; skipping sidecar CSP patch"
+            continue
+        }
+        $text = [System.IO.File]::ReadAllText($file)
+        if ($text.Contains($marker)) {
+            Write-HorizonInfo "sidecar CSP already allowed in $name"
+            continue
+        }
+        # Whitespace/EOL-agnostic: append the loopback origins just before the directive's `;`.
+        $pattern = "(?s)(connect-src\s+'self'\s+https:\s+ws:)(\s*;)"
+        $updated = [regex]::Replace($text, $pattern, {
+            param($m)
+            $indent = "`n`t`t`t`t`t"
+            "$($m.Groups[1].Value)${indent}http://127.0.0.1:*${indent}http://localhost:*$($m.Groups[2].Value)"
+        }, 1)
+        if ($updated -ne $text) {
+            [System.IO.File]::WriteAllText($file, $updated, [System.Text.UTF8Encoding]::new($false))
+            Write-HorizonInfo "patched $name connect-src to allow the loopback sidecar"
+        } else {
+            Write-HorizonWarn "could not locate connect-src in $name; leave unchanged"
+        }
+    }
+
+    # The browser workbench builds its CSP in TypeScript and has the same gap.
+    $webServer = Join-Path $Roots.CodeOssDir "src\vs\server\node\webClientServer.ts"
+    if (Test-Path $webServer) {
+        $text = [System.IO.File]::ReadAllText($webServer)
+        if ($text.Contains($marker)) {
+            Write-HorizonInfo "sidecar CSP already allowed in webClientServer.ts"
+        } else {
+            $old = "'connect-src \'self\' ws: wss: https:;'"
+            $new = "'connect-src \'self\' ws: wss: https: http://127.0.0.1:* http://localhost:*;'"
+            if ($text.Contains($old)) {
+                [System.IO.File]::WriteAllText($webServer, $text.Replace($old, $new), [System.Text.UTF8Encoding]::new($false))
+                Write-HorizonInfo "patched webClientServer.ts connect-src to allow the loopback sidecar"
+            } else {
+                Write-HorizonWarn "could not locate connect-src in webClientServer.ts; leave unchanged"
+            }
+        }
+    }
+}
+
 function Assert-HorizonWindowsPrereqs {
     if (-not (Test-HorizonCommand "git")) {
         Throw-Horizon "Git is required. Install from https://git-scm.com/download/win"
@@ -599,6 +650,7 @@ Export-ModuleMember -Function @(
     "Test-HorizonWindowsBuildTools",
     "Get-HorizonVisualStudioInstallPath",
     "Repair-HorizonPreinstallVs2026",
+    "Repair-HorizonWorkbenchCsp",
     "Resolve-HorizonNodeGyp",
     "Test-HorizonCommand"
 )

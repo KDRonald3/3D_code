@@ -37,6 +37,7 @@ fi
 # --- Product surface: brand + toolchain patch + always sync contrib -----------
 horizon_ensure_product_overlay
 horizon_patch_preinstall_vs2026
+horizon_patch_workbench_csp
 horizon_sync_contrib "${HORIZON_CONTRIB_SYNC_MODE:-copy}"
 
 cd "${HORIZON_CODE_OSS_DIR}"

@@ -24,6 +24,8 @@ export const HORIZON_CMD_HIDE = 'horizon.map.hide';
 export const HORIZON_CMD_CHOOSE_FOLDER = 'horizon.map.chooseFolder';
 /** Trigger suggest in the active Inspection editor (informational completions). */
 export const HORIZON_CMD_TRIGGER_INSPECT_SUGGEST = 'horizon.inspection.triggerSuggest';
+/** Explicit opt-in to the inspection editor; Map selection never opens it. */
+export const HORIZON_CMD_OPEN_SELECTED_FUNCTION = 'horizon.inspection.openSelectedFunction';
 
 /** Context key: an Inspection editor is the active text editor. */
 export const HORIZON_INSPECTION_ACTIVE_CONTEXT = 'horizon.inspection.active';

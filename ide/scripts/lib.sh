@@ -176,6 +176,62 @@ else:
 PY
 }
 
+# Upstream workbench CSP allows only `'self' https: ws:` on connect-src, which blocks the
+# loopback sidecar (http://127.0.0.1:PORT) that Horizon analyse depends on.
+horizon_patch_workbench_csp() {
+  local html_dir="${HORIZON_CODE_OSS_DIR}/src/vs/code/electron-browser/workbench"
+  local name
+  for name in workbench.html workbench-dev.html; do
+    local file="${html_dir}/${name}"
+    [[ -f "${file}" ]] || {
+      horizon_warn "${name} missing; skipping sidecar CSP patch"
+      continue
+    }
+    python3 - "${file}" <<'PY'
+from pathlib import Path
+import re
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if "http://127.0.0.1:*" in text:
+    print(f"sidecar CSP already allowed in {path.name}")
+    sys.exit(0)
+indent = "\n\t\t\t\t\t"
+pattern = re.compile(r"(connect-src\s+'self'\s+https:\s+ws:)(\s*;)", re.S)
+updated, n = pattern.subn(
+    lambda m: f"{m.group(1)}{indent}http://127.0.0.1:*{indent}http://localhost:*{m.group(2)}",
+    text,
+    count=1,
+)
+if n:
+    path.write_text(updated, encoding="utf-8")
+    print(f"patched {path.name} connect-src to allow the loopback sidecar")
+else:
+    print(f"warning: could not locate connect-src in {path.name}; leave unchanged", file=sys.stderr)
+PY
+  done
+
+  # The browser workbench builds its CSP in TypeScript and has the same gap.
+  local web_server="${HORIZON_CODE_OSS_DIR}/src/vs/server/node/webClientServer.ts"
+  [[ -f "${web_server}" ]] || return 0
+  python3 - "${web_server}" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if "http://127.0.0.1:*" in text:
+    print(f"sidecar CSP already allowed in {path.name}")
+    sys.exit(0)
+old = "'connect-src \\'self\\' ws: wss: https:;'"
+new = "'connect-src \\'self\\' ws: wss: https: http://127.0.0.1:* http://localhost:*;'"
+if old in text:
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print(f"patched {path.name} connect-src to allow the loopback sidecar")
+else:
+    print(f"warning: could not locate connect-src in {path.name}; leave unchanged", file=sys.stderr)
+PY
+}
+
 horizon_sync_extension() {
   # DEPRECATED: never copy the extension package into Code-OSS — it conflicts
   # with the built-in workbench contrib (duplicate commands / viewlet ids).

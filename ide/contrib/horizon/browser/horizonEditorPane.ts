@@ -217,7 +217,11 @@ export class HorizonMapEditorPane extends EditorPane {
 				await this.runAnalyse(undefined, true);
 				break;
 			case 'selectFunction':
-				await this._inspectionService.openInspection({
+				// Selection never takes over the editor area on its own: the Map's own
+				// Inspector already shows the body, and hovering previews it without
+				// even changing selection. The rust-analyzer inspection editor is
+				// opened by the explicit "Open Selected Function in Editor" command.
+				this._inspectionService.setPendingSelection({
 					type: 'selectFunction',
 					functionId: msg.functionId,
 					fileId: msg.fileId ?? null,
@@ -230,9 +234,10 @@ export class HorizonMapEditorPane extends EditorPane {
 				});
 				break;
 			case 'selectFile':
-				if (msg.filePath) {
-					await this._inspectionService.openFileReadonly(msg.filePath);
-				}
+				// Deliberately inert. Selecting a file card is a browsing gesture: it
+				// updates the Map's own Inspector and nothing else. Opening an editor
+				// here stole focus from the Map and fired a notification per click.
+				// Opening code stays tied to selecting a *function*.
 				break;
 			case 'openMapJson':
 				await this.openMapJson();

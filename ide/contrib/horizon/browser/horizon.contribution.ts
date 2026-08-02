@@ -14,6 +14,7 @@ import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
@@ -38,6 +39,7 @@ import {
 	HORIZON_CMD_OPEN,
 	HORIZON_CMD_SHOW,
 	HORIZON_CMD_TOGGLE,
+	HORIZON_CMD_OPEN_SELECTED_FUNCTION,
 	HORIZON_CMD_TRIGGER_INSPECT_SUGGEST,
 	HORIZON_INSPECTION_ACTIVE_CONTEXT,
 	HORIZON_MAP_VISIBLE_CONTEXT,
@@ -55,6 +57,31 @@ import './horizonSidecarService.js';
 
 registerSingleton(IHorizonAnalysisService, HorizonAnalysisService, InstantiationType.Delayed);
 registerSingleton(IHorizonInspectionService, HorizonInspectionService, InstantiationType.Delayed);
+
+//#endregion
+
+//#region --- Configuration
+
+// The desktop build discovers the sidecar through HORIZON_SIDECAR_URL, but `env`
+// is hardcoded to `{}` in web (base/common/process.ts), so the browser workbench
+// has no way to reach a sidecar without a setting.
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'horizon',
+	order: 100,
+	title: localize('horizonConfigurationTitle', "Horizon"),
+	type: 'object',
+	properties: {
+		'horizon.sidecarUrl': {
+			type: 'string',
+			default: '',
+			scope: ConfigurationScope.APPLICATION,
+			description: localize(
+				'horizonSidecarUrl',
+				"Loopback URL of the horizon-server sidecar used for analyse and source preview, e.g. http://127.0.0.1:8787. Takes precedence over the HORIZON_SIDECAR_URL environment variable. Required in the browser, where environment variables are unavailable."
+			),
+		},
+	},
+});
 
 //#endregion
 
@@ -76,6 +103,13 @@ const horizonViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions
 	icon: horizonViewIcon,
 	order: 5,
 	hideIfEmpty: false,
+	// registerViewContainer defaults this to `{ id: container.id }`; declare it here so the
+	// mnemonic lives on the container. The single view must NOT also register this id.
+	openCommandActionDescriptor: {
+		id: HORIZON_VIEWLET_ID,
+		mnemonicTitle: localize({ key: 'miViewHorizon', comment: ['&& denotes a mnemonic'] }, "&&Horizon"),
+		order: 5,
+	},
 }, ViewContainerLocation.Sidebar);
 
 const horizonViewDescriptor: IViewDescriptor = {
@@ -86,11 +120,6 @@ const horizonViewDescriptor: IViewDescriptor = {
 	canToggleVisibility: false,
 	canMoveView: true,
 	order: 1,
-	openCommandActionDescriptor: {
-		id: HORIZON_VIEWLET_ID,
-		mnemonicTitle: localize({ key: 'miViewHorizon', comment: ['&& denotes a mnemonic'] }, "&&Horizon"),
-		order: 5,
-	}
 };
 
 Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([horizonViewDescriptor], horizonViewContainer);
@@ -582,6 +611,21 @@ registerAction2(class extends Action2 {
 		if (!(editorService.activeEditor instanceof HorizonMapInput)) {
 			await openHorizonMap(accessor);
 		}
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: HORIZON_CMD_OPEN_SELECTED_FUNCTION,
+			title: localize2('horizonOpenSelectedFunction', 'Open Selected Function in Editor'),
+			category: horizonCategory,
+			f1: true,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const inspection = accessor.get(IHorizonInspectionService);
+		await inspection.openPendingSelection();
 	}
 });
 

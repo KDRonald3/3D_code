@@ -28,6 +28,7 @@ Then use .\ide\scripts\windows\Dev.ps1 for sync + compile-client + run.
 Write-HorizonInfo "Horizon IDE fast path (Sync-Contrib + compile-client + run)"
 Ensure-HorizonProductOverlay -Roots $Roots
 Repair-HorizonPreinstallVs2026 -Roots $Roots
+Repair-HorizonWorkbenchCsp -Roots $Roots
 $mode = if ($env:HORIZON_CONTRIB_SYNC_MODE) { $env:HORIZON_CONTRIB_SYNC_MODE } else { "copy" }
 Sync-HorizonContrib -Roots $Roots -Mode $mode
 Invoke-HorizonCompileClient -Roots $Roots

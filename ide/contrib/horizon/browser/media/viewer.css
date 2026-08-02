@@ -1693,9 +1693,13 @@ select {
 
 .source-well {
   margin: 0;
-  background: var(--code);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  /*
+   * No slab or outline: the code shares its container's background so the
+   * Inspector and the hover peek read as one surface. A separate `--code`
+   * fill plus border drew a grey box around every listing.
+   */
+  background: transparent;
+  border: none;
   padding: 11px 12px;
   overflow-x: auto;
   /*
@@ -1753,6 +1757,14 @@ select {
   font-size: inherit;
   color: var(--tok);
   white-space: pre;
+  /*
+   * The webview host styles bare <code> with --vscode-textPreformat-background
+   * and a radius. On an inline element holding pre-formatted text that paints a
+   * grey band behind every line, so state it explicitly rather than inherit it.
+   */
+  background: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 .source-banner {
@@ -1773,6 +1785,50 @@ select {
   background: var(--panel2);
   color: var(--text3);
   border-color: var(--border);
+}
+
+/*
+ * Hover preview for the Inspector's Functions list. Anchored to the viewport
+ * (fixed) because the list scrolls inside the Inspector rail; positioning is
+ * recomputed on each open and dismissed on scroll/resize.
+ */
+.fn-preview {
+  position: fixed;
+  z-index: 60;
+  /* Rust lines run long; too narrow a peek clips mid-identifier and forces a
+     horizontal scroll the popover cannot receive (pointer-events: none). */
+  max-width: min(720px, 62vw);
+  /* No min-width: CSS resolves min-width over max-width, so any floor here
+     would defeat the gutter clamp positionFnPreview applies and push the peek
+     back across the Functions list on narrow windows. */
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.fn-preview[hidden] {
+  display: none;
+}
+
+.fn-preview-head {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--text3);
+  margin-bottom: 7px;
+}
+
+.fn-preview-message {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text3);
+}
+
+/* The preview is a peek, not the Inspector's full source pane. */
+.fn-preview .source-well {
+  max-height: 260px;
 }
 
 .tok-kw {

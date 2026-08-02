@@ -4,6 +4,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { env } from '../../../../base/common/process.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { localize } from '../../../../nls.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -36,6 +37,7 @@ export class BrowserHorizonSidecarService extends Disposable implements IHorizon
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 	}
@@ -49,7 +51,7 @@ export class BrowserHorizonSidecarService extends Disposable implements IHorizon
 		if (!configured) {
 			throw new Error(localize(
 				'horizonSidecarNoUrl',
-				"Horizon sidecar is not running. Launch the IDE with ./ide/scripts/run.sh (starts the sidecar), or export HORIZON_SIDECAR_URL=http://127.0.0.1:PORT after ./ide/scripts/run-sidecar.sh."
+				"Horizon sidecar is not running. Launch the IDE with ./ide/scripts/run.sh (starts the sidecar), or start ./ide/scripts/run-sidecar.sh and point the IDE at it — set the `horizon.sidecarUrl` setting to http://127.0.0.1:PORT (required in the browser), or export HORIZON_SIDECAR_URL on desktop."
 			));
 		}
 
@@ -102,15 +104,19 @@ export class BrowserHorizonSidecarService extends Disposable implements IHorizon
 	}
 
 	private resolveConfiguredUrl(): string | undefined {
-		const raw = (env['HORIZON_SIDECAR_URL'] || '').trim();
+		// `horizon.sidecarUrl` first: in web, `env` is always {} so the setting is
+		// the only channel; on desktop an explicit setting should still win.
+		const setting = (this.configurationService.getValue<string>('horizon.sidecarUrl') || '').trim();
+		const raw = setting || (env['HORIZON_SIDECAR_URL'] || '').trim();
 		if (!raw) {
 			return undefined;
 		}
+		const source = setting ? 'horizon.sidecarUrl' : 'HORIZON_SIDECAR_URL';
 		try {
 			const u = new URL(raw);
 			return `${u.protocol}//${u.host}`;
 		} catch {
-			throw new Error(`Invalid HORIZON_SIDECAR_URL: ${raw}`);
+			throw new Error(`Invalid ${source}: ${raw}`);
 		}
 	}
 }
