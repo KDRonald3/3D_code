@@ -42,6 +42,7 @@ export type WebviewToHostMessage =
 		filePath?: string | null;
 	}
 	| { type: 'openMapJson' }
+	| { type: 'chooseFolder' }
 	| {
 		type: 'sourceRequest';
 		requestId: string;

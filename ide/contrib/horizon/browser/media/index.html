@@ -33,47 +33,38 @@
     </header>
 
     <!--
-      Empty / waiting state. Workspace analysis is requested via the workbench
-      host (postMessage analyse) — no browser "open local folder" path form.
+      Empty / waiting state. Primary path is host analyse (postMessage analyse);
+      the host also auto-analyses on Map start. JSON open is advanced-only.
     -->
     <section id="import-screen" class="import-screen" hidden>
       <h1 class="import-title">Horizon Map</h1>
       <p class="import-sub">
-        Analyse the open workspace to build a Rust free-function map, or load a
-        saved map <span class="mono">.json</span>.
+        The host analyses the open workspace when the Map starts.
+        Free-function map only — type definitions are not included yet.
       </p>
+      <div id="import-workspace" class="import-workspace" hidden>
+        <span class="import-workspace-label">Folder</span>
+        <span id="import-workspace-name" class="import-workspace-name mono"></span>
+      </div>
       <div class="import-actions">
-        <button type="button" id="analyse-workspace" class="import-card" title="Analyse the workspace via the Horizon IDE host">
-          <span class="import-icon">◈</span>
-          <span>
-            <span class="import-card-title">Analyse workspace</span>
-            <span class="import-card-sub">Run Horizon on the folder opened in the IDE</span>
-          </span>
+        <button type="button" id="analyse-workspace" class="import-primary" title="Analyse the workspace via the Horizon IDE host">
+          Analyse folder
         </button>
-        <!-- Kept for DOM compatibility; hidden — path entry is an IDE concern. -->
-        <button type="button" id="open-folder" class="import-card" hidden title="Unused in IDE webview">
-          <span class="import-icon">📁</span>
-          <span>
-            <span class="import-card-title">Analyse local folder</span>
-            <span class="import-card-sub">Not used in the IDE — use Analyse workspace</span>
-          </span>
+        <button type="button" id="choose-folder" class="import-secondary" title="Ask the host to pick a different folder">
+          Choose folder…
         </button>
-        <button type="button" class="import-card" disabled title="Not available — single-file import is not in this rebuild">
-          <span class="import-icon">📄</span>
-          <span>
-            <span class="import-card-title">Open source file(s)</span>
-            <span class="import-card-sub">Unavailable — analyse the workspace, or open a saved map JSON.</span>
-          </span>
-        </button>
-        <button type="button" id="open-json" class="import-card">
-          <span class="import-icon">🧾</span>
-          <span>
-            <span class="import-card-title">Open map JSON</span>
-            <span class="import-card-sub">Load a Horizon Repository .json (or ask the host to pick one)</span>
-          </span>
+        <!-- Browser static-preview only: shows the local path form. Hidden in IDE. -->
+        <button type="button" id="open-folder" class="import-secondary" hidden title="Enter a local repository path">
+          Analyse local folder…
         </button>
       </div>
-      <!-- Path form kept in DOM for compatibility but always hidden in IDE mode. -->
+      <div class="import-advanced">
+        <button type="button" id="open-json" class="import-link" title="Load a saved Horizon Repository .json">
+          Open map JSON…
+        </button>
+        <span class="import-advanced-hint">Advanced — load a saved map instead of analysing</span>
+      </div>
+      <!-- Path form kept in DOM for static preview; always hidden in IDE mode. -->
       <form id="analyse-form" class="analyse-form" hidden>
         <label class="analyse-label" for="analyse-path">Repository path</label>
         <div class="analyse-row">
@@ -88,7 +79,7 @@
           <button type="submit" id="analyse-run" class="analyse-run">Analyse</button>
           <button type="button" id="analyse-cancel-form" class="ghost-btn" title="Hide path form">✕</button>
         </div>
-        <p class="analyse-hint">In the IDE, use Analyse workspace — the host owns the sidecar path.</p>
+        <p class="analyse-hint">In the IDE, use Analyse folder — the host owns the workspace root.</p>
       </form>
       <div id="import-error" class="import-error" hidden>
         <span class="import-error-icon">⚠</span>

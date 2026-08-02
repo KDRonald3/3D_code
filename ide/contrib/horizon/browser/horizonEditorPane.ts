@@ -211,6 +211,9 @@ export class HorizonMapEditorPane extends EditorPane {
 			case 'openMapJson':
 				await this.openMapJson();
 				break;
+			case 'chooseFolder':
+				await this.chooseFolder();
+				break;
 			case 'sourceRequest':
 				this.post({
 					type: 'sourceResult',
@@ -275,6 +278,29 @@ export class HorizonMapEditorPane extends EditorPane {
 				"Horizon analyse: sidecar not yet attached to the Map EditorPane (W4)."
 			),
 		});
+	}
+
+	/** Webview asked to pick a different analyse root (folder dialog). */
+	private async chooseFolder(): Promise<void> {
+		const defaultUri = this._workspaceService.getWorkspace().folders[0]?.uri;
+		const picked = await this._fileDialogService.showOpenDialog({
+			canSelectFiles: false,
+			canSelectFolders: true,
+			canSelectMany: false,
+			title: localize('horizonChooseFolder', "Choose folder to analyse"),
+			defaultUri,
+		});
+		if (!picked?.[0]) {
+			return;
+		}
+		const folderUri = picked[0];
+		const root = folderUri.fsPath || folderUri.path;
+		this.post({
+			type: 'workspaceInfo',
+			root,
+			name: basename(folderUri) || root,
+		});
+		await this.runAnalyse(root);
 	}
 
 	private async openMapJson(): Promise<void> {

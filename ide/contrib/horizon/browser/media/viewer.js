@@ -59,8 +59,11 @@
     frameStats: document.getElementById("frame-stats"),
     switchProject: document.getElementById("switch-project"),
     importScreen: document.getElementById("import-screen"),
+    importWorkspace: document.getElementById("import-workspace"),
+    importWorkspaceName: document.getElementById("import-workspace-name"),
     openJson: document.getElementById("open-json"),
     openFolder: document.getElementById("open-folder"),
+    chooseFolder: document.getElementById("choose-folder"),
     analyseWorkspace: document.getElementById("analyse-workspace"),
     analyseForm: document.getElementById("analyse-form"),
     analysePath: document.getElementById("analyse-path"),
@@ -127,6 +130,9 @@
 
   /** @type {object|null} */
   let currentMap = null;
+  /** Last workspaceInfo from the host (name / root for empty-screen chrome). */
+  /** @type {{name?: string, root?: string}|null} */
+  let workspaceInfo = null;
   /** @type {FileNode[]} */
   let fileNodes = [];
   /** @type {FileEdge[]} */
@@ -3197,6 +3203,47 @@
     setRightOpen(rightOpen);
   }
 
+  /**
+   * Reflect host workspaceInfo on the empty screen + topbar brand.
+   * Prefer display name; fall back to basename of root.
+   */
+  function applyWorkspaceInfo(info) {
+    workspaceInfo = info && typeof info === "object" ? info : null;
+    const name =
+      (workspaceInfo && workspaceInfo.name && String(workspaceInfo.name)) ||
+      "";
+    const root =
+      (workspaceInfo && workspaceInfo.root && String(workspaceInfo.root)) ||
+      "";
+    const label =
+      name ||
+      (root
+        ? root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || root
+        : "");
+
+    if (els.importWorkspace && els.importWorkspaceName) {
+      if (label || root) {
+        els.importWorkspace.hidden = false;
+        els.importWorkspaceName.textContent = root || label;
+        els.importWorkspaceName.title = root || label;
+      } else {
+        els.importWorkspace.hidden = true;
+        els.importWorkspaceName.textContent = "";
+        els.importWorkspaceName.title = "";
+      }
+    }
+
+    // On the empty screen, brand shows the workspace name when known.
+    if (!currentMap && els.projectName) {
+      els.projectName.textContent = label || "Horizon";
+      document.title = label ? `${label} · Horizon` : "Horizon";
+    }
+
+    if (root && els.analysePath) {
+      els.analysePath.value = root;
+    }
+  }
+
   function showImport(errorMsg) {
     currentMap = null;
     fileNodes = [];
@@ -3228,8 +3275,7 @@
     els.toggleRight.hidden = true;
     els.rightAside.hidden = true;
     els.rightRail.hidden = true;
-    els.projectName.textContent = "Horizon";
-    document.title = "Horizon";
+    applyWorkspaceInfo(workspaceInfo);
     if (errorMsg) {
       els.importError.hidden = false;
       els.importErrorText.textContent = errorMsg;
@@ -4049,17 +4095,30 @@
       runWorkspaceAnalyse();
     });
   }
-  // Browser path form — keep inert in the IDE webview; useful for static preview.
-  if (els.openFolder && !IDE_MODE) {
-    els.openFolder.hidden = false;
-    els.openFolder.addEventListener("click", () => {
-      if (!els.analyseForm) return;
-      els.analyseForm.hidden = false;
-      els.analysePath?.focus();
-      if (els.analysePath && !els.analysePath.value) {
-        els.analysePath.value = "";
-      }
-    });
+  // IDE: ask host to change folder. Static preview: show local path form instead.
+  if (IDE_MODE) {
+    if (els.chooseFolder) {
+      els.chooseFolder.hidden = false;
+      els.chooseFolder.addEventListener("click", () => {
+        if (Bridge && typeof Bridge.chooseFolder === "function") {
+          Bridge.chooseFolder();
+        }
+      });
+    }
+    if (els.openFolder) els.openFolder.hidden = true;
+  } else {
+    if (els.chooseFolder) els.chooseFolder.hidden = true;
+    if (els.openFolder) {
+      els.openFolder.hidden = false;
+      els.openFolder.addEventListener("click", () => {
+        if (!els.analyseForm) return;
+        els.analyseForm.hidden = false;
+        els.analysePath?.focus();
+        if (els.analysePath && !els.analysePath.value) {
+          els.analysePath.value = "";
+        }
+      });
+    }
   }
   if (els.analyseCancelForm) {
     els.analyseCancelForm.addEventListener("click", () => {
@@ -4922,12 +4981,10 @@
             }
             break;
           case "workspaceInfo":
-            if (msg.name && els.projectName && !currentMap) {
-              els.projectName.textContent = String(msg.name);
-            }
-            if (msg.root && els.analysePath) {
-              els.analysePath.value = String(msg.root);
-            }
+            applyWorkspaceInfo({
+              name: msg.name != null ? String(msg.name) : undefined,
+              root: msg.root != null ? String(msg.root) : undefined,
+            });
             break;
           case "theme":
             if (msg.theme === "dark" || msg.theme === "light") {
