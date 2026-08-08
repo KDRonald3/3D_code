@@ -806,8 +806,13 @@ fn doc_attr_string(attr: &ast::Attr) -> Option<String> {
 
 /// Strip the conventional single leading space after `///` / `//!` on each
 /// line; keep further indentation (needed for fenced code blocks in docs).
+///
+/// Line endings normalize to `\n`. `str::lines` drops `\r` only before a
+/// `\n`, so on a CRLF checkout the final line of a comment token would
+/// otherwise keep a stray `\r` and leak it into the map.
 fn normalize_doc_text(raw: &str) -> String {
     raw.lines()
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
         .map(|line| line.strip_prefix(' ').unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n")
