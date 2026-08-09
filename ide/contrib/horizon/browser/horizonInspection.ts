@@ -322,20 +322,27 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 				return;
 			}
 
-			await this.editorService.openEditor({
-				resource: target.uri,
-				options: {
-					pinned: false,
-					preserveFocus: false,
-					selection: {
-						startLineNumber: target.range.startLineNumber,
-						startColumn: target.range.startColumn,
-						endLineNumber: target.range.startLineNumber,
-						endColumn: target.range.startColumn,
+			// Beside the Map, never on top of it. Opening into the active group
+			// displaces the Map, and the workbench clears a displaced pane's
+			// input - which tears down the webview and rebuilds the Map from
+			// scratch, losing the selection the jump was made from.
+			await this.editorService.openEditor(
+				{
+					resource: target.uri,
+					options: {
+						pinned: false,
+						preserveFocus: false,
+						selection: {
+							startLineNumber: target.range.startLineNumber,
+							startColumn: target.range.startColumn,
+							endLineNumber: target.range.startLineNumber,
+							endColumn: target.range.startColumn,
+						},
+						selectionRevealType: TextEditorSelectionRevealType.Center,
 					},
-					selectionRevealType: TextEditorSelectionRevealType.Center,
 				},
-			});
+				this.pickInspectionGroup()
+			);
 		} finally {
 			ref.dispose();
 		}
