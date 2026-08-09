@@ -4,6 +4,7 @@
 
 import * as DOM from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { Event } from '../../../../base/common/event.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -20,8 +21,9 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
-import { IWebviewElement, IWebviewService } from '../../webview/browser/webview.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { IWorkbenchLayoutService, Parts } from '../../../services/layout/browser/layoutService.js';
+import { IOverlayWebview, IWebviewService } from '../../webview/browser/webview.js';
 import {
 	HostToWebviewMessage,
 	HORIZON_MAP_EDITOR_ID,
@@ -50,10 +52,11 @@ export class HorizonMapEditorPane extends EditorPane {
 
 	private _element: HTMLElement | undefined;
 	private _dimension: DOM.Dimension | undefined;
-	private readonly _webview = this._register(new MutableDisposable<IWebviewElement>());
+	private readonly _webview = this._register(new MutableDisposable<IOverlayWebview>());
 	private readonly _webviewEvents = this._register(new DisposableStore());
 	private readonly _mapVisible: IContextKey<boolean>;
 	private _htmlLoaded = false;
+	private _visible = false;
 
 	constructor(
 		group: IEditorGroup,
@@ -68,9 +71,25 @@ export class HorizonMapEditorPane extends EditorPane {
 		@IHorizonInspectionService private readonly _inspectionService: IHorizonInspectionService,
 		@IHorizonSidecarService private readonly _sidecarService: IHorizonSidecarService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
 	) {
 		super(HorizonMapEditorPane.ID, group, telemetryService, themeService, storageService);
 		this._mapVisible = HorizonMapVisibleContext.bindTo(contextKeyService);
+
+		// An overlay webview is positioned over the editor rather than parented
+		// into it, so anything that moves the editor must re-place it.
+		const part = editorGroupsService.getPart(group);
+		this._register(Event.any(
+			part.onDidScroll,
+			part.onDidAddGroup,
+			part.onDidRemoveGroup,
+			part.onDidMoveGroup
+		)(() => {
+			if (this._webview.value && this._visible) {
+				this.syncWebviewBounds();
+			}
+		}));
 
 		this._register(this._analysisService.onDidChangeFolder(folder => {
 			if (!folder || !this._webview.value) {
@@ -105,6 +124,10 @@ export class HorizonMapEditorPane extends EditorPane {
 			return;
 		}
 		await this.ensureWebview();
+		// Re-shown after another editor held the group: take the overlay back.
+		if (this._visible) {
+			this.claimWebview();
+		}
 		if (this._dimension) {
 			this.layout(this._dimension);
 		}
@@ -112,14 +135,24 @@ export class HorizonMapEditorPane extends EditorPane {
 
 	override clearInput(): void {
 		this._mapVisible.set(false);
-		this._webviewEvents.clear();
-		this._webview.clear();
-		this._htmlLoaded = false;
+		// Release, never dispose. The workbench calls this whenever another
+		// editor takes over the group; destroying the webview here rebuilt the
+		// Map from scratch on the way back, losing the selection, the
+		// inspector, and the source pane.
+		this._webview.value?.release(this);
 		super.clearInput();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
+		this._visible = visible;
 		this._mapVisible.set(visible);
+		if (this._webview.value) {
+			if (visible) {
+				this.claimWebview();
+			} else {
+				this._webview.value.release(this);
+			}
+		}
 		super.setEditorVisible(visible);
 	}
 
@@ -129,6 +162,28 @@ export class HorizonMapEditorPane extends EditorPane {
 			this._element.style.width = `${dimension.width}px`;
 			this._element.style.height = `${dimension.height}px`;
 		}
+		if (this._webview.value && this._visible) {
+			this.syncWebviewBounds();
+		}
+	}
+
+	private claimWebview(): void {
+		const webview = this._webview.value;
+		if (!webview || !this._element) {
+			return;
+		}
+		webview.claim(this, DOM.getWindow(this._element), undefined);
+		this.syncWebviewBounds();
+	}
+
+	/** Keep the overlay sitting exactly over this pane's slot in the editor. */
+	private syncWebviewBounds(): void {
+		const webview = this._webview.value;
+		if (!webview || !this._element?.isConnected) {
+			return;
+		}
+		const root = this._layoutService.getContainer(DOM.getWindow(this._element), Parts.EDITOR_PART);
+		webview.layoutWebviewOverElement(this._element.parentElement ?? this._element, this._dimension, root);
 	}
 
 	override focus(): void {
@@ -160,7 +215,11 @@ export class HorizonMapEditorPane extends EditorPane {
 
 		if (!this._webview.value) {
 			const mediaRoot = horizonMediaFileRoot();
-			const webview = this._webviewService.createWebviewElement({
+			// Overlay, not element: an element webview is parented into the
+			// editor's DOM, and the workbench re-parents that DOM when tabs
+			// change - which reloads the iframe and blanks the Map. The overlay
+			// lives in its own container and is positioned over the editor.
+			const webview = this._webviewService.createWebviewOverlay({
 				title: localize('horizonMapWebviewTitle', "Horizon Map"),
 				options: {
 					retainContextWhenHidden: true,
@@ -172,7 +231,9 @@ export class HorizonMapEditorPane extends EditorPane {
 				extension: undefined,
 			});
 			this._webview.value = webview;
-			webview.mountTo(this._element, DOM.getWindow(this._element));
+			if (this._visible) {
+				this.claimWebview();
+			}
 
 			this._webviewEvents.clear();
 			this._webviewEvents.add(webview.onMessage(e => {
