@@ -2060,16 +2060,60 @@
   // that position, mirroring editor hover. IDE-only: the standalone viewer has
   // no host to ask.
   const RA_HOVER_DELAY_MS = 350;
+  /** Grace period after the pointer leaves the token, so it can reach the card. */
+  const RA_HOVER_HIDE_DELAY_MS = 260;
+  /** How long a cursor aimed at the card may keep it alive while travelling. */
+  const RA_HOVER_AIM_MS = 700;
   const raHoverCache = new Map();
   let raHoverEl = null;
   let raHoverTimer = null;
+  let raHoverHideTimer = null;
   let raHoverGen = 0;
+  let raPointer = { x: 0, y: 0 };
+  let raHoverExit = null;
+  let raHoverAimDeadline = 0;
+  /**
+   * Whether the pointer is on the card, per the DOM's own enter/leave events.
+   * The cached coordinate cannot answer this: once the pointer leaves the
+   * webview no further mousemove arrives, so it freezes at its last position —
+   * which is inside the card, and would pin the card open forever.
+   */
+  let raHoverInside = false;
+  /**
+   * Set once the card reports the pointer left it. It makes "left" beat any
+   * geometric guess, which is what keeps a frozen pointer position from
+   * pinning the card open.
+   */
+  let raHoverLeft = false;
+
+  document.addEventListener(
+    "mousemove",
+    (ev) => {
+      raPointer = { x: ev.clientX, y: ev.clientY };
+    },
+    true
+  );
 
   function ensureRaHoverEl() {
     if (raHoverEl) return raHoverEl;
     raHoverEl = document.createElement("div");
     raHoverEl.className = "ra-hover";
     raHoverEl.hidden = true;
+    // The card is reachable: entering it cancels the pending dismissal so its
+    // scrollbar can actually be used.
+    raHoverEl.addEventListener("mouseenter", () => {
+      raHoverInside = true;
+      raHoverLeft = false;
+      cancelRaHoverHide();
+    });
+    raHoverEl.addEventListener("mouseleave", () => {
+      raHoverInside = false;
+      raHoverLeft = true;
+      scheduleRaHoverHide();
+    });
+    // The Inspector sits inside gesture-bearing chrome; selecting text in the
+    // card must never read as a canvas pan or drag.
+    raHoverEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
     // Inside .app so the theme tokens (--panel/--border/--tok) resolve.
     (document.querySelector(".app") || document.body).appendChild(raHoverEl);
     return raHoverEl;
@@ -2081,7 +2125,99 @@
       clearTimeout(raHoverTimer);
       raHoverTimer = null;
     }
-    if (raHoverEl) raHoverEl.hidden = true;
+    cancelRaHoverHide();
+    raHoverInside = false;
+    raHoverLeft = false;
+    if (raHoverEl) {
+      raHoverEl.hidden = true;
+      raHoverEl.scrollTop = 0;
+    }
+  }
+
+  function cancelRaHoverHide() {
+    if (raHoverHideTimer) {
+      clearTimeout(raHoverHideTimer);
+      raHoverHideTimer = null;
+    }
+  }
+
+  /**
+   * Leaving the token starts a dismissal the cursor can still outrun by
+   * heading for the card — see `raHoverAimsAtCard`.
+   */
+  function scheduleRaHoverHide() {
+    if (!raHoverEl || raHoverEl.hidden) return;
+    cancelRaHoverHide();
+    raHoverExit = raPointer;
+    raHoverAimDeadline = Date.now() + RA_HOVER_AIM_MS;
+    raHoverHideTimer = setTimeout(evaluateRaHoverHide, RA_HOVER_HIDE_DELAY_MS);
+  }
+
+  /** Corners of the card edge that faces `p` — the base of the safe triangle. */
+  function raHoverFacingCorners(r, p) {
+    if (p.y >= r.bottom) {
+      return [{ x: r.left, y: r.bottom }, { x: r.right, y: r.bottom }];
+    }
+    if (p.y <= r.top) {
+      return [{ x: r.left, y: r.top }, { x: r.right, y: r.top }];
+    }
+    if (p.x >= r.right) {
+      return [{ x: r.right, y: r.top }, { x: r.right, y: r.bottom }];
+    }
+    return [{ x: r.left, y: r.top }, { x: r.left, y: r.bottom }];
+  }
+
+  function pointInTriangle(p, a, b, c) {
+    const sign = (p1, p2, p3) =>
+      (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+    const d1 = sign(p, a, b);
+    const d2 = sign(p, b, c);
+    const d3 = sign(p, c, a);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+  }
+
+  /**
+   * The diagonal-travel problem: the straight line from a token to the card
+   * usually crosses neither, so a strict mouseout closes the card mid-journey.
+   * Keep it open while the cursor stays inside the triangle joining the exit
+   * point to the card's facing corners (Amazon's mega-dropdown trick).
+   */
+  function raHoverAimsAtCard(rect) {
+    if (!raHoverExit || Date.now() >= raHoverAimDeadline) return false;
+    // No movement since the exit means no aim to honour — and a pointer that
+    // left the webview reports exactly that, frozen. Treating the degenerate
+    // triangle as a hit would keep the card open indefinitely.
+    const moved =
+      Math.abs(raPointer.x - raHoverExit.x) + Math.abs(raPointer.y - raHoverExit.y);
+    if (moved < 2) return false;
+    const [c1, c2] = raHoverFacingCorners(rect, raHoverExit);
+    return pointInTriangle(raPointer, raHoverExit, c1, c2);
+  }
+
+  function evaluateRaHoverHide() {
+    raHoverHideTimer = null;
+    if (!raHoverEl || raHoverEl.hidden) return;
+    if (raHoverInside) return; // settled on the card, per enter/leave
+    const rect = raHoverEl.getBoundingClientRect();
+    // Crossing the card's edge and the browser reporting `mouseenter` are not
+    // simultaneous; cover that gap geometrically. Only before an explicit
+    // leave, so a frozen pointer can never use this to pin the card open.
+    if (
+      !raHoverLeft &&
+      raPointer.x >= rect.left &&
+      raPointer.x <= rect.right &&
+      raPointer.y >= rect.top &&
+      raPointer.y <= rect.bottom
+    ) {
+      return;
+    }
+    if (raHoverAimsAtCard(rect)) {
+      raHoverHideTimer = setTimeout(evaluateRaHoverHide, 100);
+      return;
+    }
+    hideRaHover();
   }
 
   const RUST_KEYWORDS = new Set([
@@ -2341,6 +2477,8 @@
       const filePath = pre && pre.dataset ? pre.dataset.raFile : null;
       if (!filePath) return;
       if (raHoverTimer) clearTimeout(raHoverTimer);
+      // Returning to a token cancels a dismissal started by leaving it.
+      cancelRaHoverHide();
       const gen = ++raHoverGen;
       raHoverTimer = setTimeout(async () => {
         const byteOffset = Number(span.dataset.b);
@@ -2367,9 +2505,27 @@
     });
     document.addEventListener("mouseout", (ev) => {
       const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
-      if (span) hideRaHover();
+      if (!span) return;
+      // Moving straight into the card must not count as leaving.
+      const to = ev.relatedTarget;
+      if (to instanceof Node && raHoverEl && raHoverEl.contains(to)) return;
+      if (raHoverTimer) {
+        clearTimeout(raHoverTimer);
+        raHoverTimer = null;
+      }
+      scheduleRaHoverHide();
     });
-    window.addEventListener("scroll", hideRaHover, true);
+    // Scrolling the card is how long docs are read — only scrolling the
+    // world underneath invalidates the anchor.
+    window.addEventListener(
+      "scroll",
+      (ev) => {
+        const t = ev.target;
+        if (t instanceof Node && raHoverEl && raHoverEl.contains(t)) return;
+        hideRaHover();
+      },
+      true
+    );
   }
   attachRaHoverHandlers();
 

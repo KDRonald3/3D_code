@@ -1840,14 +1840,35 @@ select {
   position: fixed;
   z-index: 70;
   max-width: min(640px, 58vw);
-  max-height: 45vh;
-  overflow: hidden;
+  max-height: 52vh;
+  /* rust-analyzer docs routinely outrun the card; read them by scrolling
+     rather than by truncating them. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Reaching the end must not start scrolling the canvas behind it. */
+  overscroll-behavior: contain;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-  pointer-events: none;
+  /* Interactive: the pointer has to be able to land here and scroll. */
+  pointer-events: auto;
+}
+
+.ra-hover::-webkit-scrollbar {
+  width: 10px;
+}
+
+.ra-hover::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+  background-color: var(--border);
+}
+
+.ra-hover::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text2);
 }
 
 .ra-hover[hidden] {
