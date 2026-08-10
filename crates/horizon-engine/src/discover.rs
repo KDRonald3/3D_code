@@ -435,6 +435,12 @@ fn crates_from_package(package: MetaPackage, package_dir: &Path) -> Result<Vec<C
     Ok(out)
 }
 
+/// One `cargo metadata --format-version 1` document, narrowed to the fields
+/// this stage consumes.
+///
+/// Produced by [`run_cargo_metadata`] for a single manifest. Because the call
+/// passes `--no-deps`, `packages` lists workspace members only — path
+/// dependencies outside the workspace arrive through separate invocations.
 #[derive(Debug, Deserialize)]
 struct Metadata {
     packages: Vec<MetaPackage>,
@@ -442,15 +448,25 @@ struct Metadata {
     workspace_root: String,
 }
 
+/// One cargo package (a `Cargo.toml`) as reported by `cargo metadata`.
+///
+/// A package is not a [`Crate`]: [`crates_from_package`] fans it out into one
+/// crate per mapped target — the library-like target plus each binary.
 #[derive(Debug, Deserialize)]
 struct MetaPackage {
     name: String,
+    /// Cargo's package id, matched against [`Metadata::workspace_members`] to
+    /// tell members apart from packages Cargo merely mentions.
     id: String,
     manifest_path: String,
     dependencies: Vec<MetaDependency>,
     targets: Vec<MetaTarget>,
 }
 
+/// One dependency edge declared in a package's manifest.
+///
+/// The presence of [`MetaDependency::path`] is what separates local source we
+/// walk from registry / git dependencies we drop — see [`DependencyKind`].
 #[derive(Debug, Deserialize)]
 struct MetaDependency {
     name: String,
@@ -464,6 +480,12 @@ struct MetaDependency {
     path: Option<String>,
 }
 
+/// One compilation target of a package (`lib`, `bin`, `example`, …).
+///
+/// Each kept target becomes a [`Crate`] with `src_path` as its single root.
+/// [`MetaTarget::kind`] is a list because one target can carry several
+/// crate-types (`["rlib", "cdylib"]`); [`is_library_kind`] / [`is_bin_kind`]
+/// classify it.
 #[derive(Debug, Deserialize)]
 struct MetaTarget {
     name: String,

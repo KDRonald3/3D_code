@@ -503,6 +503,12 @@ fn recover_macro_calls(root: &SyntaxNode, ctx: &mut MacroRecoveryCtx<'_>) {
     }
 }
 
+/// Where every call recovered from one macro invocation will attach.
+///
+/// Computed once per `MacroCall` from the invocation's own position, then
+/// applied to each call found inside its token tree: the re-parsed interior is
+/// a synthetic tree with no ancestors, so recovered calls cannot work out their
+/// own owner the way [`pending_from_call_expr`] does for real syntax.
 struct MacroOwnerContext {
     enclosing_function: Option<FunctionId>,
     module_path: String,
@@ -1176,14 +1182,24 @@ pub fn remap_local_bindings(
     }
 }
 
+/// One free-function definition as found in the syntax tree, before it becomes
+/// a [`Function`].
+///
+/// Exists to keep the `ast::Fn` node alongside the facts read off it: the node
+/// is what later passes need to map a call site's enclosing `fn` back to a
+/// [`FunctionId`] and to collect local bindings, but it must not leak into the
+/// emitted map.
 struct RawDef {
     name: String,
     module_path: String,
     line: u32,
+    /// Byte offsets span the whole `ast::Fn` — attributes and outer docs
+    /// included, not just the signature or body.
     byte_start: u32,
     byte_end: u32,
     visibility: ItemVisibility,
     doc_comments: Vec<DocComment>,
+    /// The defining node, keyed on in `id_by_syntax` to attribute calls.
     syntax: SyntaxNode,
 }
 
@@ -1307,6 +1323,11 @@ fn squish(s: &str) -> String {
     s.split_whitespace().collect()
 }
 
+/// Byte offset → 1-based line number lookup for one file.
+///
+/// Built once per file so every definition and call site can report a line
+/// without rescanning the text. Offsets are UTF-8 byte offsets, matching
+/// `ra_ap_syntax` text ranges.
 struct LineIndex {
     /// Byte offset of the start of each 1-based line (`starts[0] == 0`).
     starts: Vec<u32>,
