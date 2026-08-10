@@ -199,26 +199,58 @@ function Ensure-HorizonRustAnalyzer {
     # rust-analyzer is not bundled: a fresh product has an empty extensions dir,
     # so hover / go-to-definition / semantic highlighting are silently absent.
     # Install it from Open VSX (product.json gallery) on first launch.
-    $extDir = Join-Path $env:USERPROFILE ".horizon-ide\extensions"
+    #
+    # Which directory that is depends on how the product runs. Launched from
+    # source (scripts\code.bat) Electron appends "-dev" to product.json's
+    # dataFolderName, so extensions live under .horizon-ide-dev, not
+    # .horizon-ide. Probing only the packaged path made this re-run the
+    # install on *every* launch, and rust-analyzer answers nothing while it is
+    # being reinstalled - hover looked simply broken.
     $extDirArgs = @()
+    $explicitDir = $null
     if ($ExtraArgs) {
         for ($i = 0; $i -lt $ExtraArgs.Count; $i++) {
             $arg = $ExtraArgs[$i]
             if ($arg -like "--extensions-dir=*") {
-                $extDir = $arg.Substring("--extensions-dir=".Length).Trim('"')
-                $extDirArgs = @("--extensions-dir", $extDir)
+                $explicitDir = $arg.Substring("--extensions-dir=".Length).Trim('"')
+                $extDirArgs = @("--extensions-dir", $explicitDir)
             } elseif ($arg -eq "--extensions-dir" -and $i + 1 -lt $ExtraArgs.Count) {
-                $extDir = $ExtraArgs[$i + 1]
-                $extDirArgs = @("--extensions-dir", $extDir)
+                $explicitDir = $ExtraArgs[$i + 1]
+                $extDirArgs = @("--extensions-dir", $explicitDir)
             }
         }
     }
-    if ((Test-Path $extDir) -and (Get-ChildItem $extDir -Directory -Filter "rust-lang.rust-analyzer-*" -ErrorAction SilentlyContinue)) {
-        Write-HorizonInfo "rust-analyzer present in $extDir"
-        return
+
+    $candidates = @()
+    if ($explicitDir) {
+        $candidates = @($explicitDir)
+    } else {
+        $dataFolder = ".horizon-ide"
+        $productJson = Join-Path $Roots.CodeOssDir "product.json"
+        if (Test-Path $productJson) {
+            try {
+                $name = (Get-Content $productJson -Raw | ConvertFrom-Json).dataFolderName
+                if ($name) { $dataFolder = $name }
+            } catch {
+                # keep the default; a malformed product.json is reported elsewhere
+            }
+        }
+        # Dev (from source) first: that is what Run.ps1 launches.
+        $candidates = @(
+            (Join-Path $env:USERPROFILE "$dataFolder-dev\extensions"),
+            (Join-Path $env:USERPROFILE "$dataFolder\extensions")
+        )
     }
+
+    foreach ($dir in $candidates) {
+        if ((Test-Path $dir) -and (Get-ChildItem $dir -Directory -Filter "rust-lang.rust-analyzer-*" -ErrorAction SilentlyContinue)) {
+            Write-HorizonInfo "rust-analyzer present in $dir"
+            return
+        }
+    }
+
     $codeBat = Join-Path $Roots.CodeOssDir "scripts\code.bat"
-    Write-HorizonInfo "installing rust-lang.rust-analyzer (first launch) -> $extDir"
+    Write-HorizonInfo "installing rust-lang.rust-analyzer (first launch) -> $($candidates[0])"
     Push-Location $Roots.CodeOssDir
     try {
         & $codeBat --install-extension rust-lang.rust-analyzer @extDirArgs | ForEach-Object { Write-Host $_ }

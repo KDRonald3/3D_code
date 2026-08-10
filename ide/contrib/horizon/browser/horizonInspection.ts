@@ -45,13 +45,14 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { EditorResourceAccessor, GroupIdentifier, SideBySideEditor } from '../../../common/editor.js';
 import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
-import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
+import { ACTIVE_GROUP, IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
 import { IFilesConfigurationService } from '../../../services/filesConfiguration/common/filesConfigurationService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../services/statusbar/browser/statusbar.js';
 import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
 import {
 	HORIZON_CMD_TRIGGER_INSPECT_SUGGEST,
 	HORIZON_INSPECTION_ACTIVE_CONTEXT,
+	HORIZON_MAP_SCHEME,
 	SelectFunctionPayload,
 } from '../common/horizon.js';
 
@@ -322,20 +323,26 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 				return;
 			}
 
-			await this.editorService.openEditor({
-				resource: target.uri,
-				options: {
-					pinned: false,
-					preserveFocus: false,
-					selection: {
-						startLineNumber: target.range.startLineNumber,
-						startColumn: target.range.startColumn,
-						endLineNumber: target.range.startLineNumber,
-						endColumn: target.range.startColumn,
+			// Into the Map's own group: a jump continues where you were looking,
+			// so it belongs in that stack rather than in a group off to the
+			// side. The Map keeps its state while hidden (see clearInput).
+			await this.editorService.openEditor(
+				{
+					resource: target.uri,
+					options: {
+						pinned: false,
+						preserveFocus: false,
+						selection: {
+							startLineNumber: target.range.startLineNumber,
+							startColumn: target.range.startColumn,
+							endLineNumber: target.range.startLineNumber,
+							endColumn: target.range.startColumn,
+						},
+						selectionRevealType: TextEditorSelectionRevealType.Center,
 					},
-					selectionRevealType: TextEditorSelectionRevealType.Center,
 				},
-			});
+				this.pickMapGroup() ?? ACTIVE_GROUP
+			);
 		} finally {
 			ref.dispose();
 		}
@@ -799,6 +806,20 @@ export class HorizonInspectionService extends Disposable implements IHorizonInsp
 				endLineNumber: lineNumber,
 				endColumn: maxCol,
 			};
+		}
+		return undefined;
+	}
+
+	/** The group showing the Horizon Map, if one is open. */
+	private pickMapGroup(): GroupIdentifier | undefined {
+		for (const group of this.editorGroupsService.groups) {
+			const hasMap = group.editors.some(e => {
+				const uri = EditorResourceAccessor.getCanonicalUri(e, { supportSideBySide: SideBySideEditor.PRIMARY });
+				return uri?.scheme === HORIZON_MAP_SCHEME;
+			});
+			if (hasMap) {
+				return group.id;
+			}
 		}
 		return undefined;
 	}
