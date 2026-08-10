@@ -997,11 +997,19 @@
         };
         nodes.push(node);
         for (const fn of file.functions || []) {
-          if (fn.id) {
-            const fid = String(fn.id);
-            fnOwner.set(fid, id);
-            index.set(fid, { fn, file, fileId: id });
+          // Index every listed function, including one the map gave no `id`
+          // (older schema, hand-written or third-party JSON). The Inspector
+          // lists `file.functions` in full, so skipping the unidentified ones
+          // here left rows that looked ordinary but could not be selected:
+          // the click resolved to nothing and you stayed on the file.
+          // `#`/`@` cannot occur in an engine FunctionId, so a synthesized key
+          // can never collide with a real one or match a call-site target.
+          if (!fn.id) {
+            fn.id = `${id}#fn@${fn.line ?? 0}:${fn.name ?? "fn"}`;
           }
+          const fid = String(fn.id);
+          fnOwner.set(fid, id);
+          index.set(fid, { fn, file, fileId: id });
         }
       };
 
