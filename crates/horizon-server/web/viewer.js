@@ -1663,9 +1663,25 @@
     document.title = `Horizon — ${rootName}`;
   }
 
+  /**
+   * Bring a card into view. Already fully on screen → leave the transform
+   * alone: `loadMap` fits every card plus the architecture sticky and then
+   * reveals the auto-selected card, and centring on that card pushed the
+   * outermost cards and the sticky back off the canvas.
+   */
   function revealCard(id) {
     const p = cardPosition(id);
     const rect = els.canvas.getBoundingClientRect();
+    const left = panX + p.x * zoom;
+    const top = panY + p.y * zoom;
+    if (
+      left >= 0 &&
+      top >= 0 &&
+      left + CARD_W * zoom <= rect.width &&
+      top + CARD_H * zoom <= rect.height
+    ) {
+      return;
+    }
     const cx = p.x + CARD_W / 2;
     const cy = p.y + CARD_H / 2;
     panX = rect.width / 2 - cx * zoom;
