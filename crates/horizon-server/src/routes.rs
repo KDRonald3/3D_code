@@ -42,7 +42,20 @@ pub async fn post_map(State(state): State<AppState>, body: axum::body::Bytes) ->
     };
     {
         let mut guard = state.map.write().await;
-        *guard = Some(repo.clone());
+        *guard = Some(repo);
     }
-    Json(repo).into_response()
+    // Echo from the stored copy rather than cloning the parsed map: bodies run
+    // to the 64 MiB limit, and a clone doubled peak memory for the whole
+    // request just to serialize the same bytes back.
+    let guard = state.map.read().await;
+    match guard.as_ref() {
+        Some(repo) => Json(repo).into_response(),
+        // Unreachable in practice: only this function clears the slot, and it
+        // never stores None.
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "map slot emptied while storing" })),
+        )
+            .into_response(),
+    }
 }

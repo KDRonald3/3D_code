@@ -438,8 +438,9 @@
       btn.appendChild(meta);
       btn.addEventListener("click", async () => {
         try {
-          const text = JSON.stringify(item.map);
-          // IDE: host owns map persistence; do not POST to sidecar from webview.
+          // IDE: host owns map persistence; do not POST to sidecar from
+          // webview. (The standalone viewer serializes here to POST /api/map;
+          // doing it here only stringified megabytes to throw them away.)
           loadMap(item.map, item.label || "recent");
         } catch (err) {
           showImport(`Failed to restore recent map: ${err.message || err}`);
@@ -3158,9 +3159,16 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "fn-list-item";
-        btn.innerHTML =
-          `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
-          `<span class="fn-list-meta">L${fn.line}</span>`;
+        // Built as nodes, not markup: `line` is map data, and a map can be any
+        // JSON the user opens. Interpolating it into innerHTML let a crafted
+        // map inject live elements into the viewer.
+        const nameEl = document.createElement("span");
+        nameEl.className = "fn-list-name";
+        nameEl.textContent = fn.name;
+        const metaEl = document.createElement("span");
+        metaEl.className = "fn-list-meta";
+        metaEl.textContent = `L${fn.line}`;
+        btn.append(nameEl, metaEl);
         btn.addEventListener("click", () =>
           selectFunction(fn.id, { reveal: false, push: true })
         );

@@ -315,6 +315,28 @@
       .replace(/"/g, "&quot;");
   }
 
+  /**
+   * Insert into a memo table with a ceiling, evicting the oldest entry first.
+   * These tables are keyed per function or per token offset and live as long as
+   * the webview does, so without a bound they grow for the whole session — and
+   * the webview now survives editor switches, which makes that session long.
+   * `Map` preserves insertion order, so the first key is the oldest.
+   */
+  function cacheSet(cache, key, value, max) {
+    if (!cache.has(key) && cache.size >= max) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, value);
+  }
+
+  /** Token arrays for previewed function bodies. */
+  const FN_PREVIEW_CACHE_MAX = 200;
+  /** rust-analyzer hover markdown, keyed by file + byte offset. */
+  const RA_HOVER_CACHE_MAX = 500;
+  /** rust-analyzer semantic tokens, keyed by file + byte range. */
+  const RA_SEMANTIC_CACHE_MAX = 200;
+
   const THEME_KEY = "horizon.theme";
   const SOURCE_EXPAND_KEY = "horizon.sourceExpanded";
   const RECENT_KEY = "horizon.recent";
@@ -444,8 +466,9 @@
       btn.appendChild(meta);
       btn.addEventListener("click", async () => {
         try {
-          const text = JSON.stringify(item.map);
-          // IDE: host owns map persistence; do not POST to sidecar from webview.
+          // IDE: host owns map persistence; do not POST to sidecar from
+          // webview. (The standalone viewer serializes here to POST /api/map;
+          // doing it here only stringified megabytes to throw them away.)
           loadMap(item.map, item.label || "recent");
         } catch (err) {
           showImport(`Failed to restore recent map: ${err.message || err}`);
@@ -1984,7 +2007,9 @@
           : { error: body.message || body.error || `source request failed (${res.status})` };
     }
     // Only memoize successes: a transient sidecar outage must not stick.
-    if (!result.error) fnPreviewCache.set(key, result);
+    if (!result.error) {
+      cacheSet(fnPreviewCache, key, result, FN_PREVIEW_CACHE_MAX);
+    }
     return result;
   }
 
@@ -2449,7 +2474,7 @@
         });
         // Cache answers only — "no_tokens" while indexing must not stick.
         if (res && Array.isArray(res.tokens) && res.tokens.length) {
-          raSemanticCache.set(key, res);
+          cacheSet(raSemanticCache, key, res, RA_SEMANTIC_CACHE_MAX);
         }
       }
       if (!(res && Array.isArray(res.tokens) && res.tokens.length)) return;
@@ -2490,7 +2515,7 @@
             // Only memoize answers: "no_hover" while rust-analyzer is still
             // indexing must not stick.
             if (result && Array.isArray(result.contents) && result.contents.length) {
-              raHoverCache.set(key, result);
+              cacheSet(raHoverCache, key, result, RA_HOVER_CACHE_MAX);
             }
           }
           if (gen !== raHoverGen) return;
@@ -3959,9 +3984,16 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "fn-list-item";
-        btn.innerHTML =
-          `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
-          `<span class="fn-list-meta">L${fn.line}</span>`;
+        // Built as nodes, not markup: `line` is map data, and a map can be any
+        // JSON the user opens. Interpolating it into innerHTML let a crafted
+        // map inject live elements into this privileged webview.
+        const nameEl = document.createElement("span");
+        nameEl.className = "fn-list-name";
+        nameEl.textContent = fn.name;
+        const metaEl = document.createElement("span");
+        metaEl.className = "fn-list-meta";
+        metaEl.textContent = `L${fn.line}`;
+        btn.append(nameEl, metaEl);
         btn.addEventListener("click", () => {
           hideFnPreview();
           selectFunction(fn.id, { reveal: false, push: true });
