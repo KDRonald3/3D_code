@@ -30,6 +30,11 @@
   --tok-str: #ce9178;
   --tok-num: #b5cea8;
   --tok: #d4d4d4;
+  /* Audit signals — the established viewer contract (this palette was dark). */
+  --resolved: #5dce8a;
+  --conflict: #f0b35a;
+  --unresolved: #f07178;
+  --macro: #c3a6ff;
 }
 
 .app[data-theme="light"] {
@@ -61,14 +66,20 @@
   --tok-str: #50a14f;
   --tok-num: #986801;
   --tok: #383a42;
+  /*
+   * Same signals, re-tuned for a cream ground. The dark values land at
+   * 1.6–2.0:1 here, which left RESOLVED / CONFLICT badges and resolved call
+   * paths washed out to the point of being unreadable; these hold the hue and
+   * clear 4.5:1 on --panel.
+   */
+  --resolved: #1a7f4b;
+  --conflict: #a45d05;
+  --unresolved: #c53030;
+  --macro: #6b3fd4;
 }
 
-/* Audit signal colours (established viewer contract). */
+/* Kind accents — constants across both themes (desktop-horizon-spec.md). */
 :root {
-  --resolved: #5dce8a;
-  --conflict: #f0b35a;
-  --unresolved: #f07178;
-  --macro: #c3a6ff;
   --kind-entry: #e8922a;
   --kind-file: #3b82f6;
   --kind-fn: #16a35c;

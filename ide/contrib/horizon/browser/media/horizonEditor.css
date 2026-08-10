@@ -7,7 +7,13 @@
 	height: 100%;
 	position: relative;
 	overflow: hidden;
-	background: radial-gradient(120% 80% at 10% 0%, #1a3038 0%, #0e1619 55%, #0a1012 100%);
+	/*
+	 * The Map webview is an overlay laid over this slot, so this only shows
+	 * while the overlay is loading or being re-positioned — which is exactly
+	 * when a hardcoded dark ground reads as a black flash in a light theme.
+	 * Follow the editor colour instead.
+	 */
+	background: var(--vscode-editor-background, #1e1e1e);
 }
 
 .horizon-map-editor iframe,
