@@ -232,18 +232,219 @@ else:
 PY
 }
 
+# VS Code target-platform id for this machine. Gallery builds are published per
+# target platform, and only those carry the bundled language server; the
+# "universal" package ships none.
+horizon_ra_target_platform() {
+  local platform
+  platform="$(horizon_detect_platform)"
+  if [[ "${platform}" == linux-* && -f /etc/alpine-release ]]; then
+    echo "alpine-${HORIZON_ARCH}"
+  else
+    echo "${platform}"
+  fi
+}
+
+# Extensions dirs to probe, most likely first. Launched from source
+# (scripts/code.sh) Electron appends "-dev" to product.json's dataFolderName, so
+# extensions live under .horizon-ide-dev, not .horizon-ide. Probing only the
+# packaged path re-runs the install on *every* launch, and rust-analyzer answers
+# nothing while it is being reinstalled — hover looks simply broken.
+horizon_ra_extension_dirs() {
+  local data_folder name
+  data_folder=".horizon-ide"
+  if [[ -f "${HORIZON_CODE_OSS_DIR}/product.json" ]]; then
+    name="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("dataFolderName") or "")' \
+      "${HORIZON_CODE_OSS_DIR}/product.json" 2>/dev/null || true)"
+    if [[ -n "${name}" ]]; then
+      data_folder="${name}"
+    fi
+  fi
+  echo "${HOME}/${data_folder}-dev/extensions"
+  echo "${HOME}/${data_folder}/extensions"
+}
+
+# Folder Code-OSS loads rust-analyzer from inside $1; nothing when none is installed.
+horizon_ra_install_dir() {
+  local ext_dir="$1"
+  [[ -d "${ext_dir}" ]] || return 1
+  python3 - "${ext_dir}" <<'PY' 2>/dev/null
+import json, os, re, sys
+
+ext_dir = sys.argv[1]
+extension_id = "rust-lang.rust-analyzer"
+
+
+def from_manifest():
+    # extensions.json is the profile's installed-extension manifest: it names the
+    # one folder Code-OSS actually loads, so a superseded sibling still sitting on
+    # disk cannot be mistaken for the live install.
+    try:
+        with open(os.path.join(ext_dir, "extensions.json"), encoding="utf-8") as f:
+            for entry in json.load(f):
+                if entry.get("identifier", {}).get("id") == extension_id:
+                    return entry.get("relativeLocation")
+    except Exception:
+        pass
+    return None
+
+
+def from_scan():
+    # Fresh profile, or a manifest this build does not understand. Folders stay on
+    # disk until the next startup sweep; Code-OSS lists the ones pending deletion
+    # in .obsolete, keyed by folder name.
+    try:
+        with open(os.path.join(ext_dir, ".obsolete"), encoding="utf-8") as f:
+            obsolete = json.load(f)
+    except Exception:
+        obsolete = {}
+    pattern = re.compile(re.escape(extension_id) + r"-(\d+)\.(\d+)\.(\d+)(?:-.+)?$")
+    best = None
+    for name in os.listdir(ext_dir):
+        match = pattern.match(name)
+        if not match or obsolete.get(name):
+            continue
+        version = tuple(int(part) for part in match.groups())
+        if best is None or version > best[0]:
+            best = (version, name)
+    return best[1] if best else None
+
+
+folder = from_manifest() or from_scan()
+if not folder:
+    sys.exit(1)
+print(os.path.join(ext_dir, folder))
+PY
+}
+
+# Newest released rust-analyzer that actually ships a $1 build. The publisher
+# occasionally releases a version with no per-platform package at all (0.3.3008
+# shipped darwin-arm64 but no win32-x64 / linux-x64), and the gallery then hands
+# out "universal", which carries no server binary. Pre-releases are skipped so a
+# repair leaves the user on the release channel.
+horizon_ra_gallery_version() {
+  local target="$1" service_url api_json version
+  command -v curl > /dev/null 2>&1 || return 1
+
+  service_url="https://open-vsx.org/vscode/gallery"
+  if [[ -f "${HORIZON_CODE_OSS_DIR}/product.json" ]]; then
+    service_url="$(python3 -c 'import json, sys; print((json.load(open(sys.argv[1], encoding="utf-8")).get("extensionsGallery") or {}).get("serviceUrl") or sys.argv[2])' \
+      "${HORIZON_CODE_OSS_DIR}/product.json" "${service_url}" 2>/dev/null || echo "${service_url}")"
+  fi
+
+  # Marketplace-shaped query: filterType 7 = extension name, flags 17 =
+  # IncludeVersions | IncludeVersionProperties. Versions come back newest first.
+  api_json="$(mktemp)"
+  curl -fsSL --max-time 120 -X POST "${service_url}/extensionquery" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json;api-version=3.0-preview.1' \
+    --data '{"filters":[{"criteria":[{"filterType":7,"value":"rust-lang.rust-analyzer"}],"pageNumber":1,"pageSize":1}],"flags":17}' \
+    -o "${api_json}" 2>/dev/null || horizon_warn "could not query ${service_url} for a ${target} rust-analyzer build"
+  version="$(python3 - "${api_json}" "${target}" <<'PY' 2>/dev/null || true
+import json, sys
+
+api_json, target = sys.argv[1], sys.argv[2]
+try:
+    with open(api_json, encoding="utf-8") as f:
+        versions = json.load(f)["results"][0]["extensions"][0]["versions"]
+except Exception:
+    sys.exit(1)
+for version in versions:
+    if version.get("targetPlatform") != target:
+        continue
+    properties = {p.get("key"): p.get("value") for p in version.get("properties") or []}
+    if properties.get("Microsoft.VisualStudio.Code.PreRelease") == "true":
+        continue
+    print(version["version"])
+    raise SystemExit(0)
+sys.exit(1)
+PY
+)"
+  rm -f "${api_json}"
+  [[ -n "${version}" ]] || return 1
+  echo "${version}"
+}
+
+# code-cli.sh, not code.sh: code.sh runs the GUI binary, which ignores
+# --install-extension and just opens a window, so the install silently never
+# happens. code-cli.sh runs out/cli.js under ELECTRON_RUN_AS_NODE, which installs
+# synchronously and reports a real exit code.
+horizon_install_extension() {
+  local extension="$1"
+  if ! (cd "${HORIZON_CODE_OSS_DIR}" && ./scripts/code-cli.sh --install-extension "${extension}"); then
+    horizon_warn "${extension} install failed (offline?) — hover/definitions/semantic highlighting unavailable until installed"
+  fi
+}
+
 # rust-analyzer is not bundled: a fresh product has an empty extensions dir, so
 # hover / go-to-definition / semantic highlighting are silently absent. Install
 # from Open VSX (product.json gallery) on first launch.
+#
+# A folder is not enough to call it present: auto-update can replace the platform
+# build with a "universal" one that ships no server binary, and rust-analyzer dies
+# with "we don't ship binaries for your platform yet" — taking source-pane
+# semantic styling, hover cards and out-of-map go-to-definition with it. So probe
+# for the server binary, and when it is genuinely absent reinstall a platform
+# build pinned, which is what stops auto-update from undoing the repair. Both
+# halves matter: the binary probe keeps the repair from firing on a healthy
+# install, and the pin keeps it from having to fire again next launch.
 horizon_ensure_rust_analyzer() {
-  local ext_dir="${HOME}/.horizon-ide/extensions"
-  if compgen -G "${ext_dir}/rust-lang.rust-analyzer-*" > /dev/null 2>&1; then
+  local target ext_dir install_dir server version
+  target="$(horizon_ra_target_platform)"
+
+  ext_dir=""
+  install_dir=""
+  local candidate
+  while read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ -z "${ext_dir}" ]]; then
+      ext_dir="${candidate}"
+    fi
+    if install_dir="$(horizon_ra_install_dir "${candidate}")"; then
+      ext_dir="${candidate}"
+      break
+    fi
+    install_dir=""
+  done < <(horizon_ra_extension_dirs)
+
+  # bootstrap.ts: Uri.joinPath(extensionUri, "server", `rust-analyzer${exe}`).
+  server="${install_dir:+${install_dir}/server/rust-analyzer}"
+  if [[ -n "${server}" && -x "${server}" ]]; then
     horizon_info "rust-analyzer present in ${ext_dir}"
     return 0
   fi
-  horizon_info "installing rust-lang.rust-analyzer (first launch) -> ${ext_dir}"
-  if ! (cd "${HORIZON_CODE_OSS_DIR}" && ./scripts/code.sh --install-extension rust-lang.rust-analyzer); then
-    horizon_warn "rust-analyzer install failed (offline?) — hover/definitions/semantic highlighting unavailable until installed"
+
+  if [[ -n "${install_dir}" ]]; then
+    horizon_warn "rust-analyzer in ${install_dir} ships no language server (server/rust-analyzer missing)"
+  else
+    horizon_info "installing rust-lang.rust-analyzer (first launch) -> ${ext_dir}"
+    horizon_install_extension "rust-lang.rust-analyzer"
+    install_dir="$(horizon_ra_install_dir "${ext_dir}" || true)"
+    if [[ -n "${install_dir}" && -x "${install_dir}/server/rust-analyzer" ]]; then
+      return 0
+    fi
+    if [[ -n "${install_dir}" ]]; then
+      # A first install lands on a serverless build just as easily as an
+      # auto-update does; horizon_install_extension already reported the other
+      # case, where nothing installed at all.
+      horizon_warn "the released rust-analyzer has no ${target} build; it installed without a language server"
+    fi
+  fi
+
+  # Installing an explicit version sets pinned=true on the extension, and a pinned
+  # extension is excluded from auto-update — so the build that got us here cannot
+  # come back on the next gallery check.
+  if ! version="$(horizon_ra_gallery_version "${target}")"; then
+    horizon_warn "no ${target} rust-analyzer build found in the gallery — hover/definitions/semantic highlighting unavailable"
+    return 0
+  fi
+
+  horizon_info "repairing rust-analyzer: installing ${version} (${target}, pinned) -> ${ext_dir}"
+  horizon_install_extension "rust-lang.rust-analyzer@${version}"
+
+  install_dir="$(horizon_ra_install_dir "${ext_dir}" || true)"
+  if [[ -z "${install_dir}" || ! -x "${install_dir}/server/rust-analyzer" ]]; then
+    horizon_warn "rust-analyzer still has no server binary in ${ext_dir} — hover/definitions/semantic highlighting unavailable"
   fi
 }
 
