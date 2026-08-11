@@ -45,6 +45,8 @@
    * shortens tab labels so tabs + ✕ stay hittable near 180px centre column.
    */
   const BOTTOM_CHROME_COMPACT_PX = 420;
+  /** Width the scope control adds to the chrome row when a multi-selection shows it. */
+  const BOTTOM_CHROME_SCOPE_PX = 150;
   const BOTTOM_CHROME_TIGHT_PX = 300;
 
   const els = {
@@ -117,6 +119,7 @@
     fnsNodes: document.getElementById("fns-nodes"),
     fnsControls: document.getElementById("fns-controls"),
     fnsDepthMode: document.getElementById("fns-depth-mode"),
+    fnsScopeMode: document.getElementById("fns-scope-mode"),
     fnsFit: document.getElementById("fns-fit"),
     fnsZoomHud: document.getElementById("fns-zoom-hud"),
     fnsZoomOut: document.getElementById("fns-zoom-out"),
@@ -145,10 +148,28 @@
   let cardEls = new Map();
   /** @type {Set<string>} */
   let collapsed = new Set();
-  /** @type {string|null} */
+  /** @type {string|null} primary file — the last one clicked */
   let selectedId = null;
   /** @type {string|null} selected FunctionId, or null when inspecting a file */
   let selectedFnId = null;
+  /**
+   * Every selected file / function. `selectedId` and `selectedFnId` stay the
+   * primary of each set: the one the Inspector reads, the one the host is told
+   * about. The sets drive the map chrome and the Functions dock, which is where
+   * comparing several things at once actually pays off.
+   * @type {Set<string>}
+   */
+  let selectedSet = new Set();
+  /** @type {Set<string>} */
+  let selectedFnSet = new Set();
+  /** Dock scope over a multi-selection: all | linking | bridges. */
+  let fnsScope = "all";
+  /**
+   * True while the function selection is being built up by shift-clicking.
+   * The Inspector then stays on the file so the Functions list — the surface
+   * the set is built from — remains on screen. A plain click clears it.
+   */
+  let fnSelectionAdditive = false;
   /** @type {Map<string, {fn: object, file: object, fileId: string}>} */
   let fnIndex = new Map();
   /** Selection history for Back after following call targets. */
@@ -211,7 +232,11 @@
    * @type {1|2|'all'}
    */
   let fnsDepth = "all";
-  /** File id the current `fnsDepth` was chosen for — null until first build. */
+  /**
+   * The selection the current `fnsDepth` was chosen for — the joined file ids,
+   * so widening the selection re-defaults the depth for the bigger graph.
+   * Null until the first build.
+   */
   let fnsDepthFileId = null;
   /** @type {object|null} last full (unfiltered) DAG build for depth meta. */
   let fnsFullGraph = null;
@@ -314,6 +339,28 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
+
+  /**
+   * Insert into a memo table with a ceiling, evicting the oldest entry first.
+   * These tables are keyed per function or per token offset and live as long as
+   * the webview does, so without a bound they grow for the whole session — and
+   * the webview now survives editor switches, which makes that session long.
+   * `Map` preserves insertion order, so the first key is the oldest.
+   */
+  function cacheSet(cache, key, value, max) {
+    if (!cache.has(key) && cache.size >= max) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, value);
+  }
+
+  /** Token arrays for previewed function bodies. */
+  const FN_PREVIEW_CACHE_MAX = 200;
+  /** rust-analyzer hover markdown, keyed by file + byte offset. */
+  const RA_HOVER_CACHE_MAX = 500;
+  /** rust-analyzer semantic tokens, keyed by file + byte range. */
+  const RA_SEMANTIC_CACHE_MAX = 200;
 
   const THEME_KEY = "horizon.theme";
   const SOURCE_EXPAND_KEY = "horizon.sourceExpanded";
@@ -444,8 +491,9 @@
       btn.appendChild(meta);
       btn.addEventListener("click", async () => {
         try {
-          const text = JSON.stringify(item.map);
-          // IDE: host owns map persistence; do not POST to sidecar from webview.
+          // IDE: host owns map persistence; do not POST to sidecar from
+          // webview. (The standalone viewer serializes here to POST /api/map;
+          // doing it here only stringified megabytes to throw them away.)
           loadMap(item.map, item.label || "recent");
         } catch (err) {
           showImport(`Failed to restore recent map: ${err.message || err}`);
@@ -795,7 +843,11 @@
     const w = chrome.getBoundingClientRect().width;
     if (!(w > 0)) return;
     bottomChromeWidth = w;
-    bottomChromeCompact = w <= BOTTOM_CHROME_COMPACT_PX;
+    // The scope control is a whole extra segmented group in this row, so the
+    // width at which labels must shorten arrives sooner while it is showing.
+    const scopeShown = !!(els.fnsScopeMode && !els.fnsScopeMode.hidden);
+    bottomChromeCompact =
+      w <= BOTTOM_CHROME_COMPACT_PX + (scopeShown ? BOTTOM_CHROME_SCOPE_PX : 0);
     bottomChromeTight = w <= BOTTOM_CHROME_TIGHT_PX;
     chrome.classList.toggle("is-compact", bottomChromeCompact);
     chrome.classList.toggle("is-tight", bottomChromeTight);
@@ -1002,11 +1054,19 @@
         };
         nodes.push(node);
         for (const fn of file.functions || []) {
-          if (fn.id) {
-            const fid = String(fn.id);
-            fnOwner.set(fid, id);
-            index.set(fid, { fn, file, fileId: id });
+          // Index every listed function, including one the map gave no `id`
+          // (older schema, hand-written or third-party JSON). The Inspector
+          // lists `file.functions` in full, so skipping the unidentified ones
+          // here left rows that looked ordinary but could not be selected:
+          // the click resolved to nothing and you stayed on the file.
+          // `#`/`@` cannot occur in an engine FunctionId, so a synthesized key
+          // can never collide with a real one or match a call-site target.
+          if (!fn.id) {
+            fn.id = `${id}#fn@${fn.line ?? 0}:${fn.name ?? "fn"}`;
           }
+          const fid = String(fn.id);
+          fnOwner.set(fid, id);
+          index.set(fid, { fn, file, fileId: id });
         }
       };
 
@@ -1263,14 +1323,23 @@
     els.zoomReset.textContent = `${Math.round(zoom * 100)}%`;
   }
 
+  /** Ids the current focus is wired to. Hover overrides selection, and a
+   * multi-file selection lights up everything any member touches. */
   function connectedIds() {
     const set = new Set();
-    if (!selectedId && !hoverId) return set;
-    const focus = hoverId || selectedId;
+    const focusSet = hoverId
+      ? new Set([hoverId])
+      : selectedSet.size
+        ? selectedSet
+        : selectedId
+          ? new Set([selectedId])
+          : null;
+    if (!focusSet) return set;
     for (const e of fileEdges) {
-      if (e.from === focus) set.add(e.to);
-      if (e.to === focus) set.add(e.from);
+      if (focusSet.has(e.from)) set.add(e.to);
+      if (focusSet.has(e.to)) set.add(e.from);
     }
+    for (const id of focusSet) set.delete(id);
     return set;
   }
 
@@ -1293,8 +1362,13 @@
   }
 
   function renderEdges() {
-    const focus = hoverId || selectedId;
-    const focusSet = focus ? new Set([focus]) : new Set();
+    const focusSet = hoverId
+      ? new Set([hoverId])
+      : selectedSet.size
+        ? new Set(selectedSet)
+        : selectedId
+          ? new Set([selectedId])
+          : new Set();
     const ctr = (id) => {
       const p = cardPosition(id);
       return {
@@ -1340,6 +1414,11 @@
     els.edgePaths.replaceChildren(frag);
   }
 
+  /** Selected at all — the set is authoritative, selectedId is just its head. */
+  function isFileSelected(id) {
+    return selectedSet.size ? selectedSet.has(id) : selectedId === id;
+  }
+
   function renderCards() {
     const conn = connectedIds();
     const focus = hoverId || selectedId;
@@ -1350,7 +1429,8 @@
     for (const node of fileNodes) {
       const p = cardPosition(node.id);
       const visible = cardVisible(node);
-      const isSel = selectedId === node.id;
+      const isSel = isFileSelected(node.id);
+      const isPrimary = selectedId === node.id;
       // Dim only for filter/search mismatches. Selection is indigo chrome —
       // never wash out the rest of the map (scanning means reading unselected cards).
       const dim = !visible;
@@ -1360,6 +1440,7 @@
       wrap.className =
         "file-card" +
         (isSel ? " selected" : "") +
+        (isSel && !isPrimary ? " co-selected" : "") +
         (dim ? " dim" : "") +
         (linked ? " linked" : "");
       wrap.dataset.id = node.id;
@@ -1423,13 +1504,18 @@
           };
           return;
         }
-        selectFile(node.id, { reveal: false });
+        selectFile(node.id, {
+          reveal: false,
+          additive: isAdditiveClick(ev),
+        });
         lastCardGesture = {
           id: node.id,
           moved: false,
           clickSuppressed: false,
           selected: true,
           selectedId,
+          additive: isAdditiveClick(ev),
+          selectedCount: selectedSet.size,
           rightOpenAfter: rightOpen,
         };
       });
@@ -1454,10 +1540,11 @@
       const el = cardEls.get(node.id);
       if (!el) continue;
       const visible = cardVisible(node);
-      const isSel = selectedId === node.id;
+      const isSel = isFileSelected(node.id);
       const dim = !visible;
       const linked = !!focus && !isSel && conn.has(node.id);
       el.classList.toggle("selected", isSel);
+      el.classList.toggle("co-selected", isSel && selectedId !== node.id);
       el.classList.toggle("dim", dim);
       el.classList.toggle("linked", linked);
       const pill = el.querySelector(".sel-pill");
@@ -1551,7 +1638,7 @@
               indent: 24,
               icon: n.kind === "entry" ? "★" : "#",
               iconClass: n.kind,
-              selected: selectedId === n.id,
+              selected: isFileSelected(n.id),
               dim: !visible,
               badge: hot ? "!" : n.kind === "entry" ? "★" : "",
               badgeClass: hot
@@ -1561,7 +1648,11 @@
                 : n.kind === "entry"
                   ? "star"
                   : "",
-              onClick: () => selectFile(n.id, { reveal: true }),
+              onClick: (ev) =>
+                selectFile(n.id, {
+                  reveal: true,
+                  additive: isAdditiveClick(ev),
+                }),
             })
           );
         }
@@ -1603,7 +1694,12 @@
 
   function renderLayersSelection() {
     for (const btn of els.layerRows.querySelectorAll(".layer-row.file")) {
-      btn.classList.toggle("selected", btn.dataset.id === selectedId);
+      const id = btn.dataset.id;
+      btn.classList.toggle("selected", isFileSelected(id));
+      btn.classList.toggle(
+        "co-selected",
+        isFileSelected(id) && id !== selectedId
+      );
     }
   }
 
@@ -1645,9 +1741,25 @@
     document.title = `Horizon — ${rootName}`;
   }
 
+  /**
+   * Bring a card into view. Already fully on screen → leave the transform
+   * alone: `loadMap` fits every card plus the architecture sticky and then
+   * reveals the auto-selected card, and centring on that card pushed the
+   * outermost cards and the sticky back off the canvas.
+   */
   function revealCard(id) {
     const p = cardPosition(id);
     const rect = els.canvas.getBoundingClientRect();
+    const left = panX + p.x * zoom;
+    const top = panY + p.y * zoom;
+    if (
+      left >= 0 &&
+      top >= 0 &&
+      left + CARD_W * zoom <= rect.width &&
+      top + CARD_H * zoom <= rect.height
+    ) {
+      return;
+    }
     const cx = p.x + CARD_W / 2;
     const cy = p.y + CARD_H / 2;
     panX = rect.width / 2 - cx * zoom;
@@ -1656,7 +1768,131 @@
   }
 
   function snapshotSelection() {
-    return { fileId: selectedId, fnId: selectedFnId };
+    return {
+      fileId: selectedId,
+      fnId: selectedFnId,
+      fileSet: [...selectedSet],
+      fnSet: [...selectedFnSet],
+    };
+  }
+
+  /**
+   * Shift / Ctrl / Cmd means "add to what I already have" — the same modifier
+   * the file explorer, the editor tabs, and every other list in the workbench
+   * use, so nothing new has to be learned here.
+   */
+  function isAdditiveClick(ev) {
+    return !!(ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey));
+  }
+
+  /** True when the dock has more than one thing to relate. */
+  function hasMultiSelection() {
+    return selectedFnSet.size > 1 || selectedSet.size > 1;
+  }
+
+  /**
+   * Drop functions whose file left the selection. A selection set that
+   * outlives its files would scope the dock to functions that are no longer
+   * on screen.
+   */
+  function pruneFnSelection() {
+    for (const fnId of [...selectedFnSet]) {
+      const entry = fnIndex.get(fnId);
+      if (!entry || !selectedSet.has(entry.fileId)) selectedFnSet.delete(fnId);
+    }
+    if (selectedFnId && !selectedFnSet.has(selectedFnId)) {
+      selectedFnId = selectedFnSet.values().next().value ?? null;
+    }
+  }
+
+  /**
+   * Toggle a file in the selection. Never empties the set — clicking the last
+   * remaining member again keeps it, matching how the map reads: something is
+   * always inspected.
+   */
+  function toggleFileSelection(id) {
+    if (selectedSet.has(id) && selectedSet.size > 1) {
+      selectedSet.delete(id);
+      if (selectedId === id) {
+        selectedId = selectedSet.values().next().value ?? null;
+      }
+    } else {
+      selectedSet.add(id);
+      selectedId = id;
+    }
+    pruneFnSelection();
+    afterSelectionChange({ notifyHost: true });
+  }
+
+  /** Toggle a function in the selection; its file joins the file selection. */
+  function toggleFnSelection(fnId) {
+    const key = String(fnId);
+    const entry = fnIndex.get(key);
+    if (!entry) return false;
+    fnSelectionAdditive = true;
+    if (selectedFnSet.has(key) && selectedFnSet.size > 1) {
+      selectedFnSet.delete(key);
+      if (selectedFnId === key) {
+        selectedFnId = selectedFnSet.values().next().value ?? null;
+        const owner = selectedFnId ? fnIndex.get(selectedFnId) : null;
+        if (owner) selectedId = owner.fileId;
+      }
+    } else {
+      selectedFnSet.add(key);
+      selectedFnId = key;
+      selectedSet.add(entry.fileId);
+      selectedId = entry.fileId;
+    }
+    afterSelectionChange({ notifyHost: true });
+    return true;
+  }
+
+  /** Collapse a multi-selection back to its primary. */
+  function clearMultiSelection() {
+    if (!hasMultiSelection()) return;
+    selectedSet = selectedId ? new Set([selectedId]) : new Set();
+    selectedFnSet = selectedFnId ? new Set([selectedFnId]) : new Set();
+    fnSelectionAdditive = false;
+    afterSelectionChange({ notifyHost: false });
+  }
+
+  /**
+   * One repaint path for every selection edit, so the map chrome, the
+   * Inspector and the dock can never disagree about what is selected.
+   */
+  function afterSelectionChange({ notifyHost = false, reveal = null } = {}) {
+    if (reveal) revealCard(reveal);
+    openInspectorForSelection();
+    syncFnsScopeControls();
+    refreshFocus();
+    renderInspector();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
+    if (!notifyHost || !Bridge) return;
+    // Only the primary is announced: the host opens one editor, and a
+    // multi-select gesture must not fan out into a burst of editor openings.
+    if (selectedFnId) {
+      const entry = fnIndex.get(selectedFnId);
+      if (entry) notifyHostFunction(entry);
+    } else if (selectedId) {
+      const node = fileNodes.find((n) => n.id === selectedId);
+      Bridge.selectFile({ fileId: selectedId, filePath: node?.path || null });
+    }
+  }
+
+  /** W3: open read-only Inspection canvas + rust-analyzer on this range. */
+  function notifyHostFunction(entry) {
+    const fn = entry.fn || {};
+    const file = entry.file || {};
+    Bridge.selectFunction({
+      functionId: String(fn.id ?? selectedFnId),
+      fileId: entry.fileId,
+      filePath: file.path || null,
+      functionName: fn.name || null,
+      line: fn.line ?? null,
+      byteStart: fn.byte_start ?? null,
+      byteEnd: fn.byte_end ?? null,
+      contentHash: file.content_hash || null,
+    });
   }
 
   function pushHistory() {
@@ -1681,12 +1917,28 @@
    * Select a file card. Clears function selection unless keepFn and the fn
    * still belongs to this file. Opens the Inspector (selection intent).
    */
-  function selectFile(id, { reveal = false, push = false, keepFn = false } = {}) {
+  function selectFile(
+    id,
+    { reveal = false, push = false, keepFn = false, additive = false } = {}
+  ) {
     if (push) pushHistory();
+    if (additive && id) {
+      toggleFileSelection(id);
+      if (reveal && selectedSet.has(id)) revealCard(id);
+      return;
+    }
     selectedId = id;
-    if (!keepFn) selectedFnId = null;
+    selectedSet = id ? new Set([id]) : new Set();
+    fnSelectionAdditive = false;
+    if (!keepFn) {
+      selectedFnId = null;
+      selectedFnSet = new Set();
+    } else {
+      pruneFnSelection();
+    }
     if (reveal && id) revealCard(id);
     openInspectorForSelection();
+    syncFnsScopeControls();
     refreshFocus();
     renderInspector();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
@@ -1701,32 +1953,33 @@
    * Select a function by FunctionId — core audit jump.
    * Selects its owning file card, reveals it, opens Inspector on the fn.
    */
-  function selectFunction(fnId, { reveal = true, push = true, notifyHost = true } = {}) {
+  function selectFunction(
+    fnId,
+    { reveal = true, push = true, notifyHost = true, additive = false } = {}
+  ) {
     const entry = fnIndex.get(String(fnId));
     if (!entry) return false;
     if (push) pushHistory();
+    if (additive) {
+      const ok = toggleFnSelection(fnId);
+      if (ok && reveal && selectedId) revealCard(selectedId);
+      return ok;
+    }
     selectedId = entry.fileId;
     selectedFnId = String(fnId);
+    fnSelectionAdditive = false;
+    // A function picked out of a multi-file selection keeps that selection —
+    // narrowing to one function should not silently throw away the comparison
+    // the user built up.
+    if (!selectedSet.has(entry.fileId)) selectedSet = new Set([entry.fileId]);
+    selectedFnSet = new Set([selectedFnId]);
     if (reveal) revealCard(entry.fileId);
     openInspectorForSelection();
+    syncFnsScopeControls();
     refreshFocus();
     renderInspector();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
-    /* W3: open read-only Inspection canvas + rust-analyzer on this range. */
-    if (notifyHost && Bridge) {
-      const fn = entry.fn || {};
-      const file = entry.file || {};
-      Bridge.selectFunction({
-        functionId: String(fnId),
-        fileId: entry.fileId,
-        filePath: file.path || null,
-        functionName: fn.name || null,
-        line: fn.line ?? null,
-        byteStart: fn.byte_start ?? null,
-        byteEnd: fn.byte_end ?? null,
-        contentHash: file.content_hash || null,
-      });
-    }
+    if (notifyHost && Bridge) notifyHostFunction(entry);
     return true;
   }
 
@@ -1735,8 +1988,20 @@
     if (!prev) return;
     selectedId = prev.fileId;
     selectedFnId = prev.fnId;
+    selectedSet = new Set(
+      prev.fileSet && prev.fileSet.length
+        ? prev.fileSet
+        : prev.fileId
+          ? [prev.fileId]
+          : []
+    );
+    selectedFnSet = new Set(
+      prev.fnSet && prev.fnSet.length ? prev.fnSet : prev.fnId ? [prev.fnId] : []
+    );
+    fnSelectionAdditive = selectedFnSet.size > 1;
     if (selectedId) revealCard(selectedId);
     openInspectorForSelection();
+    syncFnsScopeControls();
     refreshFocus();
     renderInspector();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
@@ -1874,17 +2139,190 @@
     host.appendChild(banner);
   }
 
+  // --- Reachable hover popovers --------------------------------------------
+  // Both hover surfaces below — the Functions-list peek and the rust-analyzer
+  // card — are meant to be entered: their source scrolls, their identifiers
+  // jump, their text selects. None of that survives a card that vanishes the
+  // moment the pointer leaves its anchor, so dismissal gets a grace period and
+  // the cursor gets a corridor to cross the gap between anchor and card.
+
+  /** Delay before a hover opens, shared so both surfaces feel like one. */
+  const HOVER_OPEN_DELAY_MS = 320;
+  /** Grace period after the pointer leaves the anchor, so it can reach the card. */
+  const HOVER_HIDE_DELAY_MS = 140;
+  /** How long a cursor aimed at a card may keep it alive while travelling. */
+  const HOVER_AIM_MS = 400;
+  /** Cadence for re-testing a dismissal that is being deferred. */
+  const HOVER_RECHECK_MS = 100;
+
+  /** Last pointer position — geometry the enter/leave events cannot answer. */
+  let hoverPointer = { x: 0, y: 0 };
+  document.addEventListener(
+    "mousemove",
+    (ev) => {
+      hoverPointer = { x: ev.clientX, y: ev.clientY };
+    },
+    true
+  );
+
+  function pointInRect(p, r) {
+    return p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+  }
+
+  /** Corners of the card edge that faces `p` — the base of the safe triangle. */
+  function hoverFacingCorners(r, p) {
+    if (p.y >= r.bottom) {
+      return [{ x: r.left, y: r.bottom }, { x: r.right, y: r.bottom }];
+    }
+    if (p.y <= r.top) {
+      return [{ x: r.left, y: r.top }, { x: r.right, y: r.top }];
+    }
+    if (p.x >= r.right) {
+      return [{ x: r.right, y: r.top }, { x: r.right, y: r.bottom }];
+    }
+    return [{ x: r.left, y: r.top }, { x: r.left, y: r.bottom }];
+  }
+
+  function pointInTriangle(p, a, b, c) {
+    const sign = (p1, p2, p3) =>
+      (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+    const d1 = sign(p, a, b);
+    const d2 = sign(p, b, c);
+    const d3 = sign(p, c, a);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+  }
+
+  /**
+   * Grace-period dismissal for a popover the pointer must be able to reach.
+   * `getEl` yields the card (it need not exist yet), `hide` closes it, and the
+   * optional `getCompanion` yields a card this one raised: the pointer resting
+   * there counts as still being on this one.
+   */
+  function createHoverReach(getEl, hide, getCompanion) {
+    let hideTimer = null;
+    let exit = null;
+    let aimDeadline = 0;
+    /**
+     * Whether the pointer is on the card, per the DOM's own enter/leave events.
+     * The cached coordinate cannot answer this: once the pointer leaves the
+     * webview no further mousemove arrives, so it freezes at its last position —
+     * which is inside the card, and would pin the card open forever.
+     */
+    let inside = false;
+    /**
+     * Set once the card reports the pointer left it. It makes "left" beat any
+     * geometric guess, which is what keeps a frozen pointer position from
+     * pinning the card open.
+     */
+    let left = false;
+
+    function cancel() {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    }
+
+    /** Call from the card's own hide, so stale enter/leave state cannot leak. */
+    function reset() {
+      cancel();
+      inside = false;
+      left = false;
+    }
+
+    /**
+     * Leaving the anchor starts a dismissal the cursor can still outrun by
+     * heading for the card — see `aimsAtCard`.
+     */
+    function schedule() {
+      const el = getEl();
+      if (!el || el.hidden) return;
+      cancel();
+      exit = hoverPointer;
+      aimDeadline = Date.now() + HOVER_AIM_MS;
+      hideTimer = setTimeout(evaluate, HOVER_HIDE_DELAY_MS);
+    }
+
+    /**
+     * The diagonal-travel problem: the straight line from the anchor to the
+     * card usually crosses neither, so a strict mouseout closes the card
+     * mid-journey. Keep it open while the cursor stays inside the triangle
+     * joining the exit point to the card's facing corners (Amazon's
+     * mega-dropdown trick).
+     */
+    function aimsAtCard(rect) {
+      if (!exit || Date.now() >= aimDeadline) return false;
+      // No movement since the exit means no aim to honour — and a pointer that
+      // left the webview reports exactly that, frozen. Treating the degenerate
+      // triangle as a hit would keep the card open indefinitely.
+      const moved =
+        Math.abs(hoverPointer.x - exit.x) + Math.abs(hoverPointer.y - exit.y);
+      if (moved < 2) return false;
+      const [c1, c2] = hoverFacingCorners(rect, exit);
+      return pointInTriangle(hoverPointer, exit, c1, c2);
+    }
+
+    /** True while the pointer rests on a card this popover itself raised. */
+    function onCompanion() {
+      const c = getCompanion ? getCompanion() : null;
+      return !!c && !c.hidden && pointInRect(hoverPointer, c.getBoundingClientRect());
+    }
+
+    function evaluate() {
+      hideTimer = null;
+      const el = getEl();
+      if (!el || el.hidden) return;
+      if (inside) return; // settled on the card, per enter/leave
+      const rect = el.getBoundingClientRect();
+      // Crossing the card's edge and the browser reporting `mouseenter` are not
+      // simultaneous; cover that gap geometrically. Only before an explicit
+      // leave, so a frozen pointer can never use this to pin the card open.
+      if (!left && pointInRect(hoverPointer, rect)) return;
+      if (onCompanion() || aimsAtCard(rect)) {
+        hideTimer = setTimeout(evaluate, HOVER_RECHECK_MS);
+        return;
+      }
+      hide();
+    }
+
+    /** Entering the card cancels the pending dismissal; leaving restarts it. */
+    function bind(el) {
+      el.addEventListener("mouseenter", () => {
+        inside = true;
+        left = false;
+        cancel();
+      });
+      el.addEventListener("mouseleave", () => {
+        inside = false;
+        left = true;
+        schedule();
+      });
+    }
+
+    return { bind, cancel, schedule, reset };
+  }
+
   // --- Hover preview for the Inspector's Functions list --------------------
   // Hovering a function shows its body without changing the selection. Tokens
   // come from the same /api/source path the Inspector uses, so the highlighting
   // is identical and the content hash still guards against a stale map.
-  const FN_PREVIEW_DELAY_MS = 320;
   /** Below this the gutter is too narrow to render anything readable. */
   const FN_PREVIEW_MIN_PX = 140;
   const fnPreviewCache = new Map();
   let fnPreviewEl = null;
   let fnPreviewTimer = null;
   let fnPreviewGen = 0;
+  /** Row the visible peek belongs to, so returning to it does not re-render. */
+  let fnPreviewAnchor = null;
+  // Reachable like the rust-analyzer card: the peek's source scrolls, its
+  // identifiers jump, and a hover card raised from inside it belongs to it.
+  const fnPreviewReach = createHoverReach(
+    () => fnPreviewEl,
+    hideFnPreview,
+    raCardOverPeek
+  );
 
   function ensureFnPreviewEl() {
     if (fnPreviewEl) return fnPreviewEl;
@@ -1894,6 +2332,7 @@
     // The Inspector sits inside gesture-bearing chrome; the popover must never
     // read as a selection, pan or drag.
     fnPreviewEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    fnPreviewReach.bind(fnPreviewEl);
     // Must live inside `.app`: every theme token (--panel, --border, --tok-*) is
     // declared on `.app[data-theme]`, so a document.body child renders with a
     // transparent background and uncoloured source. `.app` sets no transform, so
@@ -1908,6 +2347,10 @@
       clearTimeout(fnPreviewTimer);
       fnPreviewTimer = null;
     }
+    fnPreviewReach.reset();
+    fnPreviewAnchor = null;
+    // A card explaining a token in the peek has just lost what it pointed at.
+    if (raCardOverPeek()) hideRaHover();
     if (fnPreviewEl) fnPreviewEl.hidden = true;
   }
 
@@ -1984,7 +2427,9 @@
           : { error: body.message || body.error || `source request failed (${res.status})` };
     }
     // Only memoize successes: a transient sidecar outage must not stick.
-    if (!result.error) fnPreviewCache.set(key, result);
+    if (!result.error) {
+      cacheSet(fnPreviewCache, key, result, FN_PREVIEW_CACHE_MAX);
+    }
     return result;
   }
 
@@ -2007,7 +2452,14 @@
       // A row scrolled out of the list has no sensible anchor; showing anyway
       // parks the popover in a corner with nothing to point at.
       if (!anchorOnScreen(btn)) return;
+      // Coming back to the row whose peek is already up must not re-render it:
+      // that would throw away the scroll position just left in the source.
+      if (fnPreviewAnchor === btn && fnPreviewEl && !fnPreviewEl.hidden) {
+        fnPreviewReach.cancel();
+        return;
+      }
       const gen = ++fnPreviewGen;
+      fnPreviewAnchor = btn;
       const early = sourceUnavailableReason(fn, file);
       if (early) {
         setFnPreviewMessage(btn, name, SOURCE_MESSAGES[early] || "Source unavailable.");
@@ -2042,57 +2494,64 @@
     };
     btn.addEventListener("mouseenter", () => {
       if (fnPreviewTimer) clearTimeout(fnPreviewTimer);
-      fnPreviewTimer = setTimeout(open, FN_PREVIEW_DELAY_MS);
+      // Returning to the row the peek belongs to cancels the dismissal that
+      // leaving it started. Arriving at a *different* row must not: the peek
+      // still showing the old row has to go, or scrubbing the list drags a
+      // stale peek along behind the pointer.
+      if (fnPreviewAnchor === btn) fnPreviewReach.cancel();
+      fnPreviewTimer = setTimeout(open, HOVER_OPEN_DELAY_MS);
     });
-    btn.addEventListener("mouseleave", hideFnPreview);
+    btn.addEventListener("mouseleave", (ev) => {
+      // Moving straight into the peek must not count as leaving it.
+      const to = ev.relatedTarget;
+      if (to instanceof Node && fnPreviewEl && fnPreviewEl.contains(to)) return;
+      if (fnPreviewTimer) {
+        clearTimeout(fnPreviewTimer);
+        fnPreviewTimer = null;
+      }
+      fnPreviewReach.schedule();
+    });
     // Keyboard parity: tabbing the list previews too.
     btn.addEventListener("focus", open);
     btn.addEventListener("blur", hideFnPreview);
   }
 
   // A popover anchored to viewport coordinates goes stale the moment anything
-  // scrolls or the selection re-renders the Inspector.
-  window.addEventListener("scroll", hideFnPreview, true);
+  // scrolls or the selection re-renders the Inspector — except the peek's own
+  // source, which is scrolled precisely in order to read it.
+  window.addEventListener(
+    "scroll",
+    (ev) => {
+      const t = ev.target;
+      if (t instanceof Node && fnPreviewEl && fnPreviewEl.contains(t)) return;
+      hideFnPreview();
+    },
+    true
+  );
   window.addEventListener("resize", hideFnPreview);
 
   // --- rust-analyzer hover in the Inspector source pane --------------------
   // Spans rendered with byte offsets ask the host what rust-analyzer knows at
   // that position, mirroring editor hover. IDE-only: the standalone viewer has
   // no host to ask.
-  const RA_HOVER_DELAY_MS = 350;
-  /** Grace period after the pointer leaves the token, so it can reach the card. */
-  const RA_HOVER_HIDE_DELAY_MS = 260;
-  /** How long a cursor aimed at the card may keep it alive while travelling. */
-  const RA_HOVER_AIM_MS = 700;
   const raHoverCache = new Map();
   let raHoverEl = null;
   let raHoverTimer = null;
-  let raHoverHideTimer = null;
   let raHoverGen = 0;
-  let raPointer = { x: 0, y: 0 };
-  let raHoverExit = null;
-  let raHoverAimDeadline = 0;
-  /**
-   * Whether the pointer is on the card, per the DOM's own enter/leave events.
-   * The cached coordinate cannot answer this: once the pointer leaves the
-   * webview no further mousemove arrives, so it freezes at its last position —
-   * which is inside the card, and would pin the card open forever.
-   */
-  let raHoverInside = false;
-  /**
-   * Set once the card reports the pointer left it. It makes "left" beat any
-   * geometric guess, which is what keeps a frozen pointer position from
-   * pinning the card open.
-   */
-  let raHoverLeft = false;
+  /** Span the visible card explains — it says whose surface the card sits on. */
+  let raHoverAnchor = null;
+  const raHoverReach = createHoverReach(() => raHoverEl, hideRaHover);
 
-  document.addEventListener(
-    "mousemove",
-    (ev) => {
-      raPointer = { x: ev.clientX, y: ev.clientY };
-    },
-    true
-  );
+  /**
+   * The card, when it explains a token inside the Functions peek. The peek
+   * counts it as part of itself: reading the card must not dismiss the code it
+   * was raised from, and closing the peek takes the card with it.
+   */
+  function raCardOverPeek() {
+    if (!raHoverEl || raHoverEl.hidden || !raHoverAnchor) return null;
+    if (!fnPreviewEl || !fnPreviewEl.contains(raHoverAnchor)) return null;
+    return raHoverEl;
+  }
 
   function ensureRaHoverEl() {
     if (raHoverEl) return raHoverEl;
@@ -2101,16 +2560,7 @@
     raHoverEl.hidden = true;
     // The card is reachable: entering it cancels the pending dismissal so its
     // scrollbar can actually be used.
-    raHoverEl.addEventListener("mouseenter", () => {
-      raHoverInside = true;
-      raHoverLeft = false;
-      cancelRaHoverHide();
-    });
-    raHoverEl.addEventListener("mouseleave", () => {
-      raHoverInside = false;
-      raHoverLeft = true;
-      scheduleRaHoverHide();
-    });
+    raHoverReach.bind(raHoverEl);
     // The Inspector sits inside gesture-bearing chrome; selecting text in the
     // card must never read as a canvas pan or drag.
     raHoverEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
@@ -2125,99 +2575,12 @@
       clearTimeout(raHoverTimer);
       raHoverTimer = null;
     }
-    cancelRaHoverHide();
-    raHoverInside = false;
-    raHoverLeft = false;
+    raHoverReach.reset();
+    raHoverAnchor = null;
     if (raHoverEl) {
       raHoverEl.hidden = true;
       raHoverEl.scrollTop = 0;
     }
-  }
-
-  function cancelRaHoverHide() {
-    if (raHoverHideTimer) {
-      clearTimeout(raHoverHideTimer);
-      raHoverHideTimer = null;
-    }
-  }
-
-  /**
-   * Leaving the token starts a dismissal the cursor can still outrun by
-   * heading for the card — see `raHoverAimsAtCard`.
-   */
-  function scheduleRaHoverHide() {
-    if (!raHoverEl || raHoverEl.hidden) return;
-    cancelRaHoverHide();
-    raHoverExit = raPointer;
-    raHoverAimDeadline = Date.now() + RA_HOVER_AIM_MS;
-    raHoverHideTimer = setTimeout(evaluateRaHoverHide, RA_HOVER_HIDE_DELAY_MS);
-  }
-
-  /** Corners of the card edge that faces `p` — the base of the safe triangle. */
-  function raHoverFacingCorners(r, p) {
-    if (p.y >= r.bottom) {
-      return [{ x: r.left, y: r.bottom }, { x: r.right, y: r.bottom }];
-    }
-    if (p.y <= r.top) {
-      return [{ x: r.left, y: r.top }, { x: r.right, y: r.top }];
-    }
-    if (p.x >= r.right) {
-      return [{ x: r.right, y: r.top }, { x: r.right, y: r.bottom }];
-    }
-    return [{ x: r.left, y: r.top }, { x: r.left, y: r.bottom }];
-  }
-
-  function pointInTriangle(p, a, b, c) {
-    const sign = (p1, p2, p3) =>
-      (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
-    const d1 = sign(p, a, b);
-    const d2 = sign(p, b, c);
-    const d3 = sign(p, c, a);
-    const neg = d1 < 0 || d2 < 0 || d3 < 0;
-    const pos = d1 > 0 || d2 > 0 || d3 > 0;
-    return !(neg && pos);
-  }
-
-  /**
-   * The diagonal-travel problem: the straight line from a token to the card
-   * usually crosses neither, so a strict mouseout closes the card mid-journey.
-   * Keep it open while the cursor stays inside the triangle joining the exit
-   * point to the card's facing corners (Amazon's mega-dropdown trick).
-   */
-  function raHoverAimsAtCard(rect) {
-    if (!raHoverExit || Date.now() >= raHoverAimDeadline) return false;
-    // No movement since the exit means no aim to honour — and a pointer that
-    // left the webview reports exactly that, frozen. Treating the degenerate
-    // triangle as a hit would keep the card open indefinitely.
-    const moved =
-      Math.abs(raPointer.x - raHoverExit.x) + Math.abs(raPointer.y - raHoverExit.y);
-    if (moved < 2) return false;
-    const [c1, c2] = raHoverFacingCorners(rect, raHoverExit);
-    return pointInTriangle(raPointer, raHoverExit, c1, c2);
-  }
-
-  function evaluateRaHoverHide() {
-    raHoverHideTimer = null;
-    if (!raHoverEl || raHoverEl.hidden) return;
-    if (raHoverInside) return; // settled on the card, per enter/leave
-    const rect = raHoverEl.getBoundingClientRect();
-    // Crossing the card's edge and the browser reporting `mouseenter` are not
-    // simultaneous; cover that gap geometrically. Only before an explicit
-    // leave, so a frozen pointer can never use this to pin the card open.
-    if (
-      !raHoverLeft &&
-      raPointer.x >= rect.left &&
-      raPointer.x <= rect.right &&
-      raPointer.y >= rect.top &&
-      raPointer.y <= rect.bottom
-    ) {
-      return;
-    }
-    if (raHoverAimsAtCard(rect)) {
-      raHoverHideTimer = setTimeout(evaluateRaHoverHide, 100);
-      return;
-    }
-    hideRaHover();
   }
 
   const RUST_KEYWORDS = new Set([
@@ -2449,7 +2812,7 @@
         });
         // Cache answers only — "no_tokens" while indexing must not stick.
         if (res && Array.isArray(res.tokens) && res.tokens.length) {
-          raSemanticCache.set(key, res);
+          cacheSet(raSemanticCache, key, res, RA_SEMANTIC_CACHE_MAX);
         }
       }
       if (!(res && Array.isArray(res.tokens) && res.tokens.length)) return;
@@ -2478,7 +2841,7 @@
       if (!filePath) return;
       if (raHoverTimer) clearTimeout(raHoverTimer);
       // Returning to a token cancels a dismissal started by leaving it.
-      cancelRaHoverHide();
+      raHoverReach.cancel();
       const gen = ++raHoverGen;
       raHoverTimer = setTimeout(async () => {
         const byteOffset = Number(span.dataset.b);
@@ -2490,18 +2853,19 @@
             // Only memoize answers: "no_hover" while rust-analyzer is still
             // indexing must not stick.
             if (result && Array.isArray(result.contents) && result.contents.length) {
-              raHoverCache.set(key, result);
+              cacheSet(raHoverCache, key, result, RA_HOVER_CACHE_MAX);
             }
           }
           if (gen !== raHoverGen) return;
           if (!(result && Array.isArray(result.contents) && result.contents.length)) return;
           const el = ensureRaHoverEl();
           el.replaceChildren(renderRaMarkdown(result.contents));
+          raHoverAnchor = span;
           positionRaHover(span);
         } catch (_) {
           /* quiet: hover must never raise errors at the user */
         }
-      }, RA_HOVER_DELAY_MS);
+      }, HOVER_OPEN_DELAY_MS);
     });
     document.addEventListener("mouseout", (ev) => {
       const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
@@ -2513,7 +2877,7 @@
         clearTimeout(raHoverTimer);
         raHoverTimer = null;
       }
-      scheduleRaHoverHide();
+      raHoverReach.schedule();
     });
     // Scrolling the card is how long docs are read — only scrolling the
     // world underneath invalidates the anchor.
@@ -3299,6 +3663,79 @@
     pathsEl.replaceChildren(frag);
   }
 
+  /**
+   * What the relational scopes should relate. Selected functions win when
+   * there are several — asking how two functions relate is a sharper question
+   * than asking how their files do, and answering the file question when the
+   * user picked functions would be the wrong answer.
+   *
+   * @param {{nodes: object[]}} graph
+   * @returns {Map<string, string>} node id → group key
+   */
+  function selectionAnchors(graph) {
+    /** @type {Map<string, string>} */
+    const anchors = new Map();
+    if (selectedFnSet.size > 1) {
+      for (const fnId of selectedFnSet) anchors.set(String(fnId), String(fnId));
+      return anchors;
+    }
+    for (const node of graph.nodes || []) {
+      if (node.kind !== "function" || !node.fileId) continue;
+      if (selectedSet.has(String(node.fileId))) {
+        anchors.set(node.id, String(node.fileId));
+      }
+    }
+    return anchors;
+  }
+
+  /**
+   * Per-file accents for a multi-file dock. Fixed hues rather than a hash, so
+   * the same selection always paints the same way and the banner legend can
+   * agree with the nodes. Mid lightness reads on both workbench themes.
+   */
+  const FNS_FILE_HUES = [212, 32, 145, 288, 4, 178, 262, 62];
+  function fileAccentAt(index) {
+    return `hsl(${FNS_FILE_HUES[index % FNS_FILE_HUES.length]} 62% 48%)`;
+  }
+  /** @type {Map<string, string>} fileId → accent, rebuilt on each dock render */
+  let fnsFileAccents = new Map();
+  function fileAccent(fileId) {
+    return fnsFileAccents.get(String(fileId)) || null;
+  }
+
+  /** Show the scope buttons only when there is a relationship to scope to. */
+  function syncFnsScopeControls() {
+    const wrap = els.fnsScopeMode;
+    if (!wrap) return;
+    const on = hasMultiSelection();
+    const was = wrap.hidden;
+    wrap.hidden = !on;
+    // Showing / hiding a whole control group changes what fits in the row.
+    if (was !== wrap.hidden) syncBottomChromeCompact();
+    for (const btn of wrap.querySelectorAll("button")) {
+      const active = btn.dataset.scope === fnsScope;
+      btn.classList.toggle("on", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    // Hops slice a neighborhood around one focus; the relational scopes have no
+    // focus to slice around, so the control would be a dead knob.
+    const depthDead = on && fnsScope !== "all";
+    if (els.fnsDepthMode) {
+      els.fnsDepthMode.classList.toggle("inert", depthDead);
+      for (const btn of els.fnsDepthMode.querySelectorAll("button")) {
+        btn.disabled = depthDead;
+      }
+    }
+  }
+
+  function setFnsScope(mode) {
+    const next = ["all", "linking", "bridges"].includes(mode) ? mode : "all";
+    if (fnsScope === next) return;
+    fnsScope = next;
+    syncFnsScopeControls();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
+  }
+
   function renderFunctionDag(opts = {}) {
     const fit = !!opts.fit;
     const nodesEl = els.fnsNodes;
@@ -3315,9 +3752,21 @@
       return;
     }
 
-    const fileNode = selectedId
-      ? fileNodes.find((n) => n.id === selectedId)
-      : null;
+    // Every selected file seeds the graph; the primary leads so single
+    // selection keeps its exact former behaviour.
+    const selectedNodes = [];
+    for (const id of selectedSet.size
+      ? selectedSet
+      : selectedId
+        ? [selectedId]
+        : []) {
+      const n = fileNodes.find((f) => f.id === id);
+      if (n) selectedNodes.push(n);
+    }
+    selectedNodes.sort((a, b) =>
+      a.id === selectedId ? -1 : b.id === selectedId ? 1 : 0
+    );
+    const fileNode = selectedNodes[0] || null;
     if (!fileNode) {
       fnsGraph = null;
       fnsFullGraph = null;
@@ -3330,22 +3779,54 @@
       return;
     }
 
+    // The relational scopes answer "how do these relate?", which only has an
+    // answer once two things are selected. Otherwise fall back to the whole
+    // graph rather than showing an empty dock.
+    const scopeMode = hasMultiSelection() ? fnsScope : "all";
+    const multiFile = selectedNodes.length > 1;
+    fnsFileAccents = new Map(
+      selectedNodes.map((n, idx) => [n.id, fileAccentAt(idx)])
+    );
+
     let full;
     let graph;
     let laid;
     let meta;
     try {
-      full = HD.build(fileNode.file, fileNode.id, fnIndex);
-      // Per-file depth default: budget-grown neighborhood (see HD.defaultDepth).
-      if (fnsDepthFileId !== fileNode.id) {
-        fnsDepthFileId = fileNode.id;
+      full = HD.buildMany(
+        selectedNodes.map((n) => ({ file: n.file, fileId: n.id })),
+        fnIndex
+      );
+      // Depth default is per selection: a five-file union is a different graph
+      // from any one of its files, and inherits none of their depths.
+      const depthKey = selectedNodes.map((n) => n.id).join("\u0000");
+      if (fnsDepthFileId !== depthKey) {
+        fnsDepthFileId = depthKey;
         fnsDepth = HD.defaultDepth(full);
         syncFnsDepthButtons();
       }
-      const focusId = selectedFnId;
-      const sliced = HD.neighborhood(full, focusId, fnsDepth);
-      graph = { nodes: sliced.nodes, edges: sliced.edges, scope: sliced.scope };
-      meta = sliced.meta;
+      if (scopeMode === "all") {
+        const focusId = selectedFnId;
+        const sliced = HD.neighborhood(full, focusId, fnsDepth);
+        graph = {
+          nodes: sliced.nodes,
+          edges: sliced.edges,
+          scope: sliced.scope,
+        };
+        meta = sliced.meta;
+      } else {
+        const related = HD.relate(full, selectionAnchors(full), scopeMode, {
+          // Hand-picked functions stay on screen; whole-file anchors do not,
+          // or "what links these files" answers with every function in them.
+          keepAnchors: selectedFnSet.size > 1,
+        });
+        graph = {
+          nodes: related.nodes,
+          edges: related.edges,
+          scope: related.scope,
+        };
+        meta = related.meta;
+      }
       laid = HD.layout(graph);
     } catch (err) {
       console.error("[HorizonViewer.renderFunctionDag]", err);
@@ -3379,7 +3860,23 @@
       return n?.name || String(meta.focusId).split("::").pop() || meta.focusId;
     })();
     let depthNote = "";
-    if (meta && meta.depth !== "all") {
+    if (meta && meta.mode) {
+      const noun = selectedFnSet.size > 1 ? "functions" : "files";
+      depthNote =
+        ` · <strong>${meta.mode === "bridges" ? "Bridges" : "Linking"}</strong>` +
+        ` across ${meta.groups} ${noun}` +
+        ` · showing ${meta.shownNodes} of ${meta.totalNodes} nodes` +
+        `, ${meta.shownEdges} of ${meta.totalEdges} edges`;
+      if (meta.mode === "bridges" && meta.bridgeNodes) {
+        depthNote += ` · ${meta.bridgeNodes} in between`;
+      }
+      if (!meta.shownEdges) {
+        depthNote +=
+          meta.mode === "bridges"
+            ? ` <span title="No call path joins the selected items in this graph.">(nothing connects them here)</span>`
+            : ` <span title="No call runs straight from one selection to another. Try Bridges for indirect paths.">(no direct calls — try Bridges)</span>`;
+      }
+    } else if (meta && meta.depth !== "all") {
       depthNote =
         ` · focus <strong>${escapeHtml(focusName || "?")}</strong>` +
         ` · ${meta.depth} hop${meta.depth === 1 ? "" : "s"}` +
@@ -3392,8 +3889,22 @@
     } else if (meta) {
       depthNote = ` · all ${meta.totalNodes} nodes`;
     }
+    // Multi-file: name every file next to the colour its nodes carry, so the
+    // graph can be read without clicking anything.
+    const title = multiFile
+      ? selectedNodes
+          .map(
+            (n) =>
+              `<span class="fns-file-key">` +
+              `<span class="fns-file-dot" style="background:${escapeHtml(
+                fileAccent(n.id) || "currentColor"
+              )}"></span>` +
+              `<strong>${escapeHtml(n.name)}</strong></span>`
+          )
+          .join(" ")
+      : `<strong>${escapeHtml(sc.fileName || "file")}</strong>`;
     setFnsBanner(
-      `<strong>${escapeHtml(sc.fileName || "file")}</strong>` +
+      title +
         ` · ${sc.seedCount} function${sc.seedCount === 1 ? "" : "s"}` +
         ` · ${sc.resolvedEdges} resolved` +
         ` · ${sc.conflictEdges} conflict` +
@@ -3430,12 +3941,18 @@
       const stubActive =
         !!stubEdge && !!fnsActiveEdgeId && stubEdge.id === fnsActiveEdgeId;
       const isFocus = !!(meta?.focusId && node.id === meta.focusId);
+      const nodeSelected =
+        node.kind === "function" &&
+        !!node.fnId &&
+        (selectedFnSet.size
+          ? selectedFnSet.has(String(node.fnId))
+          : node.fnId === selectedFnId);
       el.className =
         `fns-node ${node.kind}` +
         (node.external ? " external" : "") +
-        (node.kind === "function" && node.fnId === selectedFnId
-          ? " selected"
-          : "") +
+        (nodeSelected ? " selected" : "") +
+        (nodeSelected && node.fnId !== selectedFnId ? " co-selected" : "") +
+        (node.bridge ? " bridge" : "") +
         (isFocus ? " focus" : "") +
         (stubActive ? " stub-active" : "");
       el.style.left = `${p.x}px`;
@@ -3456,9 +3973,17 @@
       const metaEl = document.createElement("span");
       metaEl.className = "fns-node-meta";
       if (node.kind === "function") {
-        metaEl.textContent = node.external
-          ? `${basename(node.filePath) || "other file"} · L${node.line}`
-          : `L${node.line}`;
+        // With one file selected the file is implied and the line is enough.
+        // Across a selection it is not: two seeds from different files are
+        // otherwise indistinguishable, which makes the graph unreadable.
+        metaEl.textContent =
+          node.external || multiFile
+            ? `${basename(node.filePath) || "other file"} · L${node.line}`
+            : `L${node.line}`;
+        if (multiFile && node.fileId) {
+          const accent = fileAccent(node.fileId);
+          if (accent) el.style.setProperty("--fns-file-accent", accent);
+        }
       } else if (node.kind === "conflict") {
         metaEl.textContent = `${node.candidates?.length || 0} candidates · L${node.line}`;
       } else {
@@ -3476,9 +4001,13 @@
         el.appendChild(kind);
       }
 
-      const activateNode = () => {
+      const activateNode = (ev) => {
         if (node.kind === "function" && node.fnId) {
-          selectFunction(node.fnId, { reveal: true, push: true });
+          selectFunction(node.fnId, {
+            reveal: true,
+            push: true,
+            additive: isAdditiveClick(ev),
+          });
           lastFnsNodeActivation = {
             kind: "function",
             nodeId: node.id,
@@ -3549,20 +4078,22 @@
           suppressFnsClick = false;
           return;
         }
-        activateNode();
+        activateNode(ev);
         lastFnsNodeGesture = {
           id: node.id,
           moved: false,
           clickSuppressed: false,
           selected: true,
           selectedId: selectedFnId,
+          additive: isAdditiveClick(ev),
+          selectedCount: selectedFnSet.size,
           rightOpenAfter: rightOpen,
         };
       });
       el.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") {
           ev.preventDefault();
-          activateNode();
+          activateNode(ev);
         }
       });
 
@@ -3587,8 +4118,35 @@
     }
 
     if (!graph.nodes.length) {
-      nodesEl.innerHTML =
-        `<div class="fns-empty">No free functions in this file.</div>`;
+      const empty = document.createElement("div");
+      empty.className = "fns-empty";
+      if (scopeMode === "all") {
+        empty.textContent = multiFile
+          ? "No free functions in the selected files."
+          : "No free functions in this file.";
+      } else {
+        // An empty relational scope is a finding, not a failure: say what was
+        // searched and what the answer means, rather than showing a blank box.
+        const what = selectedFnSet.size > 1 ? "functions" : "files";
+        const names = (
+          selectedFnSet.size > 1
+            ? [...selectedFnSet].map((id) => fnIndex.get(id)?.fn?.name || id)
+            : selectedNodes.map((n) => n.name)
+        ).join(" and ");
+        const head = document.createElement("p");
+        head.className = "fns-empty-head";
+        head.textContent =
+          scopeMode === "linking"
+            ? `No call runs directly between these ${what}.`
+            : `No call path connects these ${what}.`;
+        const detail = document.createElement("p");
+        detail.textContent =
+          scopeMode === "linking"
+            ? `Nothing in ${names} calls the other directly. Try Bridges to look for an indirect path, or All to see each side's own graph.`
+            : `Searched every path through the calls of ${names}, in either direction, and found none. As far as the map goes, these do not reach each other.`;
+        empty.append(head, detail);
+      }
+      nodesEl.replaceChildren(empty);
     }
 
     updateFnsWorldTransform();
@@ -3796,6 +4354,101 @@
     return sec;
   }
 
+  /**
+   * The multi-selection roster. Only appears once there is more than one thing
+   * selected — a single selection is already fully described by the identity
+   * block above it. Each row makes its member the primary; the × drops it.
+   * @returns {HTMLElement|null}
+   */
+  function renderSelectionSection() {
+    if (!hasMultiSelection()) return null;
+    const showFns = selectedFnSet.size > 1;
+
+    const list = document.createElement("ul");
+    list.className = "sel-list";
+
+    /** @param {{key: string, label: string, meta: string, primary: boolean, onOpen: Function, onDrop: Function}} row */
+    const addRow = (row) => {
+      const li = document.createElement("li");
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "sel-item" + (row.primary ? " primary" : "");
+      open.dataset.key = row.key;
+      const name = document.createElement("span");
+      name.className = "sel-item-name";
+      name.textContent = row.label;
+      const meta = document.createElement("span");
+      meta.className = "sel-item-meta";
+      meta.textContent = row.meta;
+      open.append(name, meta);
+      open.addEventListener("click", () => row.onOpen());
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "sel-item-drop";
+      drop.textContent = "✕";
+      drop.title = "Remove from selection";
+      drop.setAttribute("aria-label", `Remove ${row.label} from selection`);
+      drop.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        row.onDrop();
+      });
+      li.append(open, drop);
+      list.appendChild(li);
+    };
+
+    if (showFns) {
+      for (const fnId of selectedFnSet) {
+        const entry = fnIndex.get(fnId);
+        if (!entry) continue;
+        addRow({
+          key: fnId,
+          label: entry.fn.name || fnId,
+          meta: `${basename(entry.file.path) || "file"} · L${entry.fn.line ?? 0}`,
+          primary: fnId === selectedFnId,
+          onOpen: () => selectFunction(fnId, { reveal: true, push: true }),
+          onDrop: () => toggleFnSelection(fnId),
+        });
+      }
+    } else {
+      for (const id of selectedSet) {
+        const node = fileNodes.find((n) => n.id === id);
+        if (!node) continue;
+        addRow({
+          key: id,
+          label: node.name,
+          meta: `${node.fnCount} fn`,
+          primary: id === selectedId,
+          onOpen: () => selectFile(id, { reveal: true, push: true }),
+          onDrop: () => toggleFileSelection(id),
+        });
+      }
+    }
+
+    const body = document.createElement("div");
+    body.appendChild(list);
+
+    const hint = document.createElement("p");
+    hint.className = "insp-muted sel-hint";
+    hint.textContent = showFns
+      ? "Shift-click functions to compare them. The Functions dock can show only what links them."
+      : "Shift-click files to compare them. The Functions dock builds one graph across the selection.";
+    body.appendChild(hint);
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "ghost-btn sel-clear";
+    clear.textContent = "Clear selection";
+    clear.addEventListener("click", () => clearMultiSelection());
+    body.appendChild(clear);
+
+    const count = showFns ? selectedFnSet.size : selectedSet.size;
+    return makeSection(
+      showFns ? "Selection · functions" : "Selection · files",
+      body,
+      `${count}`
+    );
+  }
+
   function renderInspector() {
     const root = els.inspector;
     if (!root) return;
@@ -3820,7 +4473,14 @@
     }
 
     const fnEntry = selectedFnId ? fnIndex.get(selectedFnId) : null;
-    const showingFn = !!(fnEntry && fnEntry.fileId === selectedId);
+    // One function selected means "show me this function". Several means "show
+    // me how these compare" — so the file view stays, keeping the Functions
+    // list on screen to pick the next one from. Diving into a single function
+    // would otherwise remove the only surface a selection can be built from.
+    const showingFn =
+      !!(fnEntry && fnEntry.fileId === selectedId) &&
+      selectedFnSet.size <= 1 &&
+      !fnSelectionAdditive;
 
     // Identity
     const identity = document.createElement("div");
@@ -3901,6 +4561,9 @@
     identity.appendChild(metaRow);
     root.appendChild(identity);
 
+    const selectionSection = renderSelectionSection();
+    if (selectionSection) root.appendChild(selectionSection);
+
     if (showingFn) {
       // Documentation
       const docsText = joinDocs(fnEntry.fn.doc_comments);
@@ -3958,13 +4621,26 @@
         const li = document.createElement("li");
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "fn-list-item";
-        btn.innerHTML =
-          `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
-          `<span class="fn-list-meta">L${fn.line}</span>`;
-        btn.addEventListener("click", () => {
+        btn.className =
+          "fn-list-item" +
+          (selectedFnSet.has(String(fn.id)) ? " selected" : "");
+        // Built as nodes, not markup: `line` is map data, and a map can be any
+        // JSON the user opens. Interpolating it into innerHTML let a crafted
+        // map inject live elements into this privileged webview.
+        const nameEl = document.createElement("span");
+        nameEl.className = "fn-list-name";
+        nameEl.textContent = fn.name;
+        const metaEl = document.createElement("span");
+        metaEl.className = "fn-list-meta";
+        metaEl.textContent = `L${fn.line}`;
+        btn.append(nameEl, metaEl);
+        btn.addEventListener("click", (ev) => {
           hideFnPreview();
-          selectFunction(fn.id, { reveal: false, push: true });
+          selectFunction(fn.id, {
+            reveal: false,
+            push: true,
+            additive: isAdditiveClick(ev),
+          });
         });
         attachFnPreview(btn, node.file, fn);
         li.appendChild(btn);
@@ -4053,6 +4729,10 @@
     fnIndex = new Map();
     selectedId = null;
     selectedFnId = null;
+    selectedSet = new Set();
+    selectedFnSet = new Set();
+    fnsScope = "all";
+    fnSelectionAdditive = false;
     selHistory = [];
     hoverId = null;
     lastLeftOccupied = null;
@@ -4126,6 +4806,13 @@
     } catch (_) {
       /* ignore */
     }
+
+    // A fresh map starts with exactly one thing selected.
+    selectedSet = selectedId ? new Set([selectedId]) : new Set();
+    selectedFnSet = selectedFnId ? new Set([selectedFnId]) : new Set();
+    fnsScope = "all";
+    fnSelectionAdditive = false;
+    syncFnsScopeControls();
 
     showLoaded();
     updateChrome();
@@ -4555,6 +5242,27 @@
     });
     syncFnsDepthButtons();
   }
+  if (els.fnsScopeMode) {
+    els.fnsScopeMode.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-scope]");
+      if (!btn || !els.fnsScopeMode.contains(btn)) return;
+      setFnsScope(btn.getAttribute("data-scope"));
+    });
+    syncFnsScopeControls();
+  }
+  // Escape collapses a multi-selection to its primary — the standard way out
+  // of an accumulated selection. Ignored while typing so it never eats a
+  // search box's own Escape.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || !hasMultiSelection()) return;
+    const t = ev.target;
+    const tag = t && t.tagName ? t.tagName.toLowerCase() : "";
+    if (tag === "input" || tag === "textarea" || (t && t.isContentEditable)) {
+      return;
+    }
+    ev.preventDefault();
+    clearMultiSelection();
+  });
   if (els.fnsZoomIn) {
     els.fnsZoomIn.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -5046,6 +5754,13 @@
       selectFunction: (id, opts) => selectFunction(id, opts || {}),
       goBack,
       getSelection: () => snapshotSelection(),
+      /** Dock scope over a multi-selection: 'all' | 'linking' | 'bridges'. */
+      setFnsScope: (mode) => {
+        setFnsScope(mode);
+        return fnsScope;
+      },
+      getFnsScope: () => fnsScope,
+      clearMultiSelection,
       loadMap: (map, label) => loadMap(map, label || "api"),
       /** Start analysis via the extension host (postMessage analyse). */
       startAnalyse: (path) => startAnalyse(String(path || "")),
@@ -5208,6 +5923,9 @@
           })),
           selectedFnId,
           selectedFileId: selectedId,
+          selectedFileIds: [...selectedSet],
+          selectedFnIds: [...selectedFnSet],
+          scope: fnsScope,
           tab: bottomTab,
           depth: fnsDepth,
           meta: fnsGraph.meta || null,

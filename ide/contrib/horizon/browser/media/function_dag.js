@@ -1,10 +1,15 @@
 /**
  * Function call DAG for the bottom Functions tab (Slice 4).
  *
- * Scope: functions defined in the selected file, plus one hop of Resolved
+ * Scope: functions defined in the selected file(s), plus one hop of Resolved
  * callees (even across files) so cross-file edges are visible. Conflict and
  * Unresolved sites become stub sinks — never guessed function nodes — so
  * analyser false-positives read as "could not resolve", not as missing callees.
+ *
+ * Several files can seed one graph ([`buildMany`]), and a multi-selection can
+ * be narrowed to how its members relate ([`relate`]): `linking` keeps the calls
+ * that run straight between them, `bridges` also keeps a shortest path per pair
+ * so an indirect relationship shows what stands in the middle.
  *
  * Busy files (many seeds, dense internal edges) are navigated with
  * focus-plus-context: [`neighborhood`] keeps the focused function and every
@@ -48,16 +53,41 @@
    * @returns {{nodes: object[], edges: object[], scope: object}}
    */
   function build(file, fileId, fnIndex) {
+    return buildMany([{ file, fileId }], fnIndex);
+  }
+
+  /**
+   * Same contract as [`build`], seeded from several files at once so a
+   * multi-file selection reads as one graph instead of N disjoint ones.
+   * A function is a `seed` when any selected file defines it, so a call from
+   * one selected file into another is an ordinary resolved edge between seeds
+   * rather than an edge to an "external" copy of the callee.
+   *
+   * @param {{file: object, fileId: string}[]} entries selected files
+   * @param {Map<string, {fn: object, file: object, fileId: string}>} fnIndex
+   * @returns {{nodes: object[], edges: object[], scope: object}}
+   */
+  function buildMany(entries, fnIndex) {
     /** @type {Map<string, object>} */
     const nodes = new Map();
     /** @type {object[]} */
     const edges = [];
 
-    const seeds = [...(file?.functions || [])].sort(
-      (a, b) => (a.line || 0) - (b.line || 0)
-    );
+    const files = (entries || []).filter((e) => e && e.file);
+    const seedFileIds = new Set(files.map((e) => String(e.fileId)));
 
-    for (const fn of seeds) {
+    /** @type {{fn: object, file: object, fileId: string}[]} */
+    const seeds = [];
+    for (const { file, fileId } of files) {
+      const own = [...(file.functions || [])].sort(
+        (a, b) => (a.line || 0) - (b.line || 0)
+      );
+      for (const fn of own) {
+        seeds.push({ fn, file, fileId: String(fileId) });
+      }
+    }
+
+    for (const { fn, file, fileId } of seeds) {
       const id = String(fn.id);
       nodes.set(id, {
         id,
@@ -72,7 +102,7 @@
       });
     }
 
-    for (const fn of seeds) {
+    for (const { fn, fileId } of seeds) {
       const callerId = String(fn.id);
       for (const site of fn.call_sites || []) {
         const kind = site.target?.kind || "unknown";
@@ -91,17 +121,18 @@
           if (!tid) continue;
           if (!nodes.has(tid)) {
             const entry = fnIndex?.get?.(tid);
+            const owned = !!entry && seedFileIds.has(String(entry.fileId));
             nodes.set(tid, {
               id: tid,
               kind: "function",
-              role: entry && entry.fileId === fileId ? "seed" : "callee",
+              role: owned ? "seed" : "callee",
               name: entry?.fn?.name || tid.split("::").pop() || tid,
               modulePath: entry?.fn?.module_path || "",
               line: entry?.fn?.line || 0,
               fileId: entry?.fileId || null,
               filePath: entry ? String(entry.file.path || "") : "",
               fnId: tid,
-              external: !entry || entry.fileId !== fileId,
+              external: !owned,
             });
           }
           edges.push({
@@ -171,13 +202,21 @@
     );
     const edgeList = edges.sort((a, b) => a.id.localeCompare(b.id));
 
+    const first = files[0];
+    const fileNames = files.map((e) => basename(e.file?.path || ""));
     return {
       nodes: nodeList,
       edges: edgeList,
       scope: {
-        fileId,
-        filePath: String(file?.path || ""),
-        fileName: basename(file?.path || ""),
+        fileId: String(first?.fileId ?? ""),
+        filePath: String(first?.file?.path || ""),
+        // Multi-file selections have no single name; the banner says how many.
+        fileName:
+          files.length === 1
+            ? fileNames[0]
+            : `${files.length} files`,
+        fileIds: files.map((e) => String(e.fileId)),
+        fileNames,
         seedCount: seeds.length,
         resolvedEdges: edgeList.filter((e) => e.kind === "resolved").length,
         conflictEdges: edgeList.filter((e) => e.kind === "conflict").length,
@@ -470,6 +509,156 @@
   }
 
   /**
+   * Undirected adjacency over a graph, carrying the edge that made each hop so
+   * a reconstructed path can name its edges as well as its nodes.
+   * @param {{nodes: object[], edges: object[]}} graph
+   * @returns {Map<string, {to: string, edgeId: string}[]>}
+   */
+  function undirectedAdj(graph) {
+    /** @type {Map<string, {to: string, edgeId: string}[]>} */
+    const adj = new Map();
+    for (const n of graph.nodes || []) adj.set(n.id, []);
+    for (const e of graph.edges || []) {
+      if (!adj.has(e.from) || !adj.has(e.to)) continue;
+      adj.get(e.from).push({ to: e.to, edgeId: e.id });
+      adj.get(e.to).push({ to: e.from, edgeId: e.id });
+    }
+    return adj;
+  }
+
+  /**
+   * Restrict a graph to what actually relates the selected things.
+   *
+   * `linking` keeps only the calls that run straight from one selection to
+   * another — the question "do these talk to each other directly?".
+   * `bridges` additionally keeps one shortest path per pair of selections, so
+   * an indirect relationship shows the functions standing between them. Those
+   * in-between nodes are flagged `bridge` so the UI can mark them as context
+   * rather than as part of the selection.
+   *
+   * Anchors absent from the graph are ignored; a selection with fewer than two
+   * distinct groups has nothing to relate, and yields an empty graph rather
+   * than silently falling back to everything.
+   *
+   * @param {{nodes: object[], edges: object[], scope?: object}} graph
+   * @param {Map<string, string>} groupOf anchor node id → group key
+   * @param {'linking'|'bridges'} mode
+   * @param {{keepAnchors?: boolean}} [opts] keep every anchor on screen even
+   *   when it takes part in no relationship. Right for a handful of
+   *   hand-picked functions — the user chose those exact nodes. Wrong for a
+   *   file selection, where the anchors are every function in the files and
+   *   keeping them all would hand back the unfiltered graph.
+   */
+  function relate(graph, groupOf, mode, opts = {}) {
+    const nodes = graph?.nodes || [];
+    const edges = graph?.edges || [];
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    /** @type {Map<string, string>} */
+    const anchors = new Map();
+    for (const [id, group] of groupOf || []) {
+      if (byId.has(id)) anchors.set(id, String(group));
+    }
+    const groups = new Set(anchors.values());
+
+    /** @type {Set<string>} */
+    const keepNodes = new Set();
+    /** @type {Set<string>} */
+    const keepEdges = new Set();
+
+    if (groups.size >= 2) {
+      for (const e of edges) {
+        const a = anchors.get(e.from);
+        const b = anchors.get(e.to);
+        if (a === undefined || b === undefined || a === b) continue;
+        keepEdges.add(e.id);
+        keepNodes.add(e.from);
+        keepNodes.add(e.to);
+      }
+    }
+
+    /** @type {Set<string>} */
+    const bridgeIds = new Set();
+    if (mode === "bridges" && groups.size >= 2) {
+      const adj = undirectedAdj(graph);
+      /** @type {Map<string, string[]>} */
+      const byGroup = new Map();
+      for (const [id, group] of anchors) {
+        if (!byGroup.has(group)) byGroup.set(group, []);
+        byGroup.get(group).push(id);
+      }
+      const groupKeys = [...byGroup.keys()];
+
+      for (let i = 0; i < groupKeys.length; i++) {
+        // Multi-source BFS out of one group, then walk parents back from every
+        // node of every other group: |groups| traversals, not |anchors|².
+        const from = groupKeys[i];
+        /** @type {Map<string, {prev: string|null, edgeId: string|null}>} */
+        const seen = new Map();
+        const queue = [];
+        for (const id of byGroup.get(from)) {
+          seen.set(id, { prev: null, edgeId: null });
+          queue.push(id);
+        }
+        let qi = 0;
+        while (qi < queue.length) {
+          const id = queue[qi++];
+          for (const hop of adj.get(id) || []) {
+            if (seen.has(hop.to)) continue;
+            seen.set(hop.to, { prev: id, edgeId: hop.edgeId });
+            queue.push(hop.to);
+          }
+        }
+
+        for (let j = i + 1; j < groupKeys.length; j++) {
+          for (const target of byGroup.get(groupKeys[j])) {
+            if (!seen.has(target)) continue;
+            let cur = target;
+            while (cur) {
+              keepNodes.add(cur);
+              if (!anchors.has(cur)) bridgeIds.add(cur);
+              const step = seen.get(cur);
+              if (!step || !step.prev) break;
+              keepEdges.add(step.edgeId);
+              cur = step.prev;
+            }
+          }
+        }
+      }
+    }
+
+    if (opts.keepAnchors) {
+      for (const id of anchors.keys()) keepNodes.add(id);
+    }
+
+    const keptNodes = nodes
+      .filter((n) => keepNodes.has(n.id))
+      .map((n) => (bridgeIds.has(n.id) ? { ...n, bridge: true } : n));
+    const keptEdges = edges.filter((e) => keepEdges.has(e.id));
+
+    return {
+      nodes: keptNodes,
+      edges: keptEdges,
+      scope: graph?.scope || {},
+      meta: {
+        focusId: null,
+        depth: "all",
+        mode,
+        groups: groups.size,
+        anchors: anchors.size,
+        bridgeNodes: bridgeIds.size,
+        totalNodes: nodes.length,
+        totalEdges: edges.length,
+        shownNodes: keptNodes.length,
+        shownEdges: keptEdges.length,
+        hiddenNodes: nodes.length - keptNodes.length,
+        hiddenEdges: edges.length - keptEdges.length,
+        truncated:
+          keptNodes.length < nodes.length || keptEdges.length < edges.length,
+      },
+    };
+  }
+
+  /**
    * Target visible-node count for the per-file default. Below this the full
    * subgraph opens; above it we grow 1→2 hops until the neighborhood is dense
    * enough, then fall back to `all` under the hairball caps (or stay at 2).
@@ -504,6 +693,8 @@
 
   window.HorizonFunctionDag = {
     build,
+    buildMany,
+    relate,
     layout,
     defaultDepth,
     pickFocus,

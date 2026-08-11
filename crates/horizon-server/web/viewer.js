@@ -300,6 +300,23 @@
       .replace(/"/g, "&quot;");
   }
 
+  /**
+   * Insert into a memo table with a ceiling, evicting the oldest entry first.
+   * The table is keyed per function and lives as long as the page does, so
+   * without a bound it grows for the whole session. `Map` preserves insertion
+   * order, so the first key is the oldest.
+   */
+  function cacheSet(cache, key, value, max) {
+    if (!cache.has(key) && cache.size >= max) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, value);
+  }
+
+  /** Token arrays for previewed function bodies. */
+  const FN_PREVIEW_CACHE_MAX = 200;
+
   const THEME_KEY = "horizon.theme";
   const SOURCE_EXPAND_KEY = "horizon.sourceExpanded";
   const RECENT_KEY = "horizon.recent";
@@ -995,11 +1012,19 @@
         };
         nodes.push(node);
         for (const fn of file.functions || []) {
-          if (fn.id) {
-            const fid = String(fn.id);
-            fnOwner.set(fid, id);
-            index.set(fid, { fn, file, fileId: id });
+          // Index every listed function, including one the map gave no `id`
+          // (older schema, hand-written or third-party JSON). The Inspector
+          // lists `file.functions` in full, so skipping the unidentified ones
+          // here left rows that looked ordinary but could not be selected:
+          // the click resolved to nothing and you stayed on the file.
+          // `#`/`@` cannot occur in an engine FunctionId, so a synthesized key
+          // can never collide with a real one or match a call-site target.
+          if (!fn.id) {
+            fn.id = `${id}#fn@${fn.line ?? 0}:${fn.name ?? "fn"}`;
           }
+          const fid = String(fn.id);
+          fnOwner.set(fid, id);
+          index.set(fid, { fn, file, fileId: id });
         }
       };
 
@@ -1638,9 +1663,25 @@
     document.title = `Horizon — ${rootName}`;
   }
 
+  /**
+   * Bring a card into view. Already fully on screen → leave the transform
+   * alone: `loadMap` fits every card plus the architecture sticky and then
+   * reveals the auto-selected card, and centring on that card pushed the
+   * outermost cards and the sticky back off the canvas.
+   */
   function revealCard(id) {
     const p = cardPosition(id);
     const rect = els.canvas.getBoundingClientRect();
+    const left = panX + p.x * zoom;
+    const top = panY + p.y * zoom;
+    if (
+      left >= 0 &&
+      top >= 0 &&
+      left + CARD_W * zoom <= rect.width &&
+      top + CARD_H * zoom <= rect.height
+    ) {
+      return;
+    }
     const cx = p.x + CARD_W / 2;
     const cy = p.y + CARD_H / 2;
     panX = rect.width / 2 - cx * zoom;
@@ -1936,7 +1977,9 @@
         ? { tokens: body.tokens }
         : { error: body.message || body.error || `source request failed (${res.status})` };
     // Only memoize successes: a transient outage must not stick.
-    if (!result.error) fnPreviewCache.set(key, result);
+    if (!result.error) {
+      cacheSet(fnPreviewCache, key, result, FN_PREVIEW_CACHE_MAX);
+    }
     return result;
   }
 
@@ -3274,9 +3317,16 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "fn-list-item";
-        btn.innerHTML =
-          `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
-          `<span class="fn-list-meta">L${fn.line}</span>`;
+        // Built as nodes, not markup: `line` is map data, and a map can be any
+        // JSON posted to /api/map. Interpolating it into innerHTML let a
+        // crafted map inject live elements into the viewer.
+        const nameEl = document.createElement("span");
+        nameEl.className = "fn-list-name";
+        nameEl.textContent = fn.name;
+        const metaEl = document.createElement("span");
+        metaEl.className = "fn-list-meta";
+        metaEl.textContent = `L${fn.line}`;
+        btn.append(nameEl, metaEl);
         btn.addEventListener("click", () => {
           hideFnPreview();
           selectFunction(fn.id, { reveal: false, push: true });

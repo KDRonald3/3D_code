@@ -438,8 +438,9 @@
       btn.appendChild(meta);
       btn.addEventListener("click", async () => {
         try {
-          const text = JSON.stringify(item.map);
-          // IDE: host owns map persistence; do not POST to sidecar from webview.
+          // IDE: host owns map persistence; do not POST to sidecar from
+          // webview. (The standalone viewer serializes here to POST /api/map;
+          // doing it here only stringified megabytes to throw them away.)
           loadMap(item.map, item.label || "recent");
         } catch (err) {
           showImport(`Failed to restore recent map: ${err.message || err}`);
@@ -996,11 +997,19 @@
         };
         nodes.push(node);
         for (const fn of file.functions || []) {
-          if (fn.id) {
-            const fid = String(fn.id);
-            fnOwner.set(fid, id);
-            index.set(fid, { fn, file, fileId: id });
+          // Index every listed function, including one the map gave no `id`
+          // (older schema, hand-written or third-party JSON). The Inspector
+          // lists `file.functions` in full, so skipping the unidentified ones
+          // here left rows that looked ordinary but could not be selected:
+          // the click resolved to nothing and you stayed on the file.
+          // `#`/`@` cannot occur in an engine FunctionId, so a synthesized key
+          // can never collide with a real one or match a call-site target.
+          if (!fn.id) {
+            fn.id = `${id}#fn@${fn.line ?? 0}:${fn.name ?? "fn"}`;
           }
+          const fid = String(fn.id);
+          fnOwner.set(fid, id);
+          index.set(fid, { fn, file, fileId: id });
         }
       };
 
@@ -1638,9 +1647,25 @@
     document.title = `Horizon — ${rootName}`;
   }
 
+  /**
+   * Bring a card into view. Already fully on screen → leave the transform
+   * alone: `loadMap` fits every card plus the architecture sticky and then
+   * reveals the auto-selected card, and centring on that card pushed the
+   * outermost cards and the sticky back off the canvas.
+   */
   function revealCard(id) {
     const p = cardPosition(id);
     const rect = els.canvas.getBoundingClientRect();
+    const left = panX + p.x * zoom;
+    const top = panY + p.y * zoom;
+    if (
+      left >= 0 &&
+      top >= 0 &&
+      left + CARD_W * zoom <= rect.width &&
+      top + CARD_H * zoom <= rect.height
+    ) {
+      return;
+    }
     const cx = p.x + CARD_W / 2;
     const cy = p.y + CARD_H / 2;
     panX = rect.width / 2 - cx * zoom;
@@ -3158,9 +3183,16 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "fn-list-item";
-        btn.innerHTML =
-          `<span class="fn-list-name">${escapeHtml(fn.name)}</span>` +
-          `<span class="fn-list-meta">L${fn.line}</span>`;
+        // Built as nodes, not markup: `line` is map data, and a map can be any
+        // JSON the user opens. Interpolating it into innerHTML let a crafted
+        // map inject live elements into the viewer.
+        const nameEl = document.createElement("span");
+        nameEl.className = "fn-list-name";
+        nameEl.textContent = fn.name;
+        const metaEl = document.createElement("span");
+        metaEl.className = "fn-list-meta";
+        metaEl.textContent = `L${fn.line}`;
+        btn.append(nameEl, metaEl);
         btn.addEventListener("click", () =>
           selectFunction(fn.id, { reveal: false, push: true })
         );

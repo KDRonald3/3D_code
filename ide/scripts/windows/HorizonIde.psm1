@@ -194,6 +194,150 @@ function Repair-HorizonWorkbenchCsp {
     }
 }
 
+function Get-HorizonWindowsTargetPlatform {
+    # Gallery builds are published per target platform, and only those carry the
+    # bundled language server; the "universal" package ships none.
+    $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    if ($arch -eq "ARM64") { return "win32-arm64" }
+    return "win32-x64"
+}
+
+function Get-HorizonRustAnalyzerInstall {
+    # The rust-analyzer build Code-OSS loads out of $ExtensionsDir, or $null when
+    # none is installed. Server is the bundled language server binary, or $null
+    # when this build does not ship one.
+    param([string]$ExtensionsDir)
+
+    if (-not $ExtensionsDir -or -not (Test-Path $ExtensionsDir)) {
+        return $null
+    }
+
+    # extensions.json is the profile's installed-extension manifest: it names the
+    # one folder Code-OSS actually loads, so a superseded sibling still sitting on
+    # disk cannot be mistaken for the live install.
+    $folder = $null
+    $manifest = Join-Path $ExtensionsDir "extensions.json"
+    if (Test-Path $manifest) {
+        try {
+            foreach ($entry in @(Get-Content $manifest -Raw | ConvertFrom-Json)) {
+                if ($entry.identifier.id -ne "rust-lang.rust-analyzer") { continue }
+                $folder = Join-Path $ExtensionsDir $entry.relativeLocation
+                break
+            }
+        } catch {
+            # unreadable manifest: fall through to the directory scan
+            $folder = $null
+        }
+    }
+
+    if (-not $folder) {
+        # Fresh profile, or a manifest this build does not understand. Folders stay
+        # on disk until the next startup sweep; Code-OSS lists the ones pending
+        # deletion in .obsolete, keyed by folder name.
+        $obsolete = @{}
+        $obsoleteFile = Join-Path $ExtensionsDir ".obsolete"
+        if (Test-Path $obsoleteFile) {
+            try {
+                $parsed = Get-Content $obsoleteFile -Raw | ConvertFrom-Json
+                foreach ($property in $parsed.PSObject.Properties) { $obsolete[$property.Name] = $true }
+            } catch {
+                # unreadable .obsolete: treat every folder as live
+            }
+        }
+        $newest = $null
+        foreach ($dir in @(Get-ChildItem $ExtensionsDir -Directory -Filter "rust-lang.rust-analyzer-*" -ErrorAction SilentlyContinue)) {
+            if ($obsolete.ContainsKey($dir.Name)) { continue }
+            $match = [regex]::Match($dir.Name, '^rust-lang\.rust-analyzer-(\d+\.\d+\.\d+)(?:-.+)?$')
+            if (-not $match.Success) { continue }
+            $version = [version]$match.Groups[1].Value
+            if ($null -eq $newest -or $version -gt $newest.Version) {
+                $newest = [pscustomobject]@{ Path = $dir.FullName; Version = $version }
+            }
+        }
+        if ($newest) { $folder = $newest.Path }
+    }
+
+    if (-not $folder -or -not (Test-Path $folder)) {
+        return $null
+    }
+
+    # bootstrap.ts: Uri.joinPath(extensionUri, "server", `rust-analyzer${exe}`).
+    $server = Join-Path $folder "server\rust-analyzer.exe"
+    if (-not (Test-Path $server)) { $server = $null }
+    return [pscustomobject]@{ Path = $folder; Server = $server }
+}
+
+function Resolve-HorizonRustAnalyzerVersion {
+    # Newest released rust-analyzer that actually ships a $TargetPlatform build.
+    # The publisher occasionally releases a version with no per-platform package
+    # at all (0.3.3008 shipped darwin-arm64 but no win32-x64), and the gallery
+    # then hands out "universal", which carries no server binary. Pre-releases are
+    # skipped so a repair leaves the user on the release channel.
+    param($Roots, [string]$TargetPlatform)
+
+    $serviceUrl = "https://open-vsx.org/vscode/gallery"
+    $productJson = Join-Path $Roots.CodeOssDir "product.json"
+    if (Test-Path $productJson) {
+        try {
+            $url = (Get-Content $productJson -Raw | ConvertFrom-Json).extensionsGallery.serviceUrl
+            if ($url) { $serviceUrl = $url }
+        } catch {
+            # keep the default; a malformed product.json is reported elsewhere
+        }
+    }
+
+    # Marketplace-shaped query: filterType 7 = extension name, flags 17 =
+    # IncludeVersions | IncludeVersionProperties. Versions come back newest first.
+    $body = ConvertTo-Json -Depth 6 -InputObject @{
+        filters = @(
+            @{
+                criteria   = @(@{ filterType = 7; value = "rust-lang.rust-analyzer" })
+                pageNumber = 1
+                pageSize   = 1
+            }
+        )
+        flags   = 17
+    }
+
+    try {
+        $response = Invoke-WebRequest -Uri "$serviceUrl/extensionquery" -Method Post `
+            -ContentType "application/json" `
+            -Headers @{ "Accept" = "application/json;api-version=3.0-preview.1" } `
+            -Body $body -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+        foreach ($version in (ConvertFrom-Json $response.Content).results[0].extensions[0].versions) {
+            if ($version.targetPlatform -ne $TargetPlatform) { continue }
+            $preRelease = $false
+            foreach ($property in $version.properties) {
+                if ($property.key -eq "Microsoft.VisualStudio.Code.PreRelease" -and $property.value -eq "true") {
+                    $preRelease = $true
+                }
+            }
+            if (-not $preRelease) { return $version.version }
+        }
+    } catch {
+        Write-HorizonWarn "could not query $serviceUrl for a $TargetPlatform rust-analyzer build: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Install-HorizonExtension {
+    # code-cli.bat, not code.bat: code.bat runs the GUI binary, which ignores
+    # --install-extension and just opens a window, so the install silently never
+    # happens. code-cli.bat runs out\cli.js under ELECTRON_RUN_AS_NODE, which
+    # installs synchronously and reports a real exit code.
+    param($Roots, [string]$Extension, [string[]]$ExtDirArgs)
+    $codeCli = Join-Path $Roots.CodeOssDir "scripts\code-cli.bat"
+    Push-Location $Roots.CodeOssDir
+    try {
+        & $codeCli --install-extension $Extension @ExtDirArgs | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-HorizonWarn "$Extension install failed (offline?) - hover/definitions/semantic highlighting unavailable until installed"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Ensure-HorizonRustAnalyzer {
     param($Roots, [string[]]$ExtraArgs)
     # rust-analyzer is not bundled: a fresh product has an empty extensions dir,
@@ -206,6 +350,16 @@ function Ensure-HorizonRustAnalyzer {
     # .horizon-ide. Probing only the packaged path made this re-run the
     # install on *every* launch, and rust-analyzer answers nothing while it is
     # being reinstalled - hover looked simply broken.
+    #
+    # A folder is not enough to call it present, either: auto-update can replace
+    # the platform build with a "universal" one that ships no server binary, and
+    # rust-analyzer dies with "we don't ship binaries for your platform yet" -
+    # taking source-pane semantic styling, hover cards and out-of-map
+    # go-to-definition with it. So probe for the server binary, and when it is
+    # genuinely absent reinstall a platform build pinned, which is what stops
+    # auto-update from undoing the repair. Both halves matter: the binary probe
+    # keeps the repair from firing on a healthy install, and the pin keeps it
+    # from having to fire again next launch.
     $extDirArgs = @()
     $explicitDir = $null
     if ($ExtraArgs) {
@@ -242,23 +396,55 @@ function Ensure-HorizonRustAnalyzer {
         )
     }
 
+    $targetPlatform = Get-HorizonWindowsTargetPlatform
+    $extensionsDir = $candidates[0]
+    $install = $null
     foreach ($dir in $candidates) {
-        if ((Test-Path $dir) -and (Get-ChildItem $dir -Directory -Filter "rust-lang.rust-analyzer-*" -ErrorAction SilentlyContinue)) {
-            Write-HorizonInfo "rust-analyzer present in $dir"
-            return
+        $found = Get-HorizonRustAnalyzerInstall -ExtensionsDir $dir
+        if ($found) {
+            $install = $found
+            $extensionsDir = $dir
+            break
         }
     }
 
-    $codeBat = Join-Path $Roots.CodeOssDir "scripts\code.bat"
-    Write-HorizonInfo "installing rust-lang.rust-analyzer (first launch) -> $($candidates[0])"
-    Push-Location $Roots.CodeOssDir
-    try {
-        & $codeBat --install-extension rust-lang.rust-analyzer @extDirArgs | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) {
-            Write-HorizonWarn "rust-analyzer install failed (offline?) - hover/definitions/semantic highlighting unavailable until installed"
+    if ($install -and $install.Server) {
+        Write-HorizonInfo "rust-analyzer present in $extensionsDir"
+        return
+    }
+
+    if ($install) {
+        Write-HorizonWarn "rust-analyzer in $($install.Path) ships no language server (server\rust-analyzer.exe missing)"
+    } else {
+        Write-HorizonInfo "installing rust-lang.rust-analyzer (first launch) -> $extensionsDir"
+        Install-HorizonExtension -Roots $Roots -Extension "rust-lang.rust-analyzer" -ExtDirArgs $extDirArgs
+        $install = Get-HorizonRustAnalyzerInstall -ExtensionsDir $extensionsDir
+        if ($install -and $install.Server) {
+            return
         }
-    } finally {
-        Pop-Location
+        if ($install) {
+            # A first install lands on a serverless build just as easily as an
+            # auto-update does; Install-HorizonExtension already reported the
+            # other case, where nothing installed at all.
+            Write-HorizonWarn "the released rust-analyzer has no $targetPlatform build; it installed without a language server"
+        }
+    }
+
+    # Installing an explicit version sets pinned=true on the extension, and a
+    # pinned extension is excluded from auto-update - so the build that got us
+    # here cannot come back on the next gallery check.
+    $version = Resolve-HorizonRustAnalyzerVersion -Roots $Roots -TargetPlatform $targetPlatform
+    if (-not $version) {
+        Write-HorizonWarn "no $targetPlatform rust-analyzer build found in the gallery - hover/definitions/semantic highlighting unavailable"
+        return
+    }
+
+    Write-HorizonInfo "repairing rust-analyzer: installing $version ($targetPlatform, pinned) -> $extensionsDir"
+    Install-HorizonExtension -Roots $Roots -Extension "rust-lang.rust-analyzer@$version" -ExtDirArgs $extDirArgs
+
+    $install = Get-HorizonRustAnalyzerInstall -ExtensionsDir $extensionsDir
+    if (-not ($install -and $install.Server)) {
+        Write-HorizonWarn "rust-analyzer still has no server binary in $extensionsDir - hover/definitions/semantic highlighting unavailable"
     }
 }
 
