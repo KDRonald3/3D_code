@@ -68,10 +68,22 @@ pub struct ModuleWalk {
     pub module_visibility: HashMap<String, ItemVisibility>,
 }
 
+/// Mutable state carried through one crate's `mod`-tree walk.
+///
+/// Accumulates the [`ModuleWalk`] being built plus the two seen-tables that
+/// make the walk terminate: `mod` cycles and repeated declarations end a
+/// branch instead of recursing forever.
 struct Walker {
+    /// Crate edition, needed to re-parse each discovered file.
     edition: String,
+    /// The result under construction, returned by [`walk_modules`].
     walk: ModuleWalk,
+    /// Module paths already visited, so a cycle terminates that branch.
     seen_module_paths: HashSet<String>,
+    /// `(resolved file, module path)` pairs already emitted, so a file reached
+    /// twice at the same path yields one [`ModuleFile`]. Keyed on the pair
+    /// rather than the file alone because `#[path]` lets two distinct modules
+    /// share one file, and both are real modules.
     seen_file_modules: HashSet<(PathBuf, String)>,
 }
 
