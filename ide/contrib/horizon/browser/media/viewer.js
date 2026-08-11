@@ -117,6 +117,7 @@
     fnsNodes: document.getElementById("fns-nodes"),
     fnsControls: document.getElementById("fns-controls"),
     fnsDepthMode: document.getElementById("fns-depth-mode"),
+    fnsScopeMode: document.getElementById("fns-scope-mode"),
     fnsFit: document.getElementById("fns-fit"),
     fnsZoomHud: document.getElementById("fns-zoom-hud"),
     fnsZoomOut: document.getElementById("fns-zoom-out"),
@@ -145,10 +146,28 @@
   let cardEls = new Map();
   /** @type {Set<string>} */
   let collapsed = new Set();
-  /** @type {string|null} */
+  /** @type {string|null} primary file — the last one clicked */
   let selectedId = null;
   /** @type {string|null} selected FunctionId, or null when inspecting a file */
   let selectedFnId = null;
+  /**
+   * Every selected file / function. `selectedId` and `selectedFnId` stay the
+   * primary of each set: the one the Inspector reads, the one the host is told
+   * about. The sets drive the map chrome and the Functions dock, which is where
+   * comparing several things at once actually pays off.
+   * @type {Set<string>}
+   */
+  let selectedSet = new Set();
+  /** @type {Set<string>} */
+  let selectedFnSet = new Set();
+  /** Dock scope over a multi-selection: all | linking | bridges. */
+  let fnsScope = "all";
+  /**
+   * True while the function selection is being built up by shift-clicking.
+   * The Inspector then stays on the file so the Functions list — the surface
+   * the set is built from — remains on screen. A plain click clears it.
+   */
+  let fnSelectionAdditive = false;
   /** @type {Map<string, {fn: object, file: object, fileId: string}>} */
   let fnIndex = new Map();
   /** Selection history for Back after following call targets. */
@@ -211,7 +230,11 @@
    * @type {1|2|'all'}
    */
   let fnsDepth = "all";
-  /** File id the current `fnsDepth` was chosen for — null until first build. */
+  /**
+   * The selection the current `fnsDepth` was chosen for — the joined file ids,
+   * so widening the selection re-defaults the depth for the bigger graph.
+   * Null until the first build.
+   */
   let fnsDepthFileId = null;
   /** @type {object|null} last full (unfiltered) DAG build for depth meta. */
   let fnsFullGraph = null;
@@ -1294,14 +1317,23 @@
     els.zoomReset.textContent = `${Math.round(zoom * 100)}%`;
   }
 
+  /** Ids the current focus is wired to. Hover overrides selection, and a
+   * multi-file selection lights up everything any member touches. */
   function connectedIds() {
     const set = new Set();
-    if (!selectedId && !hoverId) return set;
-    const focus = hoverId || selectedId;
+    const focusSet = hoverId
+      ? new Set([hoverId])
+      : selectedSet.size
+        ? selectedSet
+        : selectedId
+          ? new Set([selectedId])
+          : null;
+    if (!focusSet) return set;
     for (const e of fileEdges) {
-      if (e.from === focus) set.add(e.to);
-      if (e.to === focus) set.add(e.from);
+      if (focusSet.has(e.from)) set.add(e.to);
+      if (focusSet.has(e.to)) set.add(e.from);
     }
+    for (const id of focusSet) set.delete(id);
     return set;
   }
 
@@ -1324,8 +1356,13 @@
   }
 
   function renderEdges() {
-    const focus = hoverId || selectedId;
-    const focusSet = focus ? new Set([focus]) : new Set();
+    const focusSet = hoverId
+      ? new Set([hoverId])
+      : selectedSet.size
+        ? new Set(selectedSet)
+        : selectedId
+          ? new Set([selectedId])
+          : new Set();
     const ctr = (id) => {
       const p = cardPosition(id);
       return {
@@ -1371,6 +1408,11 @@
     els.edgePaths.replaceChildren(frag);
   }
 
+  /** Selected at all — the set is authoritative, selectedId is just its head. */
+  function isFileSelected(id) {
+    return selectedSet.size ? selectedSet.has(id) : selectedId === id;
+  }
+
   function renderCards() {
     const conn = connectedIds();
     const focus = hoverId || selectedId;
@@ -1381,7 +1423,8 @@
     for (const node of fileNodes) {
       const p = cardPosition(node.id);
       const visible = cardVisible(node);
-      const isSel = selectedId === node.id;
+      const isSel = isFileSelected(node.id);
+      const isPrimary = selectedId === node.id;
       // Dim only for filter/search mismatches. Selection is indigo chrome —
       // never wash out the rest of the map (scanning means reading unselected cards).
       const dim = !visible;
@@ -1391,6 +1434,7 @@
       wrap.className =
         "file-card" +
         (isSel ? " selected" : "") +
+        (isSel && !isPrimary ? " co-selected" : "") +
         (dim ? " dim" : "") +
         (linked ? " linked" : "");
       wrap.dataset.id = node.id;
@@ -1454,13 +1498,18 @@
           };
           return;
         }
-        selectFile(node.id, { reveal: false });
+        selectFile(node.id, {
+          reveal: false,
+          additive: isAdditiveClick(ev),
+        });
         lastCardGesture = {
           id: node.id,
           moved: false,
           clickSuppressed: false,
           selected: true,
           selectedId,
+          additive: isAdditiveClick(ev),
+          selectedCount: selectedSet.size,
           rightOpenAfter: rightOpen,
         };
       });
@@ -1485,10 +1534,11 @@
       const el = cardEls.get(node.id);
       if (!el) continue;
       const visible = cardVisible(node);
-      const isSel = selectedId === node.id;
+      const isSel = isFileSelected(node.id);
       const dim = !visible;
       const linked = !!focus && !isSel && conn.has(node.id);
       el.classList.toggle("selected", isSel);
+      el.classList.toggle("co-selected", isSel && selectedId !== node.id);
       el.classList.toggle("dim", dim);
       el.classList.toggle("linked", linked);
       const pill = el.querySelector(".sel-pill");
@@ -1582,7 +1632,7 @@
               indent: 24,
               icon: n.kind === "entry" ? "★" : "#",
               iconClass: n.kind,
-              selected: selectedId === n.id,
+              selected: isFileSelected(n.id),
               dim: !visible,
               badge: hot ? "!" : n.kind === "entry" ? "★" : "",
               badgeClass: hot
@@ -1592,7 +1642,11 @@
                 : n.kind === "entry"
                   ? "star"
                   : "",
-              onClick: () => selectFile(n.id, { reveal: true }),
+              onClick: (ev) =>
+                selectFile(n.id, {
+                  reveal: true,
+                  additive: isAdditiveClick(ev),
+                }),
             })
           );
         }
@@ -1634,7 +1688,12 @@
 
   function renderLayersSelection() {
     for (const btn of els.layerRows.querySelectorAll(".layer-row.file")) {
-      btn.classList.toggle("selected", btn.dataset.id === selectedId);
+      const id = btn.dataset.id;
+      btn.classList.toggle("selected", isFileSelected(id));
+      btn.classList.toggle(
+        "co-selected",
+        isFileSelected(id) && id !== selectedId
+      );
     }
   }
 
@@ -1703,7 +1762,131 @@
   }
 
   function snapshotSelection() {
-    return { fileId: selectedId, fnId: selectedFnId };
+    return {
+      fileId: selectedId,
+      fnId: selectedFnId,
+      fileSet: [...selectedSet],
+      fnSet: [...selectedFnSet],
+    };
+  }
+
+  /**
+   * Shift / Ctrl / Cmd means "add to what I already have" — the same modifier
+   * the file explorer, the editor tabs, and every other list in the workbench
+   * use, so nothing new has to be learned here.
+   */
+  function isAdditiveClick(ev) {
+    return !!(ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey));
+  }
+
+  /** True when the dock has more than one thing to relate. */
+  function hasMultiSelection() {
+    return selectedFnSet.size > 1 || selectedSet.size > 1;
+  }
+
+  /**
+   * Drop functions whose file left the selection. A selection set that
+   * outlives its files would scope the dock to functions that are no longer
+   * on screen.
+   */
+  function pruneFnSelection() {
+    for (const fnId of [...selectedFnSet]) {
+      const entry = fnIndex.get(fnId);
+      if (!entry || !selectedSet.has(entry.fileId)) selectedFnSet.delete(fnId);
+    }
+    if (selectedFnId && !selectedFnSet.has(selectedFnId)) {
+      selectedFnId = selectedFnSet.values().next().value ?? null;
+    }
+  }
+
+  /**
+   * Toggle a file in the selection. Never empties the set — clicking the last
+   * remaining member again keeps it, matching how the map reads: something is
+   * always inspected.
+   */
+  function toggleFileSelection(id) {
+    if (selectedSet.has(id) && selectedSet.size > 1) {
+      selectedSet.delete(id);
+      if (selectedId === id) {
+        selectedId = selectedSet.values().next().value ?? null;
+      }
+    } else {
+      selectedSet.add(id);
+      selectedId = id;
+    }
+    pruneFnSelection();
+    afterSelectionChange({ notifyHost: true });
+  }
+
+  /** Toggle a function in the selection; its file joins the file selection. */
+  function toggleFnSelection(fnId) {
+    const key = String(fnId);
+    const entry = fnIndex.get(key);
+    if (!entry) return false;
+    fnSelectionAdditive = true;
+    if (selectedFnSet.has(key) && selectedFnSet.size > 1) {
+      selectedFnSet.delete(key);
+      if (selectedFnId === key) {
+        selectedFnId = selectedFnSet.values().next().value ?? null;
+        const owner = selectedFnId ? fnIndex.get(selectedFnId) : null;
+        if (owner) selectedId = owner.fileId;
+      }
+    } else {
+      selectedFnSet.add(key);
+      selectedFnId = key;
+      selectedSet.add(entry.fileId);
+      selectedId = entry.fileId;
+    }
+    afterSelectionChange({ notifyHost: true });
+    return true;
+  }
+
+  /** Collapse a multi-selection back to its primary. */
+  function clearMultiSelection() {
+    if (!hasMultiSelection()) return;
+    selectedSet = selectedId ? new Set([selectedId]) : new Set();
+    selectedFnSet = selectedFnId ? new Set([selectedFnId]) : new Set();
+    fnSelectionAdditive = false;
+    afterSelectionChange({ notifyHost: false });
+  }
+
+  /**
+   * One repaint path for every selection edit, so the map chrome, the
+   * Inspector and the dock can never disagree about what is selected.
+   */
+  function afterSelectionChange({ notifyHost = false, reveal = null } = {}) {
+    if (reveal) revealCard(reveal);
+    openInspectorForSelection();
+    syncFnsScopeControls();
+    refreshFocus();
+    renderInspector();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
+    if (!notifyHost || !Bridge) return;
+    // Only the primary is announced: the host opens one editor, and a
+    // multi-select gesture must not fan out into a burst of editor openings.
+    if (selectedFnId) {
+      const entry = fnIndex.get(selectedFnId);
+      if (entry) notifyHostFunction(entry);
+    } else if (selectedId) {
+      const node = fileNodes.find((n) => n.id === selectedId);
+      Bridge.selectFile({ fileId: selectedId, filePath: node?.path || null });
+    }
+  }
+
+  /** W3: open read-only Inspection canvas + rust-analyzer on this range. */
+  function notifyHostFunction(entry) {
+    const fn = entry.fn || {};
+    const file = entry.file || {};
+    Bridge.selectFunction({
+      functionId: String(fn.id ?? selectedFnId),
+      fileId: entry.fileId,
+      filePath: file.path || null,
+      functionName: fn.name || null,
+      line: fn.line ?? null,
+      byteStart: fn.byte_start ?? null,
+      byteEnd: fn.byte_end ?? null,
+      contentHash: file.content_hash || null,
+    });
   }
 
   function pushHistory() {
@@ -1728,12 +1911,28 @@
    * Select a file card. Clears function selection unless keepFn and the fn
    * still belongs to this file. Opens the Inspector (selection intent).
    */
-  function selectFile(id, { reveal = false, push = false, keepFn = false } = {}) {
+  function selectFile(
+    id,
+    { reveal = false, push = false, keepFn = false, additive = false } = {}
+  ) {
     if (push) pushHistory();
+    if (additive && id) {
+      toggleFileSelection(id);
+      if (reveal && selectedSet.has(id)) revealCard(id);
+      return;
+    }
     selectedId = id;
-    if (!keepFn) selectedFnId = null;
+    selectedSet = id ? new Set([id]) : new Set();
+    fnSelectionAdditive = false;
+    if (!keepFn) {
+      selectedFnId = null;
+      selectedFnSet = new Set();
+    } else {
+      pruneFnSelection();
+    }
     if (reveal && id) revealCard(id);
     openInspectorForSelection();
+    syncFnsScopeControls();
     refreshFocus();
     renderInspector();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
@@ -1748,32 +1947,33 @@
    * Select a function by FunctionId — core audit jump.
    * Selects its owning file card, reveals it, opens Inspector on the fn.
    */
-  function selectFunction(fnId, { reveal = true, push = true, notifyHost = true } = {}) {
+  function selectFunction(
+    fnId,
+    { reveal = true, push = true, notifyHost = true, additive = false } = {}
+  ) {
     const entry = fnIndex.get(String(fnId));
     if (!entry) return false;
     if (push) pushHistory();
+    if (additive) {
+      const ok = toggleFnSelection(fnId);
+      if (ok && reveal && selectedId) revealCard(selectedId);
+      return ok;
+    }
     selectedId = entry.fileId;
     selectedFnId = String(fnId);
+    fnSelectionAdditive = false;
+    // A function picked out of a multi-file selection keeps that selection —
+    // narrowing to one function should not silently throw away the comparison
+    // the user built up.
+    if (!selectedSet.has(entry.fileId)) selectedSet = new Set([entry.fileId]);
+    selectedFnSet = new Set([selectedFnId]);
     if (reveal) revealCard(entry.fileId);
     openInspectorForSelection();
+    syncFnsScopeControls();
     refreshFocus();
     renderInspector();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
-    /* W3: open read-only Inspection canvas + rust-analyzer on this range. */
-    if (notifyHost && Bridge) {
-      const fn = entry.fn || {};
-      const file = entry.file || {};
-      Bridge.selectFunction({
-        functionId: String(fnId),
-        fileId: entry.fileId,
-        filePath: file.path || null,
-        functionName: fn.name || null,
-        line: fn.line ?? null,
-        byteStart: fn.byte_start ?? null,
-        byteEnd: fn.byte_end ?? null,
-        contentHash: file.content_hash || null,
-      });
-    }
+    if (notifyHost && Bridge) notifyHostFunction(entry);
     return true;
   }
 
@@ -1782,8 +1982,20 @@
     if (!prev) return;
     selectedId = prev.fileId;
     selectedFnId = prev.fnId;
+    selectedSet = new Set(
+      prev.fileSet && prev.fileSet.length
+        ? prev.fileSet
+        : prev.fileId
+          ? [prev.fileId]
+          : []
+    );
+    selectedFnSet = new Set(
+      prev.fnSet && prev.fnSet.length ? prev.fnSet : prev.fnId ? [prev.fnId] : []
+    );
+    fnSelectionAdditive = selectedFnSet.size > 1;
     if (selectedId) revealCard(selectedId);
     openInspectorForSelection();
+    syncFnsScopeControls();
     refreshFocus();
     renderInspector();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
@@ -3348,6 +3560,61 @@
     pathsEl.replaceChildren(frag);
   }
 
+  /**
+   * What the relational scopes should relate. Selected functions win when
+   * there are several — asking how two functions relate is a sharper question
+   * than asking how their files do, and answering the file question when the
+   * user picked functions would be the wrong answer.
+   *
+   * @param {{nodes: object[]}} graph
+   * @returns {Map<string, string>} node id → group key
+   */
+  function selectionAnchors(graph) {
+    /** @type {Map<string, string>} */
+    const anchors = new Map();
+    if (selectedFnSet.size > 1) {
+      for (const fnId of selectedFnSet) anchors.set(String(fnId), String(fnId));
+      return anchors;
+    }
+    for (const node of graph.nodes || []) {
+      if (node.kind !== "function" || !node.fileId) continue;
+      if (selectedSet.has(String(node.fileId))) {
+        anchors.set(node.id, String(node.fileId));
+      }
+    }
+    return anchors;
+  }
+
+  /** Show the scope buttons only when there is a relationship to scope to. */
+  function syncFnsScopeControls() {
+    const wrap = els.fnsScopeMode;
+    if (!wrap) return;
+    const on = hasMultiSelection();
+    wrap.hidden = !on;
+    for (const btn of wrap.querySelectorAll("button")) {
+      const active = btn.dataset.scope === fnsScope;
+      btn.classList.toggle("on", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    // Hops slice a neighborhood around one focus; the relational scopes have no
+    // focus to slice around, so the control would be a dead knob.
+    const depthDead = on && fnsScope !== "all";
+    if (els.fnsDepthMode) {
+      els.fnsDepthMode.classList.toggle("inert", depthDead);
+      for (const btn of els.fnsDepthMode.querySelectorAll("button")) {
+        btn.disabled = depthDead;
+      }
+    }
+  }
+
+  function setFnsScope(mode) {
+    const next = ["all", "linking", "bridges"].includes(mode) ? mode : "all";
+    if (fnsScope === next) return;
+    fnsScope = next;
+    syncFnsScopeControls();
+    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
+  }
+
   function renderFunctionDag(opts = {}) {
     const fit = !!opts.fit;
     const nodesEl = els.fnsNodes;
@@ -3364,9 +3631,21 @@
       return;
     }
 
-    const fileNode = selectedId
-      ? fileNodes.find((n) => n.id === selectedId)
-      : null;
+    // Every selected file seeds the graph; the primary leads so single
+    // selection keeps its exact former behaviour.
+    const selectedNodes = [];
+    for (const id of selectedSet.size
+      ? selectedSet
+      : selectedId
+        ? [selectedId]
+        : []) {
+      const n = fileNodes.find((f) => f.id === id);
+      if (n) selectedNodes.push(n);
+    }
+    selectedNodes.sort((a, b) =>
+      a.id === selectedId ? -1 : b.id === selectedId ? 1 : 0
+    );
+    const fileNode = selectedNodes[0] || null;
     if (!fileNode) {
       fnsGraph = null;
       fnsFullGraph = null;
@@ -3379,22 +3658,46 @@
       return;
     }
 
+    // The relational scopes answer "how do these relate?", which only has an
+    // answer once two things are selected. Otherwise fall back to the whole
+    // graph rather than showing an empty dock.
+    const scopeMode = hasMultiSelection() ? fnsScope : "all";
+
     let full;
     let graph;
     let laid;
     let meta;
     try {
-      full = HD.build(fileNode.file, fileNode.id, fnIndex);
-      // Per-file depth default: budget-grown neighborhood (see HD.defaultDepth).
-      if (fnsDepthFileId !== fileNode.id) {
-        fnsDepthFileId = fileNode.id;
+      full = HD.buildMany(
+        selectedNodes.map((n) => ({ file: n.file, fileId: n.id })),
+        fnIndex
+      );
+      // Depth default is per selection: a five-file union is a different graph
+      // from any one of its files, and inherits none of their depths.
+      const depthKey = selectedNodes.map((n) => n.id).join("\u0000");
+      if (fnsDepthFileId !== depthKey) {
+        fnsDepthFileId = depthKey;
         fnsDepth = HD.defaultDepth(full);
         syncFnsDepthButtons();
       }
-      const focusId = selectedFnId;
-      const sliced = HD.neighborhood(full, focusId, fnsDepth);
-      graph = { nodes: sliced.nodes, edges: sliced.edges, scope: sliced.scope };
-      meta = sliced.meta;
+      if (scopeMode === "all") {
+        const focusId = selectedFnId;
+        const sliced = HD.neighborhood(full, focusId, fnsDepth);
+        graph = {
+          nodes: sliced.nodes,
+          edges: sliced.edges,
+          scope: sliced.scope,
+        };
+        meta = sliced.meta;
+      } else {
+        const related = HD.relate(full, selectionAnchors(full), scopeMode);
+        graph = {
+          nodes: related.nodes,
+          edges: related.edges,
+          scope: related.scope,
+        };
+        meta = related.meta;
+      }
       laid = HD.layout(graph);
     } catch (err) {
       console.error("[HorizonViewer.renderFunctionDag]", err);
@@ -3428,7 +3731,23 @@
       return n?.name || String(meta.focusId).split("::").pop() || meta.focusId;
     })();
     let depthNote = "";
-    if (meta && meta.depth !== "all") {
+    if (meta && meta.mode) {
+      const noun = selectedFnSet.size > 1 ? "functions" : "files";
+      depthNote =
+        ` · <strong>${meta.mode === "bridges" ? "Bridges" : "Linking"}</strong>` +
+        ` across ${meta.groups} ${noun}` +
+        ` · showing ${meta.shownNodes} of ${meta.totalNodes} nodes` +
+        `, ${meta.shownEdges} of ${meta.totalEdges} edges`;
+      if (meta.mode === "bridges" && meta.bridgeNodes) {
+        depthNote += ` · ${meta.bridgeNodes} in between`;
+      }
+      if (!meta.shownEdges) {
+        depthNote +=
+          meta.mode === "bridges"
+            ? ` <span title="No call path joins the selected items in this graph.">(nothing connects them here)</span>`
+            : ` <span title="No call runs straight from one selection to another. Try Bridges for indirect paths.">(no direct calls — try Bridges)</span>`;
+      }
+    } else if (meta && meta.depth !== "all") {
       depthNote =
         ` · focus <strong>${escapeHtml(focusName || "?")}</strong>` +
         ` · ${meta.depth} hop${meta.depth === 1 ? "" : "s"}` +
@@ -3479,12 +3798,18 @@
       const stubActive =
         !!stubEdge && !!fnsActiveEdgeId && stubEdge.id === fnsActiveEdgeId;
       const isFocus = !!(meta?.focusId && node.id === meta.focusId);
+      const nodeSelected =
+        node.kind === "function" &&
+        !!node.fnId &&
+        (selectedFnSet.size
+          ? selectedFnSet.has(String(node.fnId))
+          : node.fnId === selectedFnId);
       el.className =
         `fns-node ${node.kind}` +
         (node.external ? " external" : "") +
-        (node.kind === "function" && node.fnId === selectedFnId
-          ? " selected"
-          : "") +
+        (nodeSelected ? " selected" : "") +
+        (nodeSelected && node.fnId !== selectedFnId ? " co-selected" : "") +
+        (node.bridge ? " bridge" : "") +
         (isFocus ? " focus" : "") +
         (stubActive ? " stub-active" : "");
       el.style.left = `${p.x}px`;
@@ -3525,9 +3850,13 @@
         el.appendChild(kind);
       }
 
-      const activateNode = () => {
+      const activateNode = (ev) => {
         if (node.kind === "function" && node.fnId) {
-          selectFunction(node.fnId, { reveal: true, push: true });
+          selectFunction(node.fnId, {
+            reveal: true,
+            push: true,
+            additive: isAdditiveClick(ev),
+          });
           lastFnsNodeActivation = {
             kind: "function",
             nodeId: node.id,
@@ -3598,20 +3927,22 @@
           suppressFnsClick = false;
           return;
         }
-        activateNode();
+        activateNode(ev);
         lastFnsNodeGesture = {
           id: node.id,
           moved: false,
           clickSuppressed: false,
           selected: true,
           selectedId: selectedFnId,
+          additive: isAdditiveClick(ev),
+          selectedCount: selectedFnSet.size,
           rightOpenAfter: rightOpen,
         };
       });
       el.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") {
           ev.preventDefault();
-          activateNode();
+          activateNode(ev);
         }
       });
 
@@ -3636,8 +3967,15 @@
     }
 
     if (!graph.nodes.length) {
-      nodesEl.innerHTML =
-        `<div class="fns-empty">No free functions in this file.</div>`;
+      const empty = document.createElement("div");
+      empty.className = "fns-empty";
+      empty.textContent =
+        scopeMode === "all"
+          ? selectedNodes.length > 1
+            ? "No free functions in the selected files."
+            : "No free functions in this file."
+          : "Nothing in the selection relates this way.";
+      nodesEl.replaceChildren(empty);
     }
 
     updateFnsWorldTransform();
@@ -3845,6 +4183,101 @@
     return sec;
   }
 
+  /**
+   * The multi-selection roster. Only appears once there is more than one thing
+   * selected — a single selection is already fully described by the identity
+   * block above it. Each row makes its member the primary; the × drops it.
+   * @returns {HTMLElement|null}
+   */
+  function renderSelectionSection() {
+    if (!hasMultiSelection()) return null;
+    const showFns = selectedFnSet.size > 1;
+
+    const list = document.createElement("ul");
+    list.className = "sel-list";
+
+    /** @param {{key: string, label: string, meta: string, primary: boolean, onOpen: Function, onDrop: Function}} row */
+    const addRow = (row) => {
+      const li = document.createElement("li");
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "sel-item" + (row.primary ? " primary" : "");
+      open.dataset.key = row.key;
+      const name = document.createElement("span");
+      name.className = "sel-item-name";
+      name.textContent = row.label;
+      const meta = document.createElement("span");
+      meta.className = "sel-item-meta";
+      meta.textContent = row.meta;
+      open.append(name, meta);
+      open.addEventListener("click", () => row.onOpen());
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "sel-item-drop";
+      drop.textContent = "✕";
+      drop.title = "Remove from selection";
+      drop.setAttribute("aria-label", `Remove ${row.label} from selection`);
+      drop.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        row.onDrop();
+      });
+      li.append(open, drop);
+      list.appendChild(li);
+    };
+
+    if (showFns) {
+      for (const fnId of selectedFnSet) {
+        const entry = fnIndex.get(fnId);
+        if (!entry) continue;
+        addRow({
+          key: fnId,
+          label: entry.fn.name || fnId,
+          meta: `${basename(entry.file.path) || "file"} · L${entry.fn.line ?? 0}`,
+          primary: fnId === selectedFnId,
+          onOpen: () => selectFunction(fnId, { reveal: true, push: true }),
+          onDrop: () => toggleFnSelection(fnId),
+        });
+      }
+    } else {
+      for (const id of selectedSet) {
+        const node = fileNodes.find((n) => n.id === id);
+        if (!node) continue;
+        addRow({
+          key: id,
+          label: node.name,
+          meta: `${node.fnCount} fn`,
+          primary: id === selectedId,
+          onOpen: () => selectFile(id, { reveal: true, push: true }),
+          onDrop: () => toggleFileSelection(id),
+        });
+      }
+    }
+
+    const body = document.createElement("div");
+    body.appendChild(list);
+
+    const hint = document.createElement("p");
+    hint.className = "insp-muted sel-hint";
+    hint.textContent = showFns
+      ? "Shift-click functions to compare them. The Functions dock can show only what links them."
+      : "Shift-click files to compare them. The Functions dock builds one graph across the selection.";
+    body.appendChild(hint);
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "ghost-btn sel-clear";
+    clear.textContent = "Clear selection";
+    clear.addEventListener("click", () => clearMultiSelection());
+    body.appendChild(clear);
+
+    const count = showFns ? selectedFnSet.size : selectedSet.size;
+    return makeSection(
+      showFns ? "Selection · functions" : "Selection · files",
+      body,
+      `${count}`
+    );
+  }
+
   function renderInspector() {
     const root = els.inspector;
     if (!root) return;
@@ -3869,7 +4302,14 @@
     }
 
     const fnEntry = selectedFnId ? fnIndex.get(selectedFnId) : null;
-    const showingFn = !!(fnEntry && fnEntry.fileId === selectedId);
+    // One function selected means "show me this function". Several means "show
+    // me how these compare" — so the file view stays, keeping the Functions
+    // list on screen to pick the next one from. Diving into a single function
+    // would otherwise remove the only surface a selection can be built from.
+    const showingFn =
+      !!(fnEntry && fnEntry.fileId === selectedId) &&
+      selectedFnSet.size <= 1 &&
+      !fnSelectionAdditive;
 
     // Identity
     const identity = document.createElement("div");
@@ -3950,6 +4390,9 @@
     identity.appendChild(metaRow);
     root.appendChild(identity);
 
+    const selectionSection = renderSelectionSection();
+    if (selectionSection) root.appendChild(selectionSection);
+
     if (showingFn) {
       // Documentation
       const docsText = joinDocs(fnEntry.fn.doc_comments);
@@ -4007,7 +4450,9 @@
         const li = document.createElement("li");
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "fn-list-item";
+        btn.className =
+          "fn-list-item" +
+          (selectedFnSet.has(String(fn.id)) ? " selected" : "");
         // Built as nodes, not markup: `line` is map data, and a map can be any
         // JSON the user opens. Interpolating it into innerHTML let a crafted
         // map inject live elements into this privileged webview.
@@ -4018,9 +4463,13 @@
         metaEl.className = "fn-list-meta";
         metaEl.textContent = `L${fn.line}`;
         btn.append(nameEl, metaEl);
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (ev) => {
           hideFnPreview();
-          selectFunction(fn.id, { reveal: false, push: true });
+          selectFunction(fn.id, {
+            reveal: false,
+            push: true,
+            additive: isAdditiveClick(ev),
+          });
         });
         attachFnPreview(btn, node.file, fn);
         li.appendChild(btn);
@@ -4109,6 +4558,10 @@
     fnIndex = new Map();
     selectedId = null;
     selectedFnId = null;
+    selectedSet = new Set();
+    selectedFnSet = new Set();
+    fnsScope = "all";
+    fnSelectionAdditive = false;
     selHistory = [];
     hoverId = null;
     lastLeftOccupied = null;
@@ -4182,6 +4635,13 @@
     } catch (_) {
       /* ignore */
     }
+
+    // A fresh map starts with exactly one thing selected.
+    selectedSet = selectedId ? new Set([selectedId]) : new Set();
+    selectedFnSet = selectedFnId ? new Set([selectedFnId]) : new Set();
+    fnsScope = "all";
+    fnSelectionAdditive = false;
+    syncFnsScopeControls();
 
     showLoaded();
     updateChrome();
@@ -4611,6 +5071,27 @@
     });
     syncFnsDepthButtons();
   }
+  if (els.fnsScopeMode) {
+    els.fnsScopeMode.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-scope]");
+      if (!btn || !els.fnsScopeMode.contains(btn)) return;
+      setFnsScope(btn.getAttribute("data-scope"));
+    });
+    syncFnsScopeControls();
+  }
+  // Escape collapses a multi-selection to its primary — the standard way out
+  // of an accumulated selection. Ignored while typing so it never eats a
+  // search box's own Escape.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || !hasMultiSelection()) return;
+    const t = ev.target;
+    const tag = t && t.tagName ? t.tagName.toLowerCase() : "";
+    if (tag === "input" || tag === "textarea" || (t && t.isContentEditable)) {
+      return;
+    }
+    ev.preventDefault();
+    clearMultiSelection();
+  });
   if (els.fnsZoomIn) {
     els.fnsZoomIn.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -5102,6 +5583,13 @@
       selectFunction: (id, opts) => selectFunction(id, opts || {}),
       goBack,
       getSelection: () => snapshotSelection(),
+      /** Dock scope over a multi-selection: 'all' | 'linking' | 'bridges'. */
+      setFnsScope: (mode) => {
+        setFnsScope(mode);
+        return fnsScope;
+      },
+      getFnsScope: () => fnsScope,
+      clearMultiSelection,
       loadMap: (map, label) => loadMap(map, label || "api"),
       /** Start analysis via the extension host (postMessage analyse). */
       startAnalyse: (path) => startAnalyse(String(path || "")),
@@ -5264,6 +5752,9 @@
           })),
           selectedFnId,
           selectedFileId: selectedId,
+          selectedFileIds: [...selectedSet],
+          selectedFnIds: [...selectedFnSet],
+          scope: fnsScope,
           tab: bottomTab,
           depth: fnsDepth,
           meta: fnsGraph.meta || null,

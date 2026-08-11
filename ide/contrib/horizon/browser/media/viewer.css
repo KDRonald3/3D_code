@@ -993,6 +993,12 @@ select {
 
 .layer-row.selected {
   background: var(--selbg);
+  box-shadow: inset 2px 0 0 var(--sel);
+}
+
+/* Selected, but not the primary — keep the tint, drop the marker. */
+.layer-row.selected.co-selected {
+  box-shadow: none;
 }
 
 .layer-row.dim {
@@ -1268,6 +1274,14 @@ select {
   padding: 7px 9px;
   overflow: visible;
   box-shadow: 0 0 0 3px var(--selbg), 0 2px 8px var(--shadow);
+}
+
+/* Co-selected: in the selection, but not the one the Inspector is reading.
+   Same indigo, lighter weight — the primary must stay findable in a set. */
+.file-card.selected.co-selected .card-frame {
+  border-width: 1px;
+  padding: 8px 10px;
+  box-shadow: 0 0 0 2px var(--selbg), 0 2px 8px var(--shadow);
 }
 
 .file-card.dragging .card-frame {
@@ -1698,6 +1712,92 @@ select {
   color: var(--text3);
 }
 
+/* Multi-selection roster — every selected file / function, primary first-class,
+   each row droppable. Only rendered when more than one thing is selected. */
+.sel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.sel-list li {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.sel-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sel-item:hover {
+  border-color: var(--sel);
+}
+
+.sel-item.primary {
+  border-color: var(--sel);
+  background: var(--selbg);
+  box-shadow: inset 2px 0 0 var(--sel);
+}
+
+.sel-item-name {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sel-item-meta {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text3);
+}
+
+.sel-item-drop {
+  flex: none;
+  width: 26px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.sel-item-drop:hover {
+  border-color: var(--sel);
+  color: var(--text);
+}
+
+.sel-hint {
+  margin-bottom: 8px;
+}
+
+.sel-clear {
+  font-size: 11px;
+}
+
 .source-frame {
   position: relative;
 }
@@ -2091,6 +2191,12 @@ select {
 .fn-list-item.active {
   border-color: var(--sel);
   background: var(--selbg);
+}
+
+.fn-list-item.selected {
+  border-color: var(--sel);
+  background: var(--selbg);
+  box-shadow: inset 2px 0 0 var(--sel);
 }
 
 .fn-list-name {
@@ -2488,6 +2594,40 @@ select {
   color: var(--text);
 }
 
+/* Depth means nothing under Linking / Bridges — show it, but not as live. */
+.fns-depth-mode.inert {
+  opacity: 0.45;
+}
+
+.fns-depth-mode.inert button {
+  cursor: default;
+}
+
+/* Scope: what to show across a multi-selection. Same segmented idiom again. */
+.fns-scope-mode {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.fns-scope-mode button {
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fns-scope-mode button.on {
+  background: var(--selbg);
+  color: var(--sel);
+}
+
 .diag-pane,
 .fns-pane {
   flex: 1 1 auto;
@@ -2697,6 +2837,17 @@ select {
 .fns-node.selected {
   border-color: var(--sel);
   box-shadow: 0 0 0 2px var(--selbg);
+}
+
+.fns-node.selected.co-selected {
+  box-shadow: none;
+}
+
+/* Bridges scope: a function that only stands between two selected things.
+   Dashed, so it never reads as part of the selection it is connecting. */
+.fns-node.bridge {
+  border-style: dashed;
+  opacity: 0.9;
 }
 
 /* Neighborhood focus when depth-limited — the seed of the visible remnant. */

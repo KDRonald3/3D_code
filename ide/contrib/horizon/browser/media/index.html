@@ -113,7 +113,7 @@
             <div class="section-label">Pages</div>
             <button type="button" class="page-btn active" data-page="map" id="page-map" title="Codebase map"><span class="page-ico">◇</span>Map</button>
             <button type="button" class="page-btn" data-page="diff" id="page-diff" disabled title="Placeholder — no diff source in the map contract"><span class="page-ico">◈</span>Diff · PR #142</button>
-            <button type="button" class="page-btn" data-page="fns" id="page-fns" title="Function call DAG for the selected file"><span class="page-ico fn">ƒ</span>Functions<span class="page-trail">⊟</span></button>
+            <button type="button" class="page-btn" data-page="fns" id="page-fns" title="Function call DAG for the selected files"><span class="page-ico fn">ƒ</span>Functions<span class="page-trail">⊟</span></button>
             <button type="button" class="page-btn" data-page="diag" id="page-dock" title="Diagnostics worklist"><span class="page-ico">⊘</span>Diagnostics<span class="page-trail">⊟</span><span class="page-badge" id="page-dock-badge" hidden></span></button>
           </div>
 
@@ -181,7 +181,7 @@
           <aside id="bottom-panel" class="bottom-panel" hidden>
             <div class="bottom-chrome">
               <div class="bottom-tabs" role="tablist">
-                <button type="button" class="bottom-tab" data-bottom-tab="fns" id="tab-functions" role="tab" aria-selected="false" title="Function call DAG for the selected file" aria-label="Functions">
+                <button type="button" class="bottom-tab" data-bottom-tab="fns" id="tab-functions" role="tab" aria-selected="false" title="Function call DAG for the selected files" aria-label="Functions">
                   <span class="chrome-tab-full">Functions</span>
                   <span class="chrome-tab-short" aria-hidden="true">Fn</span>
                 </button>
@@ -202,6 +202,27 @@
                   </button>
                 </div>
                 <div class="fns-controls" id="fns-controls" hidden>
+                  <div
+                    class="fns-scope-mode"
+                    id="fns-scope-mode"
+                    role="group"
+                    aria-label="What to show across the selected files or functions"
+                    title="With several things selected, narrow the graph to how they relate."
+                    hidden
+                  >
+                    <button type="button" data-scope="all" class="on" aria-label="All functions">
+                      <span class="chrome-label-full">All</span>
+                      <span class="chrome-label-short" aria-hidden="true">All</span>
+                    </button>
+                    <button type="button" data-scope="linking" aria-label="Only direct calls between the selection">
+                      <span class="chrome-label-full">Linking</span>
+                      <span class="chrome-label-short" aria-hidden="true">Link</span>
+                    </button>
+                    <button type="button" data-scope="bridges" aria-label="Paths connecting the selection, including functions in between">
+                      <span class="chrome-label-full">Bridges</span>
+                      <span class="chrome-label-short" aria-hidden="true">Brdg</span>
+                    </button>
+                  </div>
                   <div
                     class="fns-depth-mode"
                     id="fns-depth-mode"
