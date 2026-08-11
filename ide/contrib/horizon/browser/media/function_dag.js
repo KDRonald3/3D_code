@@ -543,8 +543,13 @@
    * @param {{nodes: object[], edges: object[], scope?: object}} graph
    * @param {Map<string, string>} groupOf anchor node id → group key
    * @param {'linking'|'bridges'} mode
+   * @param {{keepAnchors?: boolean}} [opts] keep every anchor on screen even
+   *   when it takes part in no relationship. Right for a handful of
+   *   hand-picked functions — the user chose those exact nodes. Wrong for a
+   *   file selection, where the anchors are every function in the files and
+   *   keeping them all would hand back the unfiltered graph.
    */
-  function relate(graph, groupOf, mode) {
+  function relate(graph, groupOf, mode, opts = {}) {
     const nodes = graph?.nodes || [];
     const edges = graph?.edges || [];
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -621,9 +626,9 @@
       }
     }
 
-    // Anchors always stay visible — a selected thing that relates to nothing
-    // must still be on screen, or the view looks like it lost the selection.
-    for (const id of anchors.keys()) keepNodes.add(id);
+    if (opts.keepAnchors) {
+      for (const id of anchors.keys()) keepNodes.add(id);
+    }
 
     const keptNodes = nodes
       .filter((n) => keepNodes.has(n.id))

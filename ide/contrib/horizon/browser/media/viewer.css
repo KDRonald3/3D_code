@@ -1906,8 +1906,8 @@ select {
 .fn-preview {
   position: fixed;
   z-index: 60;
-  /* Rust lines run long; too narrow a peek clips mid-identifier and forces a
-     horizontal scroll the popover cannot receive (pointer-events: none). */
+  /* Rust lines run long; too narrow a peek clips mid-identifier and pushes the
+     reading onto the horizontal scrollbar. */
   max-width: min(720px, 62vw);
   /* No min-width: CSS resolves min-width over max-width, so any floor here
      would defeat the gutter clamp positionFnPreview applies and push the peek
@@ -1917,7 +1917,9 @@ select {
   border-radius: 10px;
   background: var(--panel);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-  pointer-events: none;
+  /* Interactive, like the rust-analyzer card: the pointer has to be able to
+     land here to scroll the body, select it, or click through to a definition. */
+  pointer-events: auto;
 }
 
 .fn-preview[hidden] {
@@ -1940,6 +1942,25 @@ select {
 /* The preview is a peek, not the Inspector's full source pane. */
 .fn-preview .source-well {
   max-height: 260px;
+  /* Reaching the end must not start scrolling the Inspector behind it — that
+     scroll dismisses the peek being read. */
+  overscroll-behavior: contain;
+}
+
+.fn-preview .source-well::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.fn-preview .source-well::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background-clip: content-box;
+  background-color: var(--border);
+}
+
+.fn-preview .source-well::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text2);
 }
 
 /*
@@ -2851,6 +2872,32 @@ select {
   box-shadow: none;
 }
 
+/* Multi-file dock: the left edge says which file a function came from, and
+   the banner legend names each colour. Only set while several are selected. */
+.fns-node.function[style*="--fns-file-accent"] {
+  border-left-color: var(--fns-file-accent);
+}
+
+.fns-file-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+}
+
+.fns-file-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.fns-empty-head {
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 /* Bridges scope: a function that only stands between two selected things.
    Dashed, so it never reads as part of the selection it is connecting. */
 .fns-node.bridge {
@@ -2955,6 +3002,17 @@ select {
   color: var(--text3);
   font-size: 12.5px;
   line-height: 1.45;
+}
+
+.fns-empty p {
+  margin: 0;
+  max-width: 76ch;
+}
+
+.fns-empty p.fns-empty-head {
+  margin-bottom: 6px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .diag-group-mode {

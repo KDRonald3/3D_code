@@ -2139,17 +2139,190 @@
     host.appendChild(banner);
   }
 
+  // --- Reachable hover popovers --------------------------------------------
+  // Both hover surfaces below — the Functions-list peek and the rust-analyzer
+  // card — are meant to be entered: their source scrolls, their identifiers
+  // jump, their text selects. None of that survives a card that vanishes the
+  // moment the pointer leaves its anchor, so dismissal gets a grace period and
+  // the cursor gets a corridor to cross the gap between anchor and card.
+
+  /** Delay before a hover opens, shared so both surfaces feel like one. */
+  const HOVER_OPEN_DELAY_MS = 320;
+  /** Grace period after the pointer leaves the anchor, so it can reach the card. */
+  const HOVER_HIDE_DELAY_MS = 140;
+  /** How long a cursor aimed at a card may keep it alive while travelling. */
+  const HOVER_AIM_MS = 400;
+  /** Cadence for re-testing a dismissal that is being deferred. */
+  const HOVER_RECHECK_MS = 100;
+
+  /** Last pointer position — geometry the enter/leave events cannot answer. */
+  let hoverPointer = { x: 0, y: 0 };
+  document.addEventListener(
+    "mousemove",
+    (ev) => {
+      hoverPointer = { x: ev.clientX, y: ev.clientY };
+    },
+    true
+  );
+
+  function pointInRect(p, r) {
+    return p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+  }
+
+  /** Corners of the card edge that faces `p` — the base of the safe triangle. */
+  function hoverFacingCorners(r, p) {
+    if (p.y >= r.bottom) {
+      return [{ x: r.left, y: r.bottom }, { x: r.right, y: r.bottom }];
+    }
+    if (p.y <= r.top) {
+      return [{ x: r.left, y: r.top }, { x: r.right, y: r.top }];
+    }
+    if (p.x >= r.right) {
+      return [{ x: r.right, y: r.top }, { x: r.right, y: r.bottom }];
+    }
+    return [{ x: r.left, y: r.top }, { x: r.left, y: r.bottom }];
+  }
+
+  function pointInTriangle(p, a, b, c) {
+    const sign = (p1, p2, p3) =>
+      (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+    const d1 = sign(p, a, b);
+    const d2 = sign(p, b, c);
+    const d3 = sign(p, c, a);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+  }
+
+  /**
+   * Grace-period dismissal for a popover the pointer must be able to reach.
+   * `getEl` yields the card (it need not exist yet), `hide` closes it, and the
+   * optional `getCompanion` yields a card this one raised: the pointer resting
+   * there counts as still being on this one.
+   */
+  function createHoverReach(getEl, hide, getCompanion) {
+    let hideTimer = null;
+    let exit = null;
+    let aimDeadline = 0;
+    /**
+     * Whether the pointer is on the card, per the DOM's own enter/leave events.
+     * The cached coordinate cannot answer this: once the pointer leaves the
+     * webview no further mousemove arrives, so it freezes at its last position —
+     * which is inside the card, and would pin the card open forever.
+     */
+    let inside = false;
+    /**
+     * Set once the card reports the pointer left it. It makes "left" beat any
+     * geometric guess, which is what keeps a frozen pointer position from
+     * pinning the card open.
+     */
+    let left = false;
+
+    function cancel() {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    }
+
+    /** Call from the card's own hide, so stale enter/leave state cannot leak. */
+    function reset() {
+      cancel();
+      inside = false;
+      left = false;
+    }
+
+    /**
+     * Leaving the anchor starts a dismissal the cursor can still outrun by
+     * heading for the card — see `aimsAtCard`.
+     */
+    function schedule() {
+      const el = getEl();
+      if (!el || el.hidden) return;
+      cancel();
+      exit = hoverPointer;
+      aimDeadline = Date.now() + HOVER_AIM_MS;
+      hideTimer = setTimeout(evaluate, HOVER_HIDE_DELAY_MS);
+    }
+
+    /**
+     * The diagonal-travel problem: the straight line from the anchor to the
+     * card usually crosses neither, so a strict mouseout closes the card
+     * mid-journey. Keep it open while the cursor stays inside the triangle
+     * joining the exit point to the card's facing corners (Amazon's
+     * mega-dropdown trick).
+     */
+    function aimsAtCard(rect) {
+      if (!exit || Date.now() >= aimDeadline) return false;
+      // No movement since the exit means no aim to honour — and a pointer that
+      // left the webview reports exactly that, frozen. Treating the degenerate
+      // triangle as a hit would keep the card open indefinitely.
+      const moved =
+        Math.abs(hoverPointer.x - exit.x) + Math.abs(hoverPointer.y - exit.y);
+      if (moved < 2) return false;
+      const [c1, c2] = hoverFacingCorners(rect, exit);
+      return pointInTriangle(hoverPointer, exit, c1, c2);
+    }
+
+    /** True while the pointer rests on a card this popover itself raised. */
+    function onCompanion() {
+      const c = getCompanion ? getCompanion() : null;
+      return !!c && !c.hidden && pointInRect(hoverPointer, c.getBoundingClientRect());
+    }
+
+    function evaluate() {
+      hideTimer = null;
+      const el = getEl();
+      if (!el || el.hidden) return;
+      if (inside) return; // settled on the card, per enter/leave
+      const rect = el.getBoundingClientRect();
+      // Crossing the card's edge and the browser reporting `mouseenter` are not
+      // simultaneous; cover that gap geometrically. Only before an explicit
+      // leave, so a frozen pointer can never use this to pin the card open.
+      if (!left && pointInRect(hoverPointer, rect)) return;
+      if (onCompanion() || aimsAtCard(rect)) {
+        hideTimer = setTimeout(evaluate, HOVER_RECHECK_MS);
+        return;
+      }
+      hide();
+    }
+
+    /** Entering the card cancels the pending dismissal; leaving restarts it. */
+    function bind(el) {
+      el.addEventListener("mouseenter", () => {
+        inside = true;
+        left = false;
+        cancel();
+      });
+      el.addEventListener("mouseleave", () => {
+        inside = false;
+        left = true;
+        schedule();
+      });
+    }
+
+    return { bind, cancel, schedule, reset };
+  }
+
   // --- Hover preview for the Inspector's Functions list --------------------
   // Hovering a function shows its body without changing the selection. Tokens
   // come from the same /api/source path the Inspector uses, so the highlighting
   // is identical and the content hash still guards against a stale map.
-  const FN_PREVIEW_DELAY_MS = 320;
   /** Below this the gutter is too narrow to render anything readable. */
   const FN_PREVIEW_MIN_PX = 140;
   const fnPreviewCache = new Map();
   let fnPreviewEl = null;
   let fnPreviewTimer = null;
   let fnPreviewGen = 0;
+  /** Row the visible peek belongs to, so returning to it does not re-render. */
+  let fnPreviewAnchor = null;
+  // Reachable like the rust-analyzer card: the peek's source scrolls, its
+  // identifiers jump, and a hover card raised from inside it belongs to it.
+  const fnPreviewReach = createHoverReach(
+    () => fnPreviewEl,
+    hideFnPreview,
+    raCardOverPeek
+  );
 
   function ensureFnPreviewEl() {
     if (fnPreviewEl) return fnPreviewEl;
@@ -2159,6 +2332,7 @@
     // The Inspector sits inside gesture-bearing chrome; the popover must never
     // read as a selection, pan or drag.
     fnPreviewEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    fnPreviewReach.bind(fnPreviewEl);
     // Must live inside `.app`: every theme token (--panel, --border, --tok-*) is
     // declared on `.app[data-theme]`, so a document.body child renders with a
     // transparent background and uncoloured source. `.app` sets no transform, so
@@ -2173,6 +2347,10 @@
       clearTimeout(fnPreviewTimer);
       fnPreviewTimer = null;
     }
+    fnPreviewReach.reset();
+    fnPreviewAnchor = null;
+    // A card explaining a token in the peek has just lost what it pointed at.
+    if (raCardOverPeek()) hideRaHover();
     if (fnPreviewEl) fnPreviewEl.hidden = true;
   }
 
@@ -2274,7 +2452,14 @@
       // A row scrolled out of the list has no sensible anchor; showing anyway
       // parks the popover in a corner with nothing to point at.
       if (!anchorOnScreen(btn)) return;
+      // Coming back to the row whose peek is already up must not re-render it:
+      // that would throw away the scroll position just left in the source.
+      if (fnPreviewAnchor === btn && fnPreviewEl && !fnPreviewEl.hidden) {
+        fnPreviewReach.cancel();
+        return;
+      }
       const gen = ++fnPreviewGen;
+      fnPreviewAnchor = btn;
       const early = sourceUnavailableReason(fn, file);
       if (early) {
         setFnPreviewMessage(btn, name, SOURCE_MESSAGES[early] || "Source unavailable.");
@@ -2309,57 +2494,64 @@
     };
     btn.addEventListener("mouseenter", () => {
       if (fnPreviewTimer) clearTimeout(fnPreviewTimer);
-      fnPreviewTimer = setTimeout(open, FN_PREVIEW_DELAY_MS);
+      // Returning to the row the peek belongs to cancels the dismissal that
+      // leaving it started. Arriving at a *different* row must not: the peek
+      // still showing the old row has to go, or scrubbing the list drags a
+      // stale peek along behind the pointer.
+      if (fnPreviewAnchor === btn) fnPreviewReach.cancel();
+      fnPreviewTimer = setTimeout(open, HOVER_OPEN_DELAY_MS);
     });
-    btn.addEventListener("mouseleave", hideFnPreview);
+    btn.addEventListener("mouseleave", (ev) => {
+      // Moving straight into the peek must not count as leaving it.
+      const to = ev.relatedTarget;
+      if (to instanceof Node && fnPreviewEl && fnPreviewEl.contains(to)) return;
+      if (fnPreviewTimer) {
+        clearTimeout(fnPreviewTimer);
+        fnPreviewTimer = null;
+      }
+      fnPreviewReach.schedule();
+    });
     // Keyboard parity: tabbing the list previews too.
     btn.addEventListener("focus", open);
     btn.addEventListener("blur", hideFnPreview);
   }
 
   // A popover anchored to viewport coordinates goes stale the moment anything
-  // scrolls or the selection re-renders the Inspector.
-  window.addEventListener("scroll", hideFnPreview, true);
+  // scrolls or the selection re-renders the Inspector — except the peek's own
+  // source, which is scrolled precisely in order to read it.
+  window.addEventListener(
+    "scroll",
+    (ev) => {
+      const t = ev.target;
+      if (t instanceof Node && fnPreviewEl && fnPreviewEl.contains(t)) return;
+      hideFnPreview();
+    },
+    true
+  );
   window.addEventListener("resize", hideFnPreview);
 
   // --- rust-analyzer hover in the Inspector source pane --------------------
   // Spans rendered with byte offsets ask the host what rust-analyzer knows at
   // that position, mirroring editor hover. IDE-only: the standalone viewer has
   // no host to ask.
-  const RA_HOVER_DELAY_MS = 350;
-  /** Grace period after the pointer leaves the token, so it can reach the card. */
-  const RA_HOVER_HIDE_DELAY_MS = 260;
-  /** How long a cursor aimed at the card may keep it alive while travelling. */
-  const RA_HOVER_AIM_MS = 700;
   const raHoverCache = new Map();
   let raHoverEl = null;
   let raHoverTimer = null;
-  let raHoverHideTimer = null;
   let raHoverGen = 0;
-  let raPointer = { x: 0, y: 0 };
-  let raHoverExit = null;
-  let raHoverAimDeadline = 0;
-  /**
-   * Whether the pointer is on the card, per the DOM's own enter/leave events.
-   * The cached coordinate cannot answer this: once the pointer leaves the
-   * webview no further mousemove arrives, so it freezes at its last position —
-   * which is inside the card, and would pin the card open forever.
-   */
-  let raHoverInside = false;
-  /**
-   * Set once the card reports the pointer left it. It makes "left" beat any
-   * geometric guess, which is what keeps a frozen pointer position from
-   * pinning the card open.
-   */
-  let raHoverLeft = false;
+  /** Span the visible card explains — it says whose surface the card sits on. */
+  let raHoverAnchor = null;
+  const raHoverReach = createHoverReach(() => raHoverEl, hideRaHover);
 
-  document.addEventListener(
-    "mousemove",
-    (ev) => {
-      raPointer = { x: ev.clientX, y: ev.clientY };
-    },
-    true
-  );
+  /**
+   * The card, when it explains a token inside the Functions peek. The peek
+   * counts it as part of itself: reading the card must not dismiss the code it
+   * was raised from, and closing the peek takes the card with it.
+   */
+  function raCardOverPeek() {
+    if (!raHoverEl || raHoverEl.hidden || !raHoverAnchor) return null;
+    if (!fnPreviewEl || !fnPreviewEl.contains(raHoverAnchor)) return null;
+    return raHoverEl;
+  }
 
   function ensureRaHoverEl() {
     if (raHoverEl) return raHoverEl;
@@ -2368,16 +2560,7 @@
     raHoverEl.hidden = true;
     // The card is reachable: entering it cancels the pending dismissal so its
     // scrollbar can actually be used.
-    raHoverEl.addEventListener("mouseenter", () => {
-      raHoverInside = true;
-      raHoverLeft = false;
-      cancelRaHoverHide();
-    });
-    raHoverEl.addEventListener("mouseleave", () => {
-      raHoverInside = false;
-      raHoverLeft = true;
-      scheduleRaHoverHide();
-    });
+    raHoverReach.bind(raHoverEl);
     // The Inspector sits inside gesture-bearing chrome; selecting text in the
     // card must never read as a canvas pan or drag.
     raHoverEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
@@ -2392,99 +2575,12 @@
       clearTimeout(raHoverTimer);
       raHoverTimer = null;
     }
-    cancelRaHoverHide();
-    raHoverInside = false;
-    raHoverLeft = false;
+    raHoverReach.reset();
+    raHoverAnchor = null;
     if (raHoverEl) {
       raHoverEl.hidden = true;
       raHoverEl.scrollTop = 0;
     }
-  }
-
-  function cancelRaHoverHide() {
-    if (raHoverHideTimer) {
-      clearTimeout(raHoverHideTimer);
-      raHoverHideTimer = null;
-    }
-  }
-
-  /**
-   * Leaving the token starts a dismissal the cursor can still outrun by
-   * heading for the card — see `raHoverAimsAtCard`.
-   */
-  function scheduleRaHoverHide() {
-    if (!raHoverEl || raHoverEl.hidden) return;
-    cancelRaHoverHide();
-    raHoverExit = raPointer;
-    raHoverAimDeadline = Date.now() + RA_HOVER_AIM_MS;
-    raHoverHideTimer = setTimeout(evaluateRaHoverHide, RA_HOVER_HIDE_DELAY_MS);
-  }
-
-  /** Corners of the card edge that faces `p` — the base of the safe triangle. */
-  function raHoverFacingCorners(r, p) {
-    if (p.y >= r.bottom) {
-      return [{ x: r.left, y: r.bottom }, { x: r.right, y: r.bottom }];
-    }
-    if (p.y <= r.top) {
-      return [{ x: r.left, y: r.top }, { x: r.right, y: r.top }];
-    }
-    if (p.x >= r.right) {
-      return [{ x: r.right, y: r.top }, { x: r.right, y: r.bottom }];
-    }
-    return [{ x: r.left, y: r.top }, { x: r.left, y: r.bottom }];
-  }
-
-  function pointInTriangle(p, a, b, c) {
-    const sign = (p1, p2, p3) =>
-      (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
-    const d1 = sign(p, a, b);
-    const d2 = sign(p, b, c);
-    const d3 = sign(p, c, a);
-    const neg = d1 < 0 || d2 < 0 || d3 < 0;
-    const pos = d1 > 0 || d2 > 0 || d3 > 0;
-    return !(neg && pos);
-  }
-
-  /**
-   * The diagonal-travel problem: the straight line from a token to the card
-   * usually crosses neither, so a strict mouseout closes the card mid-journey.
-   * Keep it open while the cursor stays inside the triangle joining the exit
-   * point to the card's facing corners (Amazon's mega-dropdown trick).
-   */
-  function raHoverAimsAtCard(rect) {
-    if (!raHoverExit || Date.now() >= raHoverAimDeadline) return false;
-    // No movement since the exit means no aim to honour — and a pointer that
-    // left the webview reports exactly that, frozen. Treating the degenerate
-    // triangle as a hit would keep the card open indefinitely.
-    const moved =
-      Math.abs(raPointer.x - raHoverExit.x) + Math.abs(raPointer.y - raHoverExit.y);
-    if (moved < 2) return false;
-    const [c1, c2] = raHoverFacingCorners(rect, raHoverExit);
-    return pointInTriangle(raPointer, raHoverExit, c1, c2);
-  }
-
-  function evaluateRaHoverHide() {
-    raHoverHideTimer = null;
-    if (!raHoverEl || raHoverEl.hidden) return;
-    if (raHoverInside) return; // settled on the card, per enter/leave
-    const rect = raHoverEl.getBoundingClientRect();
-    // Crossing the card's edge and the browser reporting `mouseenter` are not
-    // simultaneous; cover that gap geometrically. Only before an explicit
-    // leave, so a frozen pointer can never use this to pin the card open.
-    if (
-      !raHoverLeft &&
-      raPointer.x >= rect.left &&
-      raPointer.x <= rect.right &&
-      raPointer.y >= rect.top &&
-      raPointer.y <= rect.bottom
-    ) {
-      return;
-    }
-    if (raHoverAimsAtCard(rect)) {
-      raHoverHideTimer = setTimeout(evaluateRaHoverHide, 100);
-      return;
-    }
-    hideRaHover();
   }
 
   const RUST_KEYWORDS = new Set([
@@ -2745,7 +2841,7 @@
       if (!filePath) return;
       if (raHoverTimer) clearTimeout(raHoverTimer);
       // Returning to a token cancels a dismissal started by leaving it.
-      cancelRaHoverHide();
+      raHoverReach.cancel();
       const gen = ++raHoverGen;
       raHoverTimer = setTimeout(async () => {
         const byteOffset = Number(span.dataset.b);
@@ -2764,11 +2860,12 @@
           if (!(result && Array.isArray(result.contents) && result.contents.length)) return;
           const el = ensureRaHoverEl();
           el.replaceChildren(renderRaMarkdown(result.contents));
+          raHoverAnchor = span;
           positionRaHover(span);
         } catch (_) {
           /* quiet: hover must never raise errors at the user */
         }
-      }, RA_HOVER_DELAY_MS);
+      }, HOVER_OPEN_DELAY_MS);
     });
     document.addEventListener("mouseout", (ev) => {
       const span = ev.target instanceof Element ? ev.target.closest("span[data-b]") : null;
@@ -2780,7 +2877,7 @@
         clearTimeout(raHoverTimer);
         raHoverTimer = null;
       }
-      scheduleRaHoverHide();
+      raHoverReach.schedule();
     });
     // Scrolling the card is how long docs are read — only scrolling the
     // world underneath invalidates the anchor.
@@ -3591,6 +3688,21 @@
     return anchors;
   }
 
+  /**
+   * Per-file accents for a multi-file dock. Fixed hues rather than a hash, so
+   * the same selection always paints the same way and the banner legend can
+   * agree with the nodes. Mid lightness reads on both workbench themes.
+   */
+  const FNS_FILE_HUES = [212, 32, 145, 288, 4, 178, 262, 62];
+  function fileAccentAt(index) {
+    return `hsl(${FNS_FILE_HUES[index % FNS_FILE_HUES.length]} 62% 48%)`;
+  }
+  /** @type {Map<string, string>} fileId → accent, rebuilt on each dock render */
+  let fnsFileAccents = new Map();
+  function fileAccent(fileId) {
+    return fnsFileAccents.get(String(fileId)) || null;
+  }
+
   /** Show the scope buttons only when there is a relationship to scope to. */
   function syncFnsScopeControls() {
     const wrap = els.fnsScopeMode;
@@ -3671,6 +3783,10 @@
     // answer once two things are selected. Otherwise fall back to the whole
     // graph rather than showing an empty dock.
     const scopeMode = hasMultiSelection() ? fnsScope : "all";
+    const multiFile = selectedNodes.length > 1;
+    fnsFileAccents = new Map(
+      selectedNodes.map((n, idx) => [n.id, fileAccentAt(idx)])
+    );
 
     let full;
     let graph;
@@ -3699,7 +3815,11 @@
         };
         meta = sliced.meta;
       } else {
-        const related = HD.relate(full, selectionAnchors(full), scopeMode);
+        const related = HD.relate(full, selectionAnchors(full), scopeMode, {
+          // Hand-picked functions stay on screen; whole-file anchors do not,
+          // or "what links these files" answers with every function in them.
+          keepAnchors: selectedFnSet.size > 1,
+        });
         graph = {
           nodes: related.nodes,
           edges: related.edges,
@@ -3769,8 +3889,22 @@
     } else if (meta) {
       depthNote = ` · all ${meta.totalNodes} nodes`;
     }
+    // Multi-file: name every file next to the colour its nodes carry, so the
+    // graph can be read without clicking anything.
+    const title = multiFile
+      ? selectedNodes
+          .map(
+            (n) =>
+              `<span class="fns-file-key">` +
+              `<span class="fns-file-dot" style="background:${escapeHtml(
+                fileAccent(n.id) || "currentColor"
+              )}"></span>` +
+              `<strong>${escapeHtml(n.name)}</strong></span>`
+          )
+          .join(" ")
+      : `<strong>${escapeHtml(sc.fileName || "file")}</strong>`;
     setFnsBanner(
-      `<strong>${escapeHtml(sc.fileName || "file")}</strong>` +
+      title +
         ` · ${sc.seedCount} function${sc.seedCount === 1 ? "" : "s"}` +
         ` · ${sc.resolvedEdges} resolved` +
         ` · ${sc.conflictEdges} conflict` +
@@ -3839,9 +3973,17 @@
       const metaEl = document.createElement("span");
       metaEl.className = "fns-node-meta";
       if (node.kind === "function") {
-        metaEl.textContent = node.external
-          ? `${basename(node.filePath) || "other file"} · L${node.line}`
-          : `L${node.line}`;
+        // With one file selected the file is implied and the line is enough.
+        // Across a selection it is not: two seeds from different files are
+        // otherwise indistinguishable, which makes the graph unreadable.
+        metaEl.textContent =
+          node.external || multiFile
+            ? `${basename(node.filePath) || "other file"} · L${node.line}`
+            : `L${node.line}`;
+        if (multiFile && node.fileId) {
+          const accent = fileAccent(node.fileId);
+          if (accent) el.style.setProperty("--fns-file-accent", accent);
+        }
       } else if (node.kind === "conflict") {
         metaEl.textContent = `${node.candidates?.length || 0} candidates · L${node.line}`;
       } else {
@@ -3978,12 +4120,32 @@
     if (!graph.nodes.length) {
       const empty = document.createElement("div");
       empty.className = "fns-empty";
-      empty.textContent =
-        scopeMode === "all"
-          ? selectedNodes.length > 1
-            ? "No free functions in the selected files."
-            : "No free functions in this file."
-          : "Nothing in the selection relates this way.";
+      if (scopeMode === "all") {
+        empty.textContent = multiFile
+          ? "No free functions in the selected files."
+          : "No free functions in this file.";
+      } else {
+        // An empty relational scope is a finding, not a failure: say what was
+        // searched and what the answer means, rather than showing a blank box.
+        const what = selectedFnSet.size > 1 ? "functions" : "files";
+        const names = (
+          selectedFnSet.size > 1
+            ? [...selectedFnSet].map((id) => fnIndex.get(id)?.fn?.name || id)
+            : selectedNodes.map((n) => n.name)
+        ).join(" and ");
+        const head = document.createElement("p");
+        head.className = "fns-empty-head";
+        head.textContent =
+          scopeMode === "linking"
+            ? `No call runs directly between these ${what}.`
+            : `No call path connects these ${what}.`;
+        const detail = document.createElement("p");
+        detail.textContent =
+          scopeMode === "linking"
+            ? `Nothing in ${names} calls the other directly. Try Bridges to look for an indirect path, or All to see each side's own graph.`
+            : `Searched every path through the calls of ${names}, in either direction, and found none. As far as the map goes, these do not reach each other.`;
+        empty.append(head, detail);
+      }
       nodesEl.replaceChildren(empty);
     }
 
