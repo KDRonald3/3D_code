@@ -1985,8 +1985,16 @@
     }
     selectedFnId = String(fnId);
     fnSelectionAdditive = false;
-    selectedFnSet = new Set([selectedFnId]);
     const inScope = selectedSet.has(entry.fileId);
+    // Collapsing to the clicked function is what a plain click means — but not
+    // when the click is only a cursor move onto something outside the scope.
+    // `selectionAnchors` reads a multi-function selection as the thing to
+    // relate, so dropping it here would flip Linking and Bridges from
+    // function anchors to file anchors and redraw the graph: the dock moving
+    // again, by another route. The comparison stands; the cursor moves.
+    if (inScope || selectedFnSet.size <= 1) {
+      selectedFnSet = new Set([selectedFnId]);
+    }
     if (!selectedSet.size) {
       // Nothing scoped yet — a jump from diagnostics or history into a map
       // no one has selected in. The function's own file is the only scope
@@ -2039,7 +2047,11 @@
     selectedFnSet = new Set(
       prev.fnSet && prev.fnSet.length ? prev.fnSet : prev.fnId ? [prev.fnId] : []
     );
-    fnSelectionAdditive = selectedFnSet.size > 1;
+    // "Accumulating" means the cursor is one of the members. A restored cursor
+    // that sits outside the set is a reading position, not an accumulation,
+    // and must not force the Inspector back to the file view.
+    fnSelectionAdditive =
+      selectedFnSet.size > 1 && selectedFnSet.has(selectedFnId);
     if (selectedId) revealCard(selectedId);
     openInspectorForSelection();
     syncFnsScopeControls();
@@ -4040,12 +4052,14 @@
       const stubActive =
         !!stubEdge && !!fnsActiveEdgeId && stubEdge.id === fnsActiveEdgeId;
       const isFocus = !!(meta?.focusId && node.id === meta.focusId);
+      // Either a member of the selection or the cursor itself. The cursor can
+      // sit outside the set — a function read from another file while a
+      // comparison is held — and it still has to light up where it is drawn.
       const nodeSelected =
         node.kind === "function" &&
         !!node.fnId &&
-        (selectedFnSet.size
-          ? selectedFnSet.has(String(node.fnId))
-          : node.fnId === selectedFnId);
+        (selectedFnSet.has(String(node.fnId)) ||
+          String(node.fnId) === String(selectedFnId));
       el.className =
         `fns-node ${node.kind}` +
         (node.external ? " external" : "") +
@@ -4665,8 +4679,14 @@
     // keeping the Functions list on screen to pick the next one from. Diving
     // into a single function would otherwise remove the only surface a
     // selection can be built from.
+    // The cursor sitting outside the selection is an explicit "show me this
+    // one" — the user clicked a function the comparison does not contain — so
+    // it opens the function view even though the set is still multiple.
+    const cursorOutsideSet =
+      !!fnEntry && selectedFnSet.size > 0 && !selectedFnSet.has(selectedFnId);
     const showingFn =
-      !!fnEntry && selectedFnSet.size <= 1 && !fnSelectionAdditive;
+      !!fnEntry &&
+      (cursorOutsideSet || (selectedFnSet.size <= 1 && !fnSelectionAdditive));
     // The selected function's file is not one the dock is scoped to. The
     // Inspector shows the function, says so, and offers the scope move it
     // deliberately did not make on the user's behalf.
