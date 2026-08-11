@@ -372,6 +372,278 @@
   }
 
   /**
+   * The whole call chain through one function: everything that transitively
+   * calls it, everything it transitively calls, and nothing else.
+   *
+   * "Nothing else" is the point. A function that calls what the centre calls,
+   * without reaching the centre or being reached by it, is a sibling — it says
+   * nothing about this chain, and [`neighborhood`] cannot exclude it because
+   * its adjacency is undirected.
+   *
+   * Each kept node carries `chainLevel`: negative above the centre (callers),
+   * 0 for the centre, positive below (callees). A node reachable from both
+   * sides — possible through mutual recursion — belongs to the chain once, on
+   * the side that reached it first, and the centre never reappears in its own
+   * chain. Levels are shortest-path, so a node called both directly and through
+   * a helper sits at the shallower of the two.
+   *
+   * @param {{nodes: object[], edges: object[], scope?: object}} graph
+   * @param {string} centerId node id (a FunctionId) to centre on
+   */
+  function chain(graph, centerId) {
+    const nodes = graph?.nodes || [];
+    const edges = graph?.edges || [];
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const center = byId.has(String(centerId)) ? String(centerId) : null;
+
+    const emptyMeta = {
+      focusId: center,
+      depth: "all",
+      mode: "vertical",
+      centerId: center,
+      centerName: center ? byId.get(center)?.name || center : null,
+      up: 0,
+      down: 0,
+      upLevels: 0,
+      downLevels: 0,
+      totalNodes: nodes.length,
+      totalEdges: edges.length,
+      shownNodes: 0,
+      shownEdges: 0,
+      hiddenNodes: nodes.length,
+      hiddenEdges: edges.length,
+      truncated: nodes.length > 0,
+    };
+    if (!center) {
+      return { nodes: [], edges: [], scope: graph?.scope || {}, meta: emptyMeta };
+    }
+
+    /** @type {Map<string, {to: string, edge: object}[]>} */
+    const outs = new Map();
+    /** @type {Map<string, {to: string, edge: object}[]>} */
+    const ins = new Map();
+    for (const n of nodes) {
+      outs.set(n.id, []);
+      ins.set(n.id, []);
+    }
+    for (const e of edges) {
+      if (!byId.has(e.from) || !byId.has(e.to)) continue;
+      outs.get(e.from).push({ to: e.to, edge: e });
+      ins.get(e.to).push({ to: e.from, edge: e });
+    }
+
+    /** @type {Map<string, number>} level, signed */
+    const level = new Map([[center, 0]]);
+    /** Parent that first placed each node, for call-order sorting downward. */
+    /** @type {Map<string, {parent: string, byteStart: number}>} */
+    const placedBy = new Map();
+
+    // Breadth-first so a level is the shortest hop count, not a DFS artefact.
+    //
+    // Traversal and level assignment are deliberately separate. A node the
+    // other sweep already claimed still has to be walked *through*, or an
+    // ancestor reachable only via a node that is also a descendant would never
+    // be found — `X -> Y -> f` where `f` also reaches `Y` would silently lose
+    // `X` from the chain. It keeps the level it was first given; only the
+    // traversal continues.
+    const sweep = (adj, sign) => {
+      const seen = new Set([center]);
+      let frontier = [center];
+      let depth = 0;
+      let reached = 0;
+      while (frontier.length) {
+        depth += 1;
+        const next = [];
+        for (const from of frontier) {
+          for (const hop of adj.get(from) || []) {
+            const id = hop.to;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            if (!level.has(id)) {
+              level.set(id, sign * depth);
+              reached = depth;
+              if (sign > 0) {
+                placedBy.set(id, {
+                  parent: from,
+                  byteStart: hop.edge.byteStart ?? hop.edge.line ?? 0,
+                });
+              }
+            }
+            next.push(id);
+          }
+        }
+        frontier = next;
+      }
+      return reached;
+    };
+    // Down first: a node on both sides reads better as something the centre
+    // calls than as something that calls it.
+    const downLevels = sweep(outs, 1);
+    const upLevels = sweep(ins, -1);
+
+    const keptNodes = nodes
+      .filter((n) => level.has(n.id))
+      .map((n) => ({
+        ...n,
+        chainLevel: level.get(n.id),
+        chainPlacedBy: placedBy.get(n.id)?.parent ?? null,
+        chainCallAt: placedBy.get(n.id)?.byteStart ?? 0,
+      }));
+    const keptIds = new Set(keptNodes.map((n) => n.id));
+    // Every edge between chain members, including the ones that skip a level
+    // and the back-edges of a recursive call — they are all part of the chain.
+    const keptEdges = edges.filter(
+      (e) => keptIds.has(e.from) && keptIds.has(e.to)
+    );
+
+    let up = 0;
+    let down = 0;
+    for (const l of level.values()) {
+      if (l < 0) up += 1;
+      else if (l > 0) down += 1;
+    }
+
+    return {
+      nodes: keptNodes,
+      edges: keptEdges,
+      scope: graph?.scope || {},
+      meta: {
+        ...emptyMeta,
+        up,
+        down,
+        upLevels: Math.max(0, upLevels),
+        downLevels: Math.max(0, downLevels),
+        shownNodes: keptNodes.length,
+        shownEdges: keptEdges.length,
+        hiddenNodes: nodes.length - keptNodes.length,
+        hiddenEdges: edges.length - keptEdges.length,
+        truncated:
+          keptNodes.length < nodes.length || keptEdges.length < edges.length,
+      },
+    };
+  }
+
+  /**
+   * Layered placement for a [`chain`], running left to right like every other
+   * scope in the dock: callers in the columns left of the centre, callees in
+   * the columns right of it, one column per level. "Vertical" names the slice
+   * through the call graph, not the direction it is drawn.
+   *
+   * Within a downstream column, order is **call order** — where the placing
+   * parent calls each child — so reading a column top to bottom reads that
+   * parent's body top to bottom. Definition order would be close to random
+   * here: across this repo's map, 71% of parents call their callees in a
+   * different order from the one they are defined in.
+   *
+   * Upstream there is no call order to honour: two callers of the same
+   * function call it at positions in their own bodies, which are not
+   * comparable. Those columns are ordered by the barycentre of the neighbours
+   * they connect to in the next column toward the centre, which is what
+   * actually reduces crossings, with definition line as a stable tiebreak.
+   *
+   * @param {{nodes: object[], edges: object[]}} graph output of [`chain`]
+   */
+  function layoutChain(graph) {
+    const nodes = graph.nodes || [];
+    const edges = graph.edges || [];
+    /** @type {Map<number, object[]>} level → its column, top to bottom */
+    const rows = new Map();
+    for (const n of nodes) {
+      const L = n.chainLevel || 0;
+      if (!rows.has(L)) rows.set(L, []);
+      rows.get(L).push(n);
+    }
+    const levels = [...rows.keys()].sort((a, b) => a - b);
+
+    /** @type {Map<string, number>} id → index within its column */
+    const slot = new Map();
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+
+    const stableTail = (a, b) =>
+      (a.line || 0) - (b.line || 0) || String(a.id).localeCompare(String(b.id));
+
+    // Downstream: each column inherits its parent's order, then call order
+    // within that parent. Columns are visited outward so the parent's slot is
+    // already known when its children are placed.
+    for (const L of levels.filter((l) => l > 0).sort((a, b) => a - b)) {
+      const row = rows.get(L);
+      row.sort((a, b) => {
+        const pa = a.chainPlacedBy != null ? slot.get(a.chainPlacedBy) : undefined;
+        const pb = b.chainPlacedBy != null ? slot.get(b.chainPlacedBy) : undefined;
+        const sa = pa === undefined ? Number.MAX_SAFE_INTEGER : pa;
+        const sb = pb === undefined ? Number.MAX_SAFE_INTEGER : pb;
+        if (sa !== sb) return sa - sb;
+        if ((a.chainCallAt || 0) !== (b.chainCallAt || 0)) {
+          return (a.chainCallAt || 0) - (b.chainCallAt || 0);
+        }
+        return stableTail(a, b);
+      });
+      row.forEach((n, i) => slot.set(n.id, i));
+    }
+    // The centre is a column of one.
+    (rows.get(0) || []).forEach((n, i) => slot.set(n.id, i));
+
+    // Upstream: barycentre against the already-ordered column at level + 1,
+    // the one nearer the centre.
+    /** @type {Map<string, string[]>} id → neighbours one level nearer the centre */
+    const below = new Map(nodes.map((n) => [n.id, []]));
+    for (const e of edges) {
+      const a = byId.get(e.from);
+      const b = byId.get(e.to);
+      if (!a || !b) continue;
+      // For a caller at level -k, the node it calls sits at -k+1 (nearer the
+      // centre); that is the column its position should follow.
+      if ((a.chainLevel || 0) < 0 && (b.chainLevel || 0) === (a.chainLevel || 0) + 1) {
+        below.get(a.id).push(b.id);
+      }
+    }
+    for (const L of levels.filter((l) => l < 0).sort((a, b) => b - a)) {
+      const row = rows.get(L);
+      const bary = (n) => {
+        const ns = (below.get(n.id) || [])
+          .map((id) => slot.get(id))
+          .filter((v) => v !== undefined);
+        if (!ns.length) return Number.MAX_SAFE_INTEGER;
+        return ns.reduce((s, v) => s + v, 0) / ns.length;
+      };
+      row.sort((a, b) => {
+        const da = bary(a);
+        const db = bary(b);
+        if (da !== db) return da - db;
+        return stableTail(a, b);
+      });
+      row.forEach((n, i) => slot.set(n.id, i));
+    }
+
+    // Geometry: columns left to right, callers before the centre and callees
+    // after it, each column centred on the tallest so the chain reads as a
+    // spine rather than hanging from the top edge.
+    const tallest = Math.max(1, ...levels.map((L) => (rows.get(L) || []).length));
+    const worldH = PAD * 2 + tallest * NODE_H + (tallest - 1) * GAP_Y;
+    /** @type {Map<string, {x:number,y:number}>} */
+    const pos = new Map();
+    let maxX = PAD;
+    levels.forEach((L, colIndex) => {
+      const col = rows.get(L) || [];
+      const colH = col.length * NODE_H + (col.length - 1) * GAP_Y;
+      const y0 = Math.max(PAD, (worldH - colH) / 2);
+      const x = PAD + colIndex * (NODE_W + GAP_X);
+      col.forEach((n, i) => {
+        pos.set(n.id, { x, y: y0 + i * (NODE_H + GAP_Y) });
+      });
+      maxX = Math.max(maxX, x + NODE_W);
+    });
+
+    return {
+      pos,
+      worldW: Math.max(320, maxX + PAD),
+      worldH: Math.max(160, worldH),
+      nodeW: NODE_W,
+      nodeH: NODE_H,
+    };
+  }
+
+  /**
    * Pick the neighborhood focus: preferred id when present, else the first seed
    * by source line (then id). Returns null only for an empty graph.
    * @param {{nodes?: object[]}} graph
@@ -695,7 +967,9 @@
     build,
     buildMany,
     relate,
+    chain,
     layout,
+    layoutChain,
     defaultDepth,
     pickFocus,
     neighborhood,
