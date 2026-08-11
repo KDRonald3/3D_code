@@ -238,6 +238,15 @@
    * Null until the first build.
    */
   let fnsDepthFileId = null;
+  /**
+   * Node the hop slice is centred on. Normally the selected function, but it
+   * stays put while the selection sits on a function from outside the dock's
+   * scope — re-centring on a callee the user only clicked to read would move
+   * the very graph they were reading. Null means "no carried focus": the
+   * builder picks the first seed, exactly as it does with no function selected.
+   * @type {string|null}
+   */
+  let fnsFocusId = null;
   /** @type {object|null} last full (unfiltered) DAG build for depth meta. */
   let fnsFullGraph = null;
   /** Dock Functions canvas transform — fully independent of map zoom/pan. */
@@ -1951,7 +1960,16 @@
 
   /**
    * Select a function by FunctionId — core audit jump.
-   * Selects its owning file card, reveals it, opens Inspector on the fn.
+   *
+   * The file selection is the dock's scope, and picking a function is not a
+   * scope gesture. The dock draws resolved callees from other files as
+   * `external` nodes; clicking one asks "what is this?", not "abandon the
+   * graph I am reading and go there". So a function outside the scope moves
+   * the function cursor and nothing else: the Inspector follows it, the host
+   * still opens the read-only inspection editor, and the map, the Selection
+   * roster and the dock keep answering for the files the user actually picked.
+   * Moving the scope stays an explicit act — the Layers row, the map card, or
+   * the buttons the Inspector grows for exactly this case.
    */
   function selectFunction(
     fnId,
@@ -1965,15 +1983,27 @@
       if (ok && reveal && selectedId) revealCard(selectedId);
       return ok;
     }
-    selectedId = entry.fileId;
     selectedFnId = String(fnId);
     fnSelectionAdditive = false;
-    // A function picked out of a multi-file selection keeps that selection —
-    // narrowing to one function should not silently throw away the comparison
-    // the user built up.
-    if (!selectedSet.has(entry.fileId)) selectedSet = new Set([entry.fileId]);
     selectedFnSet = new Set([selectedFnId]);
-    if (reveal) revealCard(entry.fileId);
+    const inScope = selectedSet.has(entry.fileId);
+    if (!selectedSet.size) {
+      // Nothing scoped yet — a jump from diagnostics or history into a map
+      // no one has selected in. The function's own file is the only scope
+      // there is to open.
+      selectedId = entry.fileId;
+      selectedSet = new Set([entry.fileId]);
+    } else if (inScope) {
+      // A function picked out of a multi-file selection keeps that selection —
+      // narrowing to one function should not silently throw away the
+      // comparison the user built up — but the primary follows it, so the
+      // map's primary card and the Inspector agree with what is on screen.
+      selectedId = entry.fileId;
+    }
+    // Out of scope: `selectedId` and `selectedSet` deliberately stand still.
+    // Revealing would pan the map to a card that is not selected, which reads
+    // as a move that did not happen.
+    if (reveal && selectedSet.has(entry.fileId)) revealCard(entry.fileId);
     openInspectorForSelection();
     syncFnsScopeControls();
     refreshFocus();
@@ -3803,11 +3833,22 @@
       if (fnsDepthFileId !== depthKey) {
         fnsDepthFileId = depthKey;
         fnsDepth = HD.defaultDepth(full);
+        // A different scope is a different graph: it carries no focus over.
+        fnsFocusId = null;
         syncFnsDepthButtons();
       }
       if (scopeMode === "all") {
-        const focusId = selectedFnId;
-        const sliced = HD.neighborhood(full, focusId, fnsDepth);
+        // The hop slice follows the selected function only while that function
+        // is inside the scope. One picked from another file is a cursor move,
+        // not a re-centre — re-slicing around it would move the graph the user
+        // was reading, which is the thing they did not ask for. Their previous
+        // focus is carried instead, so the clicked node highlights in place.
+        const selEntry = selectedFnId ? fnIndex.get(selectedFnId) : null;
+        if (!selectedFnId) fnsFocusId = null;
+        else if (selEntry && selectedSet.has(selEntry.fileId)) {
+          fnsFocusId = selectedFnId;
+        }
+        const sliced = HD.neighborhood(full, fnsFocusId, fnsDepth);
         graph = {
           nodes: sliced.nodes,
           edges: sliced.edges,
@@ -3955,6 +3996,8 @@
         (node.bridge ? " bridge" : "") +
         (isFocus ? " focus" : "") +
         (stubActive ? " stub-active" : "");
+      // Addressable like the edge paths above, which carry `data-edge-id`.
+      el.dataset.nodeId = node.id;
       el.style.left = `${p.x}px`;
       el.style.top = `${p.y}px`;
       el.setAttribute("role", "button");
@@ -4449,6 +4492,68 @@
     );
   }
 
+  /**
+   * Shown when the selected function lives outside the files the dock is
+   * scoped to. Names the gap and offers the two moves that close it, so
+   * "why is the dock still on the other file?" is answered where it is asked
+   * — and moving the dock stays something the user chooses, not a side effect
+   * of reading a callee.
+   * @param {{fn: object, file: object, fileId: string}} fnEntry
+   */
+  function renderScopeNote(fnEntry) {
+    const wrap = document.createElement("div");
+    wrap.className = "insp-scope-note";
+
+    const scopeNames = [...selectedSet]
+      .map((id) => fileNodes.find((n) => n.id === id)?.name)
+      .filter(Boolean);
+    const text = document.createElement("p");
+    text.className = "insp-scope-text";
+    text.textContent =
+      `Outside ${
+        scopeNames.length === 1
+          ? scopeNames[0]
+          : `the ${scopeNames.length}-file selection`
+      } — the Functions dock kept its graph.`;
+    wrap.appendChild(text);
+
+    const row = document.createElement("div");
+    row.className = "insp-scope-actions";
+    /** @param {string} label @param {string} title @param {object} opts */
+    const action = (label, title, opts) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "insp-scope-btn";
+      btn.textContent = label;
+      btn.title = title;
+      // keepFn: the function stays selected through the scope move, so the
+      // dock rebuilds already focused on what the user was looking at.
+      btn.addEventListener("click", () =>
+        selectFile(fnEntry.fileId, {
+          reveal: true,
+          push: true,
+          keepFn: true,
+          ...opts,
+        })
+      );
+      return btn;
+    };
+    row.append(
+      action(
+        "Show in dock",
+        "Scope the Functions dock to this function's file",
+        {}
+      ),
+      action(
+        "Add to dock",
+        "Add this function's file to the selection the dock graphs",
+        { additive: true }
+      )
+    );
+    wrap.appendChild(row);
+    return wrap;
+  }
+
   function renderInspector() {
     const root = els.inspector;
     if (!root) return;
@@ -4473,14 +4578,19 @@
     }
 
     const fnEntry = selectedFnId ? fnIndex.get(selectedFnId) : null;
-    // One function selected means "show me this function". Several means "show
-    // me how these compare" — so the file view stays, keeping the Functions
-    // list on screen to pick the next one from. Diving into a single function
-    // would otherwise remove the only surface a selection can be built from.
+    // One function selected means "show me this function" — including one from
+    // outside the scope, which the dock draws as an external callee; the entry
+    // carries its own file, so the view needs nothing from the primary.
+    // Several means "show me how these compare", so the file view stays,
+    // keeping the Functions list on screen to pick the next one from. Diving
+    // into a single function would otherwise remove the only surface a
+    // selection can be built from.
     const showingFn =
-      !!(fnEntry && fnEntry.fileId === selectedId) &&
-      selectedFnSet.size <= 1 &&
-      !fnSelectionAdditive;
+      !!fnEntry && selectedFnSet.size <= 1 && !fnSelectionAdditive;
+    // The selected function's file is not one the dock is scoped to. The
+    // Inspector shows the function, says so, and offers the scope move it
+    // deliberately did not make on the user's behalf.
+    const fnOutOfScope = showingFn && !selectedSet.has(fnEntry.fileId);
 
     // Identity
     const identity = document.createElement("div");
@@ -4530,8 +4640,11 @@
     const metaRow = document.createElement("div");
     metaRow.className = "insp-meta-row";
     if (showingFn) {
+      // The function's own file, not the primary — out of scope they differ.
       metaRow.innerHTML =
-        `<span class="insp-pill">${escapeHtml(basename(node.path))}</span>` +
+        `<span class="insp-pill">${escapeHtml(
+          basename(fnEntry.file.path) || "file"
+        )}</span>` +
         `<span class="insp-pill">${(fnEntry.fn.call_sites || []).length} call site${
           (fnEntry.fn.call_sites || []).length === 1 ? "" : "s"
         }</span>`;
@@ -4559,6 +4672,7 @@
       metaRow.innerHTML = pills.join("");
     }
     identity.appendChild(metaRow);
+    if (fnOutOfScope) identity.appendChild(renderScopeNote(fnEntry));
     root.appendChild(identity);
 
     const selectionSection = renderSelectionSection();
@@ -5903,7 +6017,10 @@
       getFunctionDag: () => {
         if (!fnsGraph) return null;
         return {
-          scope: fnsGraph.scope,
+          // The files this graph was actually seeded from. Named apart from
+          // `scope` (the all/linking/bridges mode) because the object below
+          // carries both and the last key would otherwise silently win.
+          graphScope: fnsGraph.scope,
           nodeCount: fnsGraph.nodes.length,
           edgeCount: fnsGraph.edges.length,
           nodes: fnsGraph.nodes.map((n) => ({
@@ -5912,6 +6029,10 @@
             role: n.role,
             name: n.name,
             fnId: n.fnId || null,
+            // A callee drawn from a file outside the seeds — the node a click
+            // must not drag the dock over to.
+            external: !!n.external,
+            fileId: n.fileId || null,
           })),
           edges: fnsGraph.edges.map((e) => ({
             id: e.id,

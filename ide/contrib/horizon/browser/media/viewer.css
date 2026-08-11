@@ -1668,6 +1668,48 @@ select {
   background: rgba(240, 113, 120, 0.08);
 }
 
+/*
+ * The selected function sits outside the files the dock graphs. Reads as an
+ * aside, not an error: nothing went wrong, the dock simply held still.
+ */
+.insp-scope-note {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--panel2);
+}
+
+.insp-scope-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text3);
+}
+
+.insp-scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.insp-scope-btn {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  padding: 3px 8px;
+  color: var(--text2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.insp-scope-btn:hover {
+  border-color: var(--sel);
+  color: var(--text);
+}
+
 .insp-sec-label {
   font-size: 10px;
   font-weight: 600;
