@@ -1965,20 +1965,30 @@
       if (ok && reveal && selectedId) revealCard(selectedId);
       return ok;
     }
-    selectedId = entry.fileId;
     selectedFnId = String(fnId);
     fnSelectionAdditive = false;
-    // A function picked out of a multi-file selection keeps that selection —
-    // narrowing to one function should not silently throw away the comparison
-    // the user built up.
-    if (!selectedSet.has(entry.fileId)) selectedSet = new Set([entry.fileId]);
+    const inScope = selectedSet.has(entry.fileId);
+    // Vertical is a chain through the canvas, and pivoting along it must not
+    // rebuild that canvas underneath — the chain of a node reached from the
+    // current graph has to be read against the same graph. Every other scope
+    // opens the function's own file when it is not already in view.
+    const pinScope = fnsScope === "vertical" && selectedSet.size > 0;
+    if (inScope || !pinScope) {
+      selectedId = entry.fileId;
+      if (!inScope) selectedSet = new Set([entry.fileId]);
+    }
     selectedFnSet = new Set([selectedFnId]);
-    if (reveal) revealCard(entry.fileId);
+    if (reveal && selectedSet.has(entry.fileId)) revealCard(entry.fileId);
     openInspectorForSelection();
     syncFnsScopeControls();
     refreshFocus();
     renderInspector();
-    if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: false });
+    // Pivoting re-centres the chain, so that graph is wholly different and has
+    // to be re-fitted; every other scope only moves a highlight and must hold
+    // its viewport still.
+    if (bottomOpen && bottomTab === "fns") {
+      renderFunctionDag({ fit: fnsScope === "vertical" });
+    }
     if (notifyHost && Bridge) notifyHostFunction(entry);
     return true;
   }
@@ -3703,23 +3713,44 @@
     return fnsFileAccents.get(String(fileId)) || null;
   }
 
-  /** Show the scope buttons only when there is a relationship to scope to. */
+  /** Can this scope answer anything with what is currently selected? */
+  function scopeAvailable(mode) {
+    if (mode === "linking" || mode === "bridges") return hasMultiSelection();
+    if (mode === "vertical") return !!selectedFnId;
+    return true;
+  }
+
+  /**
+   * Show the scope buttons when any of them has something to say, and disable
+   * the ones that do not: Linking and Bridges need two things to relate,
+   * Vertical needs a function to run a chain through.
+   */
   function syncFnsScopeControls() {
     const wrap = els.fnsScopeMode;
     if (!wrap) return;
-    const on = hasMultiSelection();
+    // Falling back silently beats leaving a dead scope selected — dropping the
+    // last function would otherwise leave Vertical on with nothing to centre.
+    if (!scopeAvailable(fnsScope)) fnsScope = "all";
+    const on = hasMultiSelection() || !!selectedFnId;
     const was = wrap.hidden;
     wrap.hidden = !on;
     // Showing / hiding a whole control group changes what fits in the row.
     if (was !== wrap.hidden) syncBottomChromeCompact();
     for (const btn of wrap.querySelectorAll("button")) {
-      const active = btn.dataset.scope === fnsScope;
+      const mode = btn.dataset.scope;
+      const active = mode === fnsScope;
       btn.classList.toggle("on", active);
       btn.setAttribute("aria-pressed", active ? "true" : "false");
+      btn.disabled = !scopeAvailable(mode);
+      btn.title = scopeAvailable(mode)
+        ? ""
+        : mode === "vertical"
+          ? "Select a function to see its call chain"
+          : "Select two or more files or functions";
     }
-    // Hops slice a neighborhood around one focus; the relational scopes have no
-    // focus to slice around, so the control would be a dead knob.
-    const depthDead = on && fnsScope !== "all";
+    // Hops slice a neighborhood around one focus; every other scope defines its
+    // own extent, so the control would be a dead knob.
+    const depthDead = fnsScope !== "all";
     if (els.fnsDepthMode) {
       els.fnsDepthMode.classList.toggle("inert", depthDead);
       for (const btn of els.fnsDepthMode.querySelectorAll("button")) {
@@ -3729,7 +3760,10 @@
   }
 
   function setFnsScope(mode) {
-    const next = ["all", "linking", "bridges"].includes(mode) ? mode : "all";
+    const want = ["all", "linking", "bridges", "vertical"].includes(mode)
+      ? mode
+      : "all";
+    const next = scopeAvailable(want) ? want : "all";
     if (fnsScope === next) return;
     fnsScope = next;
     syncFnsScopeControls();
@@ -3779,10 +3813,10 @@
       return;
     }
 
-    // The relational scopes answer "how do these relate?", which only has an
-    // answer once two things are selected. Otherwise fall back to the whole
-    // graph rather than showing an empty dock.
-    const scopeMode = hasMultiSelection() ? fnsScope : "all";
+    // A scope that cannot answer with what is selected falls back to the whole
+    // graph rather than showing an empty dock: Linking and Bridges need two
+    // things to relate, Vertical needs a function to run its chain through.
+    const scopeMode = scopeAvailable(fnsScope) ? fnsScope : "all";
     const multiFile = selectedNodes.length > 1;
     fnsFileAccents = new Map(
       selectedNodes.map((n, idx) => [n.id, fileAccentAt(idx)])
@@ -3814,6 +3848,14 @@
           scope: sliced.scope,
         };
         meta = sliced.meta;
+      } else if (scopeMode === "vertical") {
+        const sliced = HD.chain(full, selectedFnId);
+        graph = {
+          nodes: sliced.nodes,
+          edges: sliced.edges,
+          scope: sliced.scope,
+        };
+        meta = sliced.meta;
       } else {
         const related = HD.relate(full, selectionAnchors(full), scopeMode, {
           // Hand-picked functions stay on screen; whole-file anchors do not,
@@ -3827,7 +3869,11 @@
         };
         meta = related.meta;
       }
-      laid = HD.layout(graph);
+      // Both run left to right; the chain lays out by its own signed levels —
+      // callers left of the centre, callees right — rather than by topological
+      // depth, so the centre keeps its place as you pivot along the chain.
+      laid =
+        scopeMode === "vertical" ? HD.layoutChain(graph) : HD.layout(graph);
     } catch (err) {
       console.error("[HorizonViewer.renderFunctionDag]", err);
       fnsGraph = null;
@@ -3860,7 +3906,18 @@
       return n?.name || String(meta.focusId).split("::").pop() || meta.focusId;
     })();
     let depthNote = "";
-    if (meta && meta.mode) {
+    if (meta && meta.mode === "vertical") {
+      depthNote =
+        ` · <strong>Vertical</strong> through ` +
+        `<strong>${escapeHtml(meta.centerName || "?")}</strong>` +
+        ` · ${meta.up} above, ${meta.down} below` +
+        ` · showing ${meta.shownNodes} of ${meta.totalNodes} nodes` +
+        `, ${meta.shownEdges} of ${meta.totalEdges} edges`;
+      depthNote +=
+        !meta.up && !meta.down
+          ? ` <span title="Nothing on this canvas calls it, and it calls nothing on this canvas.">(nothing on its chain here)</span>`
+          : ` <span title="Everything that reaches this function or is reached by it. Functions that merely call what it calls are not on the chain and are left out.">(the whole call chain, siblings excluded)</span>`;
+    } else if (meta && meta.mode) {
       const noun = selectedFnSet.size > 1 ? "functions" : "files";
       depthNote =
         ` · <strong>${meta.mode === "bridges" ? "Bridges" : "Linking"}</strong>` +
@@ -3953,8 +4010,14 @@
         (nodeSelected ? " selected" : "") +
         (nodeSelected && node.fnId !== selectedFnId ? " co-selected" : "") +
         (node.bridge ? " bridge" : "") +
+        (node.chainLevel === 0 ? " chain-center" : "") +
+        (node.chainLevel < 0 ? " chain-up" : "") +
+        (node.chainLevel > 0 ? " chain-down" : "") +
         (isFocus ? " focus" : "") +
         (stubActive ? " stub-active" : "");
+      if (node.chainLevel !== undefined) {
+        el.dataset.chainLevel = String(node.chainLevel);
+      }
       el.style.left = `${p.x}px`;
       el.style.top = `${p.y}px`;
       el.setAttribute("role", "button");
@@ -4124,6 +4187,22 @@
         empty.textContent = multiFile
           ? "No free functions in the selected files."
           : "No free functions in this file.";
+      } else if (scopeMode === "vertical") {
+        // The only way a chain comes back empty: its centre is not on this
+        // canvas at all. A centre with no callers and no callees still renders
+        // itself, and the banner says the chain is empty.
+        const fnName =
+          fnIndex.get(String(selectedFnId))?.fn?.name ||
+          selectedFnId ||
+          "that function";
+        const head = document.createElement("p");
+        head.className = "fns-empty-head";
+        head.textContent = `${fnName} is not in this graph.`;
+        const detail = document.createElement("p");
+        detail.textContent =
+          `Vertical follows the call chain through the files the dock is graphing, and ${fnName} is defined outside them. ` +
+          `Add its file to the selection to bring its chain into view.`;
+        empty.append(head, detail);
       } else {
         // An empty relational scope is a finding, not a failure: say what was
         // searched and what the answer means, rather than showing a blank box.
@@ -5754,11 +5833,19 @@
       selectFunction: (id, opts) => selectFunction(id, opts || {}),
       goBack,
       getSelection: () => snapshotSelection(),
-      /** Dock scope over a multi-selection: 'all' | 'linking' | 'bridges'. */
+      /** Dock scope: 'all' | 'linking' | 'bridges' | 'vertical'. */
       setFnsScope: (mode) => {
         setFnsScope(mode);
         return fnsScope;
       },
+      /** Which scopes the current selection can answer with. */
+      getScopeAvailability: () =>
+        Object.fromEntries(
+          ["all", "linking", "bridges", "vertical"].map((m) => [
+            m,
+            scopeAvailable(m),
+          ])
+        ),
       getFnsScope: () => fnsScope,
       clearMultiSelection,
       loadMap: (map, label) => loadMap(map, label || "api"),
@@ -5907,6 +5994,7 @@
           nodeCount: fnsGraph.nodes.length,
           edgeCount: fnsGraph.edges.length,
           nodes: fnsGraph.nodes.map((n) => ({
+            chainLevel: n.chainLevel,
             id: n.id,
             kind: n.kind,
             role: n.role,

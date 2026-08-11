@@ -2905,6 +2905,31 @@ select {
   opacity: 0.9;
 }
 
+/* Vertical scope. The centre is the one thing the whole view is about, so it
+   outweighs everything else on screen; the columns either side are ordinary
+   nodes whose meaning comes from their position, not their styling. */
+.fns-node.chain-center {
+  border-color: var(--sel);
+  border-width: 2px;
+  box-shadow: 0 0 0 3px var(--selbg), 0 2px 10px var(--shadow);
+  z-index: 2;
+}
+
+.fns-node.chain-center .fns-node-name {
+  font-weight: 700;
+}
+
+/* Callers read slightly quieter than callees: to the right is the code the
+   function runs, to the left is the context it was reached from. */
+.fns-node.chain-up:not(.selected) {
+  opacity: 0.94;
+}
+
+.fns-scope-mode button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* Neighborhood focus when depth-limited — the seed of the visible remnant. */
 .fns-node.focus:not(.selected) {
   border-color: var(--text2);
