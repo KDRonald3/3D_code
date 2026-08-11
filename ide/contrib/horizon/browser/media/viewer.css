@@ -2505,9 +2505,17 @@ select {
 }
 
 .bottom-chrome.is-compact .fns-depth-mode button,
+.bottom-chrome.is-compact .fns-scope-mode button,
 .bottom-chrome.is-compact .diag-group-mode button {
   padding-left: 6px;
   padding-right: 6px;
+}
+
+/* Two segmented groups now share this row, which clips rather than wraps.
+   Neither may be squeezed: they keep their natural width and the chrome
+   shortens labels earlier instead (BOTTOM_CHROME_SCOPE_PX). */
+.fns-controls > * {
+  flex: none;
 }
 
 /*

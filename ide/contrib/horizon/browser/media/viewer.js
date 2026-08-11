@@ -45,6 +45,8 @@
    * shortens tab labels so tabs + ✕ stay hittable near 180px centre column.
    */
   const BOTTOM_CHROME_COMPACT_PX = 420;
+  /** Width the scope control adds to the chrome row when a multi-selection shows it. */
+  const BOTTOM_CHROME_SCOPE_PX = 150;
   const BOTTOM_CHROME_TIGHT_PX = 300;
 
   const els = {
@@ -841,7 +843,11 @@
     const w = chrome.getBoundingClientRect().width;
     if (!(w > 0)) return;
     bottomChromeWidth = w;
-    bottomChromeCompact = w <= BOTTOM_CHROME_COMPACT_PX;
+    // The scope control is a whole extra segmented group in this row, so the
+    // width at which labels must shorten arrives sooner while it is showing.
+    const scopeShown = !!(els.fnsScopeMode && !els.fnsScopeMode.hidden);
+    bottomChromeCompact =
+      w <= BOTTOM_CHROME_COMPACT_PX + (scopeShown ? BOTTOM_CHROME_SCOPE_PX : 0);
     bottomChromeTight = w <= BOTTOM_CHROME_TIGHT_PX;
     chrome.classList.toggle("is-compact", bottomChromeCompact);
     chrome.classList.toggle("is-tight", bottomChromeTight);
@@ -3590,7 +3596,10 @@
     const wrap = els.fnsScopeMode;
     if (!wrap) return;
     const on = hasMultiSelection();
+    const was = wrap.hidden;
     wrap.hidden = !on;
+    // Showing / hiding a whole control group changes what fits in the row.
+    if (was !== wrap.hidden) syncBottomChromeCompact();
     for (const btn of wrap.querySelectorAll("button")) {
       const active = btn.dataset.scope === fnsScope;
       btn.classList.toggle("on", active);
