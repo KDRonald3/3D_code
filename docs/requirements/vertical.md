@@ -223,16 +223,28 @@ This is a different layout from the current left-to-right layered placement in
 [`layout`](../../ide/contrib/horizon/browser/media/function_dag.js#L234), not
 the same one re-filtered.
 
-### Pivoting
+### Reading the slice, and changing it
 
-Clicking a node in a vertical view re-centres the vertical slice on that
-function, with the universe still pinned to the original canvas. This makes it
-possible to walk a call chain one step at a time, which is the main thing a
-view of this shape earns its keep doing. The Inspector follows the selection as
-it does today.
+The slice is a large file cut down to one reviewable piece, and reviewing it
+means clicking through its functions. **A click inside the chain therefore
+selects and nothing more** — the Inspector follows, the tree does not move. A
+click that re-centred would dissolve the slice the moment you started using it,
+which is the opposite of what it is for.
 
-Note this makes a click mean something different inside Vertical than it does
-under All / Linking / Bridges, where clicking selects without re-scoping.
+Changing the subject is a separate, deliberate act, available three ways:
+
+| Gesture | Effect |
+|---|---|
+| **⌖** on a node (appears on hover) | centre the chain on that function |
+| double-click a node | the same, for anyone not aiming at a 16px target |
+| pick a function outside the chain — Functions list, Layers, a jump | a new subject; the chain follows |
+
+The centre is its own state, not `selectedFnId`. It survives every click within
+the tree and is dropped when the canvas it belongs to goes away: a centre in
+one of the selected files stays valid while that file is selected, and a centre
+reached as a callee from another file stays valid only for the exact file
+selection it was chosen on. Once it is neither, Vertical has nothing to draw
+and falls back to All rather than showing a dead view.
 
 ## Affected code
 
@@ -280,6 +292,7 @@ straight off the built graph's edges, so no new index is needed.
 | Siblings excluded | A function that calls what I call, without reaching me, tells me nothing about my chain. Excluding it is the whole point; the existing undirected hop control cannot. |
 | Downward rows ordered by call site, not definition line | Comprehension comes from sequence, not from node count. Measured: 71% of parents call their callees in an order different from the order they are defined, and 51% of pairs are inverted, so definition order is close to random with respect to the code's actual flow. Reading a row left to right should be reading the parent's body top to bottom. |
 | Upward rows ordered for crossing minimisation | Call-site positions in two different callers are not comparable, so there is no call order to preserve going up. Pretending otherwise would look principled and mean nothing. |
+| The centre is its own state, and a click does not move it | The slice exists to be read, and reading it means clicking its functions. Tying the centre to `selectedFnId` made the tree replace itself on the first click. |
 | Universe = the current canvas | Predictability — what you see is always a subset of what you were already looking at, and widening the file selection is the natural way to widen the answer. |
 | No repo-wide caller index | Not needed once the universe is the canvas; callers are readable from the built graph's edges. |
 | Stubs unchanged | They are call-site outcomes, not functions. Changing their presentation here would make the same data mean two things. |
@@ -294,9 +307,10 @@ straight off the built graph's edges, so no new index is needed.
   is added. If a busy function still reads badly, the fix is *presentational*
   (collapsing distant levels, folding a level into a count), never a change to
   what counts as being on the chain.
-- **Pivot was proposed, not confirmed.** Click-to-re-centre is implemented as
-  described, but the owner never explicitly ruled on it. (The layout question
-  was settled: horizontal, like the other scopes.)
+- ~~Pivot was proposed, not confirmed.~~ **Settled by use.** Click-to-re-centre
+  shipped first and was wrong: it replaced the slice as soon as you clicked
+  anything in it, defeating the purpose of cutting a large file down to one
+  reviewable piece. A click now reviews; moving the centre is deliberate.
 - Should the two rings be visually distinct (direct callers heavier or nearer
   than callers-of-callers), or are all four rings just nodes?
 - Where does the Vertical button live when no function is selected — hidden,

@@ -165,6 +165,22 @@
   /** Dock scope over a multi-selection: all | linking | bridges. */
   let fnsScope = "all";
   /**
+   * The function the Vertical chain is drawn around. Deliberately *not*
+   * `selectedFnId`: the chain is a slice of a large file chosen for review, and
+   * reading it means clicking through its functions. If every click re-centred,
+   * the slice would dissolve the moment you started using it. Only choosing a
+   * new subject moves it — from outside the dock, or via a node's own
+   * "centre here" control.
+   * @type {string|null}
+   */
+  let fnsChainCenterId = null;
+  /**
+   * The file selection the centre was chosen against. A centre that lives
+   * outside those files is only on the canvas for as long as they are.
+   * @type {string|null}
+   */
+  let fnsChainCenterKey = null;
+  /**
    * True while the function selection is being built up by shift-clicking.
    * The Inspector then stays on the file so the Functions list — the surface
    * the set is built from — remains on screen. A plain click clears it.
@@ -1955,7 +1971,13 @@
    */
   function selectFunction(
     fnId,
-    { reveal = true, push = true, notifyHost = true, additive = false } = {}
+    {
+      reveal = true,
+      push = true,
+      notifyHost = true,
+      additive = false,
+      fromDag = false,
+    } = {}
   ) {
     const entry = fnIndex.get(String(fnId));
     if (!entry) return false;
@@ -1968,26 +1990,33 @@
     selectedFnId = String(fnId);
     fnSelectionAdditive = false;
     const inScope = selectedSet.has(entry.fileId);
-    // Vertical is a chain through the canvas, and pivoting along it must not
-    // rebuild that canvas underneath — the chain of a node reached from the
-    // current graph has to be read against the same graph. Every other scope
-    // opens the function's own file when it is not already in view.
+    // Vertical is a chain through the canvas, and reading it must not rebuild
+    // that canvas underneath — a node reached from this graph has to stay
+    // readable against this graph. Every other scope opens the function's own
+    // file when it is not already in view.
     const pinScope = fnsScope === "vertical" && selectedSet.size > 0;
     if (inScope || !pinScope) {
       selectedId = entry.fileId;
       if (!inScope) selectedSet = new Set([entry.fileId]);
     }
     selectedFnSet = new Set([selectedFnId]);
+    // Choosing a function anywhere but inside the chain is choosing a new
+    // subject, and the chain follows. Choosing one *within* the chain is
+    // reading it, and the chain holds still — that is the whole point of
+    // slicing a large file for review.
+    if (!fromDag) {
+      fnsChainCenterId = selectedFnId;
+      fnsChainCenterKey = selectionSignature();
+    }
     if (reveal && selectedSet.has(entry.fileId)) revealCard(entry.fileId);
     openInspectorForSelection();
     syncFnsScopeControls();
     refreshFocus();
     renderInspector();
-    // Pivoting re-centres the chain, so that graph is wholly different and has
-    // to be re-fitted; every other scope only moves a highlight and must hold
-    // its viewport still.
+    // Only a new subject rebuilds the chain and needs re-fitting; reading it
+    // moves a highlight and must hold the viewport still.
     if (bottomOpen && bottomTab === "fns") {
-      renderFunctionDag({ fit: fnsScope === "vertical" });
+      renderFunctionDag({ fit: fnsScope === "vertical" && !fromDag });
     }
     if (notifyHost && Bridge) notifyHostFunction(entry);
     return true;
@@ -3714,9 +3743,42 @@
   }
 
   /** Can this scope answer anything with what is currently selected? */
+  /** Which files the dock is graphing — the identity of the current canvas. */
+  function selectionSignature() {
+    return [...selectedSet].sort().join(" ");
+  }
+
   function scopeAvailable(mode) {
     if (mode === "linking" || mode === "bridges") return hasMultiSelection();
-    if (mode === "vertical") return !!selectedFnId;
+    if (mode !== "vertical") return true;
+    const id = fnsChainCenterId || selectedFnId;
+    if (!id) return false;
+    const entry = fnIndex.get(String(id));
+    if (!entry) return false;
+    if (selectedSet.has(entry.fileId)) return true;
+    // A centre in none of the selected files can still be on the canvas — the
+    // dock draws callees from other files too, and one of those may have been
+    // centred. That holds only for the canvas it was chosen on: change which
+    // files are graphed and the slice is over.
+    return (
+      String(id) === fnsChainCenterId &&
+      fnsChainCenterKey === selectionSignature()
+    );
+  }
+
+  /**
+   * Move the chain's centre. The one deliberate way to change which slice is
+   * under review; everything else in Vertical leaves it alone.
+   */
+  function setChainCenter(fnId, { fit = true } = {}) {
+    const key = fnId ? String(fnId) : null;
+    if (key && !fnIndex.has(key)) return false;
+    if (fnsChainCenterId === key) return false;
+    fnsChainCenterId = key;
+    fnsChainCenterKey = key ? selectionSignature() : null;
+    if (bottomOpen && bottomTab === "fns" && fnsScope === "vertical") {
+      renderFunctionDag({ fit });
+    }
     return true;
   }
 
@@ -3765,6 +3827,11 @@
       : "all";
     const next = scopeAvailable(want) ? want : "all";
     if (fnsScope === next) return;
+    // Entering Vertical takes the current function as the subject to review.
+    if (next === "vertical" && selectedFnId) {
+      fnsChainCenterId = selectedFnId;
+      fnsChainCenterKey = selectionSignature();
+    }
     fnsScope = next;
     syncFnsScopeControls();
     if (bottomOpen && bottomTab === "fns") renderFunctionDag({ fit: true });
@@ -3849,7 +3916,17 @@
         };
         meta = sliced.meta;
       } else if (scopeMode === "vertical") {
-        const sliced = HD.chain(full, selectedFnId);
+        // The centre survives clicking around inside the chain. It only falls
+        // back to the current selection when it has left the canvas — a file
+        // dropped from the selection takes its functions with it.
+        const inGraph = (id) =>
+          !!id && (full.nodes || []).some((n) => n.id === String(id));
+        const centre = inGraph(fnsChainCenterId)
+          ? fnsChainCenterId
+          : inGraph(selectedFnId)
+            ? selectedFnId
+            : fnsChainCenterId || selectedFnId;
+        const sliced = HD.chain(full, centre);
         graph = {
           nodes: sliced.nodes,
           edges: sliced.edges,
@@ -4070,6 +4147,8 @@
             reveal: true,
             push: true,
             additive: isAdditiveClick(ev),
+            // A click in the dock reads the graph; it never re-scopes it.
+            fromDag: true,
           });
           lastFnsNodeActivation = {
             kind: "function",
@@ -4160,6 +4239,34 @@
         }
       });
 
+      // Vertical: the deliberate way to change which slice is under review.
+      // Reading the chain leaves it alone, so moving it has to be asked for.
+      if (
+        scopeMode === "vertical" &&
+        node.kind === "function" &&
+        node.fnId &&
+        node.chainLevel !== 0
+      ) {
+        const recentre = document.createElement("button");
+        recentre.type = "button";
+        recentre.className = "fns-recentre";
+        recentre.textContent = "⌖";
+        recentre.title = `Centre the chain on ${node.name}`;
+        recentre.setAttribute("aria-label", `Centre the chain on ${node.name}`);
+        recentre.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          setChainCenter(node.fnId);
+        });
+        el.appendChild(recentre);
+        // Double-click the node itself does the same — the shortcut for anyone
+        // who does not want to aim at a 16px target.
+        el.addEventListener("dblclick", (ev) => {
+          ev.stopPropagation();
+          ev.preventDefault();
+          setChainCenter(node.fnId);
+        });
+      }
+
       if (node.kind === "conflict" && (node.candidates || []).length) {
         for (const cid of node.candidates) {
           if (!fnIndex.has(String(cid))) continue;
@@ -4191,9 +4298,10 @@
         // The only way a chain comes back empty: its centre is not on this
         // canvas at all. A centre with no callers and no callees still renders
         // itself, and the banner says the chain is empty.
+        const centreId = fnsChainCenterId || selectedFnId;
         const fnName =
-          fnIndex.get(String(selectedFnId))?.fn?.name ||
-          selectedFnId ||
+          fnIndex.get(String(centreId))?.fn?.name ||
+          centreId ||
           "that function";
         const head = document.createElement("p");
         head.className = "fns-empty-head";
@@ -4811,6 +4919,8 @@
     selectedSet = new Set();
     selectedFnSet = new Set();
     fnsScope = "all";
+    fnsChainCenterId = null;
+    fnsChainCenterKey = null;
     fnSelectionAdditive = false;
     selHistory = [];
     hoverId = null;
@@ -4890,6 +5000,8 @@
     selectedSet = selectedId ? new Set([selectedId]) : new Set();
     selectedFnSet = selectedFnId ? new Set([selectedFnId]) : new Set();
     fnsScope = "all";
+    fnsChainCenterId = selectedFnId;
+    fnsChainCenterKey = selectedFnId ? [...selectedSet].sort().join(" ") : null;
     fnSelectionAdditive = false;
     syncFnsScopeControls();
 
@@ -5838,6 +5950,10 @@
         setFnsScope(mode);
         return fnsScope;
       },
+      /** The function the Vertical chain is drawn around. */
+      getChainCenter: () => fnsChainCenterId,
+      /** Move it — the deliberate act a node's ⌖ control performs. */
+      setChainCenter: (fnId, opts) => setChainCenter(fnId, opts || {}),
       /** Which scopes the current selection can answer with. */
       getScopeAvailability: () =>
         Object.fromEntries(
